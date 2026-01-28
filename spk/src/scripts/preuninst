@@ -1,19 +1,4 @@
 #!/bin/sh
 set -e
 
-PKGNAME="r4vk-speedtest"
-ETC_DIR="/var/packages/${PKGNAME}/etc"
-CONFIG_FILE="${ETC_DIR}/config.env"
-
-if [ -f "${CONFIG_FILE}" ]; then
-  . "${CONFIG_FILE}"
-fi
-
-CONTAINER_NAME="${CONTAINER_NAME:-r4vk-speedtest}"
-
-if command -v docker >/dev/null 2>&1; then
-  docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-fi
-
 exit 0
-

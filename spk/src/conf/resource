@@ -1,0 +1,32 @@
+{
+  "docker": {
+    "services": [
+      {
+        "service": "r4vk-speedtest",
+        "image": "r4vk-speedtest",
+        "tag": "spk",
+        "build": "docker",
+        "container_name": "r4vk-speedtest",
+        "ports": [
+          {
+            "host_port": "8000",
+            "container_port": "8000",
+            "type": "tcp"
+          }
+        ],
+        "shares": [
+          {
+            "host_dir": "data",
+            "mount_point": "/data"
+          }
+        ],
+        "environment": [
+          { "env_var": "PORT", "env_value": "8000" },
+          { "env_var": "DATA_DIR", "env_value": "/data" },
+          { "env_var": "APP_VERSION", "env_value": "spk" }
+        ]
+      }
+    ]
+  }
+}
+

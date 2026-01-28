@@ -2,8 +2,6 @@
 set -e
 
 PKGNAME="r4vk-speedtest"
-PKGVER="${SYNOPKG_PKGVER}"
-TAG="v${PKGVER}"
 
 ETC_DIR="/var/packages/${PKGNAME}/etc"
 CONFIG_FILE="${ETC_DIR}/config.env"
@@ -13,48 +11,23 @@ if [ -f "${CONFIG_FILE}" ]; then
 fi
 
 HOST_PORT="${HOST_PORT:-8000}"
-CONTAINER_NAME="${CONTAINER_NAME:-r4vk-speedtest}"
-VOLUME_NAME="${VOLUME_NAME:-r4vk-speedtest-data}"
-
-DOCKER_BIN="docker"
-
-ARCH="$(uname -m)"
-case "${ARCH}" in
-  x86_64) DOCKER_ARCH="amd64" ;;
-  aarch64|arm64) DOCKER_ARCH="arm64" ;;
-  *) DOCKER_ARCH="amd64" ;;
-esac
-
-IMAGE="r4vk-speedtest:${TAG}-${DOCKER_ARCH}"
 
 do_start() {
-  "${DOCKER_BIN}" volume inspect "${VOLUME_NAME}" >/dev/null 2>&1 || "${DOCKER_BIN}" volume create "${VOLUME_NAME}" >/dev/null
-
-  if "${DOCKER_BIN}" ps -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
-    exit 0
-  fi
-
-  if "${DOCKER_BIN}" ps -aq -f "name=^${CONTAINER_NAME}$" | grep -q .; then
-    "${DOCKER_BIN}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-  fi
-
-  "${DOCKER_BIN}" run -d \
-    --name "${CONTAINER_NAME}" \
-    --restart unless-stopped \
-    -p "${HOST_PORT}:8000" \
-    -e PORT=8000 \
-    -e DATA_DIR=/data \
-    -v "${VOLUME_NAME}:/data" \
-    "${IMAGE}" >/dev/null
+  # Docker lifecycle is handled by DSM resource worker via conf/resource.
+  exit 0
 }
 
 do_stop() {
-  "${DOCKER_BIN}" stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  # Docker lifecycle is handled by DSM resource worker via conf/resource.
+  exit 0
 }
 
 do_status() {
-  if "${DOCKER_BIN}" ps -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
-    exit 0
+  # Basic health check over localhost.
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS "http://127.0.0.1:${HOST_PORT}/healthz" >/dev/null 2>&1 && exit 0
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- "http://127.0.0.1:${HOST_PORT}/healthz" >/dev/null 2>&1 && exit 0
   fi
   exit 1
 }
@@ -65,4 +38,3 @@ case "$1" in
   status) do_status ;;
   *) echo "Usage: $0 {start|stop|status}" >&2; exit 1 ;;
 esac
-

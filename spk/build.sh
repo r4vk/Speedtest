@@ -34,10 +34,19 @@ sed \
   "${ROOT_DIR}/src/INFO.in" > "${WORK_DIR}/INFO"
 rm -f "${WORK_DIR}/INFO.in"
 
+# Sync docker build context from ../app into package payload
+mkdir -p "${WORK_DIR}/package/docker"
+rm -rf "${WORK_DIR}/package/docker/"*
+cp -R "${ROOT_DIR}/../app/Dockerfile" "${WORK_DIR}/package/docker/Dockerfile"
+cp -R "${ROOT_DIR}/../app/requirements.txt" "${WORK_DIR}/package/docker/requirements.txt"
+cp -R "${ROOT_DIR}/../app/.dockerignore" "${WORK_DIR}/package/docker/.dockerignore" 2>/dev/null || true
+cp -R "${ROOT_DIR}/../app/speedtest_app" "${WORK_DIR}/package/docker/speedtest_app"
+cp -R "${ROOT_DIR}/../app/static" "${WORK_DIR}/package/docker/static"
+
 # Build payload tarball
-"${TAR_BIN}" "${TAR_FLAGS[@]}" -C "${ROOT_DIR}/src/package" -czf "${WORK_DIR}/package.tgz" .
+"${TAR_BIN}" "${TAR_FLAGS[@]}" -C "${WORK_DIR}/package" -czf "${WORK_DIR}/package.tgz" .
 
 # Build SPK (tar archive)
-"${TAR_BIN}" "${TAR_FLAGS[@]}" -C "${WORK_DIR}" -cf "${OUT_DIR}/${PKG}_${VERSION}.spk" INFO package.tgz scripts
+"${TAR_BIN}" "${TAR_FLAGS[@]}" -C "${WORK_DIR}" -cf "${OUT_DIR}/${PKG}_${VERSION}.spk" INFO package.tgz scripts conf
 
 echo "Built: ${OUT_DIR}/${PKG}_${VERSION}.spk"
