@@ -25,14 +25,14 @@ let currentAvgMbps = 0;
 async function loadConfig() {
   const resp = await fetch("/api/config");
   const cfg = await resp.json();
-  const mode = cfg.connect_check_mode ?? "target";
-  const radios = document.querySelectorAll("input[name='connect-mode']");
-  for (const r of radios) r.checked = (r.value === mode);
   qs("cfg-connect-target").value = cfg.connect_target ?? "";
   qs("cfg-connect-interval").value = cfg.connect_interval_seconds ?? 1;
+  const speedMode = cfg.speedtest_mode ?? "url";
+  const radios = document.querySelectorAll("input[name='speedtest-mode']");
+  for (const r of radios) r.checked = (r.value === speedMode);
   qs("cfg-speed-url").value = cfg.speedtest_url ?? "";
   qs("cfg-speed-interval").value = cfg.speedtest_interval_seconds ?? 900;
-  applyConnectModeUi(mode);
+  applySpeedtestModeUi(speedMode);
 }
 
 function setCfgMsg(text, ok) {
@@ -42,35 +42,31 @@ function setCfgMsg(text, ok) {
   setTimeout(() => { el.textContent = ""; el.style.color = ""; }, 3500);
 }
 
-function selectedConnectMode() {
-  const el = document.querySelector("input[name='connect-mode']:checked");
-  return el ? el.value : "target";
+function selectedSpeedtestMode() {
+  const el = document.querySelector("input[name='speedtest-mode']:checked");
+  return el ? el.value : "url";
 }
 
-function applyConnectModeUi(mode) {
-  const input = qs("cfg-connect-target");
+function applySpeedtestModeUi(mode) {
+  const input = qs("cfg-speed-url");
   const label = input.closest("label");
-  if (mode === "target") {
-    label.style.display = "";
-    return;
-  }
-  // speedtest.* => pole niepotrzebne
-  label.style.display = "none";
+  label.style.display = (mode === "url") ? "" : "none";
 }
 
 async function saveConfig() {
-  const mode = selectedConnectMode();
-  applyConnectModeUi(mode);
-
   const connectTarget = qs("cfg-connect-target").value.trim();
-  if (mode === "target" && !connectTarget) {
+  if (!connectTarget) {
     setCfgMsg("Podaj adres do testu internetu.", false);
     return;
   }
+
+  const speedMode = selectedSpeedtestMode();
+  applySpeedtestModeUi(speedMode);
+
   const payload = {
-    connect_check_mode: mode,
     connect_target: connectTarget,
     connect_interval_seconds: Number(qs("cfg-connect-interval").value),
+    speedtest_mode: speedMode,
     speedtest_url: qs("cfg-speed-url").value.trim(),
     speedtest_interval_seconds: Number(qs("cfg-speed-interval").value),
   };
@@ -342,8 +338,8 @@ async function refreshAll() {
 
 qs("refresh").addEventListener("click", refreshAll);
 qs("cfg-save").addEventListener("click", saveConfig);
-for (const r of document.querySelectorAll("input[name='connect-mode']")) {
-  r.addEventListener("change", () => applyConnectModeUi(selectedConnectMode()));
+for (const r of document.querySelectorAll("input[name='speedtest-mode']")) {
+  r.addEventListener("change", () => applySpeedtestModeUi(selectedSpeedtestMode()));
 }
 
  (async () => {

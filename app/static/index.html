@@ -38,12 +38,6 @@
       <section class="panel">
         <h2>Ustawienia</h2>
         <div class="settings">
-          <div class="radio-group">
-            <div class="rlabel">Test internetu</div>
-            <label class="radio"><input type="radio" name="connect-mode" value="target" checked /> URL / host</label>
-            <label class="radio"><input type="radio" name="connect-mode" value="speedtest.net" /> speedtest.net</label>
-            <label class="radio"><input type="radio" name="connect-mode" value="speedtest.pl" /> speedtest.pl</label>
-          </div>
           <label>
             Test internetu (URL lub host)
             <input id="cfg-connect-target" type="text" placeholder="google.com" />
@@ -52,6 +46,12 @@
             Interwał testu internetu (sek)
             <input id="cfg-connect-interval" type="number" min="0.2" step="0.1" />
           </label>
+          <div class="radio-group">
+            <div class="rlabel">Test prędkości</div>
+            <label class="radio"><input type="radio" name="speedtest-mode" value="url" checked /> Plik URL</label>
+            <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.net" /> speedtest.net</label>
+            <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.pl" /> speedtest.pl</label>
+          </div>
           <label>
             URL testu prędkości (ftp/http/https)
             <input id="cfg-speed-url" type="text" placeholder="https://..." />

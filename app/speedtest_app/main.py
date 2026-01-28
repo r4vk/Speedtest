@@ -30,9 +30,9 @@ from .time_utils import parse_range, to_iso_z, utc_now
 
 cfg = AppConfig()
 ensure_db(cfg.db_path)
-ensure_default_setting(cfg.db_path, "connect_check_mode", "target")
 ensure_default_setting(cfg.db_path, "connect_target", cfg.connect_target)
 ensure_default_setting(cfg.db_path, "connect_interval_seconds", str(cfg.connect_interval_seconds))
+ensure_default_setting(cfg.db_path, "speedtest_mode", "url")
 ensure_default_setting(cfg.db_path, "speedtest_url", cfg.speedtest_url or "")
 ensure_default_setting(cfg.db_path, "speedtest_interval_seconds", str(cfg.speedtest_interval_seconds))
 
@@ -86,8 +86,8 @@ def api_status() -> dict[str, Any]:
         "last_speed_test": last_speed,
         "config": {
             "connect_target": eff.connect_target,
-            "connect_check_mode": eff.connect_check_mode,
             "connect_interval_seconds": eff.connect_interval_seconds,
+            "speedtest_mode": eff.speedtest_mode,
             "speedtest_interval_seconds": eff.speedtest_interval_seconds,
             "speedtest_duration_seconds": eff.speedtest_duration_seconds,
             "speedtest_skip_if_offline": cfg.speedtest_skip_if_offline,
@@ -97,18 +97,18 @@ def api_status() -> dict[str, Any]:
 
 
 class ConfigResponse(BaseModel):
-    connect_check_mode: str
     connect_target: str
     connect_interval_seconds: float
+    speedtest_mode: str
     speedtest_url: str
     speedtest_interval_seconds: float
     speedtest_duration_seconds: float
 
 
 class ConfigUpdate(BaseModel):
-    connect_check_mode: str | None = Field(default=None)
     connect_target: str | None = Field(default=None, min_length=1, max_length=1024)
     connect_interval_seconds: float | None = Field(default=None, gt=0.1, le=3600)
+    speedtest_mode: str | None = Field(default=None)
     speedtest_url: str | None = Field(default=None, max_length=2048)
     speedtest_interval_seconds: float | None = Field(default=None, gt=1, le=7 * 24 * 3600)
 
@@ -117,19 +117,22 @@ def _effective_config() -> ConfigResponse:
     values = get_settings(
         cfg.db_path,
         [
-            "connect_check_mode",
             "connect_target",
             "connect_interval_seconds",
+            "speedtest_mode",
             "speedtest_url",
             "speedtest_interval_seconds",
         ],
     )
-    connect_check_mode = values.get("connect_check_mode", "target")
     connect_target = values.get("connect_target", cfg.connect_target)
     try:
         connect_interval = float(values.get("connect_interval_seconds", str(cfg.connect_interval_seconds)))
     except ValueError:
         connect_interval = cfg.connect_interval_seconds
+
+    speedtest_mode = (values.get("speedtest_mode") or "url").strip()
+    if speedtest_mode not in {"url", "speedtest.net", "speedtest.pl"}:
+        speedtest_mode = "url"
 
     speedtest_url = values.get("speedtest_url", cfg.speedtest_url or "")
     try:
@@ -138,9 +141,9 @@ def _effective_config() -> ConfigResponse:
         speedtest_interval = cfg.speedtest_interval_seconds
 
     return ConfigResponse(
-        connect_check_mode=connect_check_mode,
         connect_target=connect_target,
         connect_interval_seconds=connect_interval,
+        speedtest_mode=speedtest_mode,
         speedtest_url=speedtest_url,
         speedtest_interval_seconds=speedtest_interval,
         speedtest_duration_seconds=cfg.speedtest_duration_seconds,
@@ -155,15 +158,15 @@ def api_get_config():
 @app.put("/api/config", response_model=ConfigResponse)
 def api_update_config(update: ConfigUpdate):
     now_iso = to_iso_z(utc_now())
-    if update.connect_check_mode is not None:
-        mode = update.connect_check_mode.strip()
-        if mode not in {"target", "speedtest.net", "speedtest.pl"}:
-            raise HTTPException(status_code=400, detail="connect_check_mode must be one of: target, speedtest.net, speedtest.pl")
-        set_setting(cfg.db_path, "connect_check_mode", mode, now_iso=now_iso)
     if update.connect_target is not None:
         set_setting(cfg.db_path, "connect_target", update.connect_target.strip(), now_iso=now_iso)
     if update.connect_interval_seconds is not None:
         set_setting(cfg.db_path, "connect_interval_seconds", str(update.connect_interval_seconds), now_iso=now_iso)
+    if update.speedtest_mode is not None:
+        mode = update.speedtest_mode.strip()
+        if mode not in {"url", "speedtest.net", "speedtest.pl"}:
+            raise HTTPException(status_code=400, detail="speedtest_mode must be one of: url, speedtest.net, speedtest.pl")
+        set_setting(cfg.db_path, "speedtest_mode", mode, now_iso=now_iso)
     if update.speedtest_url is not None:
         set_setting(cfg.db_path, "speedtest_url", update.speedtest_url.strip(), now_iso=now_iso)
     if update.speedtest_interval_seconds is not None:
