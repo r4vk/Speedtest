@@ -9,41 +9,20 @@ function paramsFromInputs() {
   return params;
 }
 
-function isoWithOffset(date) {
-  const pad = (n) => String(n).padStart(2, "0");
-  const y = date.getFullYear();
-  const m = pad(date.getMonth() + 1);
-  const d = pad(date.getDate());
-  const hh = pad(date.getHours());
-  const mm = pad(date.getMinutes());
-  const ss = pad(date.getSeconds());
-  const tz = -date.getTimezoneOffset(); // minutes
-  const sign = tz >= 0 ? "+" : "-";
-  const tzh = pad(Math.floor(Math.abs(tz) / 60));
-  const tzm = pad(Math.abs(tz) % 60);
-  return `${y}-${m}-${d}T${hh}:${mm}:${ss}${sign}${tzh}:${tzm}`;
-}
-
 function initDatePickers() {
   if (typeof flatpickr !== "function") return;
   const common = {
     enableTime: true,
     time_24hr: true,
-    seconds: false,
+    enableSeconds: true,
     allowInput: true,
-    dateFormat: "Y-m-d H:i",
+    dateFormat: "Y-m-d H:i:S",
   };
   flatpickr(qs("from"), {
     ...common,
-    onChange: (selectedDates, _dateStr, instance) => {
-      if (selectedDates?.[0]) instance.input.value = isoWithOffset(selectedDates[0]);
-    },
   });
   flatpickr(qs("to"), {
     ...common,
-    onChange: (selectedDates, _dateStr, instance) => {
-      if (selectedDates?.[0]) instance.input.value = isoWithOffset(selectedDates[0]);
-    },
   });
 }
 
@@ -148,7 +127,23 @@ async function saveConfig() {
 
 function parseIsoToMs(iso) {
   if (!iso) return null;
-  const ms = Date.parse(iso);
+  const s = String(iso).trim();
+  // YYYY-MM-DD HH:MM:SS (local) or YYYY-MM-DDTHH:MM:SS (local)
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(s);
+  if (m) {
+    const [, yy, mo, dd, hh, mm, ss] = m;
+    const d = new Date(
+      Number(yy),
+      Number(mo) - 1,
+      Number(dd),
+      Number(hh),
+      Number(mm),
+      Number(ss),
+    );
+    const ms = d.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  const ms = Date.parse(s.replace(" ", "T"));
   return Number.isFinite(ms) ? ms : null;
 }
 

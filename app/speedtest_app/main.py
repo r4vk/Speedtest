@@ -27,7 +27,7 @@ from .db import (
 )
 from .runtime import get_runtime, init_runtime
 from .scheduler import RunningState, connectivity_loop, run_speedtest_once, speedtest_loop
-from .time_utils import parse_range, to_iso_z, utc_now
+from .time_utils import parse_dt, parse_range, to_iso_z, to_local_display, to_local_iso, utc_now
 
 
 cfg = AppConfig()
@@ -90,12 +90,22 @@ def api_status() -> dict[str, Any]:
     last_speed = get_last_speed_test(cfg.db_path)
     eff = _effective_config()
     rt = get_runtime()
+
+    if current:
+        current = dict(current)
+        current["started_at"] = to_local_iso(parse_dt(current["started_at"]))
+        if current.get("ended_at"):
+            current["ended_at"] = to_local_iso(parse_dt(current["ended_at"]))
+    if last_speed:
+        last_speed = dict(last_speed)
+        last_speed["started_at"] = to_local_iso(parse_dt(last_speed["started_at"]))
+
     return {
-        "now": to_iso_z(utc_now()),
+        "now": to_local_iso(utc_now()),
         "connectivity": current,
         "last_speed_test": last_speed,
         "speedtest_running": bool(rt.running),
-        "speedtest_running_since": rt.running_since_iso,
+        "speedtest_running_since": to_local_iso(parse_dt(rt.running_since_iso)) if rt.running_since_iso else None,
         "config": {
             "connect_target": eff.connect_target,
             "connect_interval_seconds": eff.connect_interval_seconds,
@@ -212,7 +222,10 @@ def api_speed(
 ) -> dict[str, Any]:
     pr = parse_range(from_, to)
     tr = TimeRange(start_iso=to_iso_z(pr.start), end_iso=to_iso_z(pr.end))
-    return {"range": {"from": tr.start_iso, "to": tr.end_iso}, "items": query_speed_tests(cfg.db_path, tr)}
+    items = query_speed_tests(cfg.db_path, tr)
+    for it in items:
+        it["started_at"] = to_local_iso(parse_dt(it["started_at"]))
+    return {"range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)}, "items": items}
 
 
 def _overlap_seconds(start: datetime, end: datetime, a: datetime, b: datetime) -> float:
@@ -233,11 +246,11 @@ def api_outages(
 
     items: list[dict[str, Any]] = []
     for r in rows:
-        started_at = r["started_at"]
-        ended_at = r["ended_at"] or to_iso_z(utc_now())
+        started_at = to_local_iso(parse_dt(r["started_at"]))
+        ended_at = to_local_iso(parse_dt(r["ended_at"])) if r["ended_at"] else to_local_iso(utc_now())
         items.append({"started_at": started_at, "ended_at": ended_at})
 
-    return {"range": {"from": tr.start_iso, "to": tr.end_iso}, "items": items}
+    return {"range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)}, "items": items}
 
 
 @app.get("/api/report/quality")
@@ -256,15 +269,15 @@ def api_report_quality(
 
     for p in down_periods:
         incident_count += 1
-        start_dt = datetime.fromisoformat(p["started_at"].replace("Z", "+00:00"))
+        start_dt = parse_dt(p["started_at"])
         end_iso = p["ended_at"] or to_iso_z(now)
-        end_dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+        end_dt = parse_dt(end_iso)
         downtime_seconds += _overlap_seconds(pr.start, pr.end, start_dt, end_dt)
 
     downtime_percent = (downtime_seconds / total_seconds * 100.0) if total_seconds > 0 else 0.0
 
     return {
-        "range": {"from": tr.start_iso, "to": tr.end_iso},
+        "range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)},
         "incident_count": incident_count,
         "downtime_seconds": downtime_seconds,
         "total_seconds": total_seconds,
@@ -312,9 +325,10 @@ def export_speed_csv(
         ]
     ]
     for it in items:
+        started_local = to_local_display(parse_dt(it["started_at"]))
         rows.append(
             [
-                it["started_at"],
+                started_local,
                 it["mbps"],
                 it.get("upload_mbps"),
                 it.get("ping_ms"),
@@ -340,5 +354,7 @@ def export_outages_csv(
     rows: list[list[Any]] = [["started_at", "ended_at"]]
     now_iso = to_iso_z(utc_now())
     for it in items:
-        rows.append([it["started_at"], it["ended_at"] or now_iso])
+        started_local = to_local_display(parse_dt(it["started_at"]))
+        ended_local = to_local_display(parse_dt(it["ended_at"])) if it["ended_at"] else to_local_display(parse_dt(now_iso))
+        rows.append([started_local, ended_local])
     return _csv_response("outages.csv", rows)

@@ -36,6 +36,7 @@ W UI możesz też wybrać gotowy tryb: `speedtest.net` lub `speedtest.pl` (wtedy
 
 - `DATA_DIR` (domyślnie: `/data`) – tu trzymany jest `app.db`
 - `PORT` (domyślnie: `8000`)
+- `TZ` (domyślnie: `UTC`) – strefa czasowa dla “czasów lokalnych” w UI/CSV (np. `Europe/Warsaw`)
 
 ## Uruchomienie lokalnie
 
