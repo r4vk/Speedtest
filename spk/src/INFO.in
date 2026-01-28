@@ -1,0 +1,19 @@
+package="r4vk-speedtest"
+version="@VERSION@"
+displayname="r4vk Speedtest Monitor"
+description="Speedtest Monitor (Docker wrapper) - UI + monitoring + raporty."
+maintainer="r4vk"
+maintainer_url="https://github.com/r4vk/Speedtest"
+distributor="r4vk"
+distributor_url="https://github.com/r4vk/Speedtest"
+support_url="https://github.com/r4vk/Speedtest/issues"
+
+# DSM7 / DS220+ (apollolake). Jeśli chcesz wspierać więcej modeli, dopisz arch.
+arch="apollolake"
+os_min_ver="7.0-40000"
+
+startable="yes"
+reloadui="yes"
+silent_install="yes"
+silent_upgrade="yes"
+

@@ -1,0 +1,67 @@
+#!/bin/sh
+set -e
+
+PKGNAME="r4vk-speedtest"
+PKGVER="${SYNOPKG_PKGVER}"
+TAG="v${PKGVER}"
+
+ETC_DIR="/var/packages/${PKGNAME}/etc"
+mkdir -p "${ETC_DIR}"
+
+CONFIG_FILE="${ETC_DIR}/config.env"
+if [ ! -f "${CONFIG_FILE}" ]; then
+  cat > "${CONFIG_FILE}" <<'EOF'
+# r4vk-speedtest package config
+HOST_PORT=8000
+CONTAINER_NAME=r4vk-speedtest
+VOLUME_NAME=r4vk-speedtest-data
+EOF
+fi
+
+DOCKER_BIN=""
+if command -v docker >/dev/null 2>&1; then
+  DOCKER_BIN="$(command -v docker)"
+elif [ -x /usr/local/bin/docker ]; then
+  DOCKER_BIN="/usr/local/bin/docker"
+elif [ -x /usr/bin/docker ]; then
+  DOCKER_BIN="/usr/bin/docker"
+fi
+
+if [ -z "${DOCKER_BIN}" ]; then
+  echo "docker CLI not found. Install Synology Container Manager first." >&2
+  exit 1
+fi
+
+ARCH="$(uname -m)"
+case "${ARCH}" in
+  x86_64) DOCKER_ARCH="amd64" ;;
+  aarch64) DOCKER_ARCH="arm64" ;;
+  arm64) DOCKER_ARCH="arm64" ;;
+  *)
+    echo "Unsupported arch: ${ARCH}" >&2
+    exit 1
+    ;;
+esac
+
+TAR_NAME="r4vk-speedtest_${TAG}_linux_${DOCKER_ARCH}.tar"
+URL="https://github.com/r4vk/Speedtest/releases/download/${TAG}/${TAR_NAME}"
+TMP="/tmp/${TAR_NAME}"
+
+if ! "${DOCKER_BIN}" image inspect "r4vk-speedtest:${TAG}-${DOCKER_ARCH}" >/dev/null 2>&1; then
+  echo "Downloading Docker image tar: ${URL}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "${TMP}" "${URL}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "${TMP}" "${URL}"
+  else
+    echo "curl/wget not found." >&2
+    exit 1
+  fi
+
+  echo "Importing image..."
+  "${DOCKER_BIN}" load -i "${TMP}"
+  rm -f "${TMP}"
+fi
+
+exit 0
+
