@@ -136,9 +136,10 @@ async function saveConfig() {
   setCfgMsg("Zapisano.", true);
   const modeChanged = (lastLoadedConfig?.speedtest_mode ?? "url") !== (newCfg?.speedtest_mode ?? "url");
   const urlChanged = (lastLoadedConfig?.speedtest_url ?? "") !== (newCfg?.speedtest_url ?? "");
+  const intervalChanged = Number(lastLoadedConfig?.speedtest_interval_seconds ?? 0) !== Number(newCfg?.speedtest_interval_seconds ?? 0);
   lastLoadedConfig = newCfg;
 
-  if (modeChanged || urlChanged) {
+  if (modeChanged || urlChanged || intervalChanged) {
     // po zmianie typu/usługi testu prędkości uruchom od razu pomiar
     fetch("/api/speedtest/run", { method: "POST" }).catch(() => {});
   }

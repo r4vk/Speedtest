@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 
 from .config import AppConfig
 from .connectivity import check_target
@@ -27,7 +28,19 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
         await asyncio.wait_for(stop.wait(), timeout=max(0.001, seconds))
         return True
     except asyncio.TimeoutError:
-            return False
+        return False
+
+
+def _seconds_until_next_aligned(interval_seconds: float) -> float:
+    interval_seconds = max(0.1, float(interval_seconds))
+    now = datetime.now().astimezone()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed = (now - midnight).total_seconds()
+    remainder = elapsed % interval_seconds
+    # jeśli jesteśmy "na granicy" to planuj następny tick, nie natychmiast
+    if remainder < 0.01:
+        return interval_seconds
+    return max(0.001, interval_seconds - remainder)
 
 
 async def run_speedtest_once(cfg: AppConfig) -> None:
@@ -121,7 +134,8 @@ async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
             cfg.connect_timeout_seconds,
         )
         record_connectivity(cfg.db_path, is_up=is_up, now_iso=to_iso_z(utc_now()))
-        stopped = await _sleep_or_stop(state.stop, interval_seconds)
+        # Interwał liczony od początku doby (lokalna strefa czasowa kontenera/hosta).
+        stopped = await _sleep_or_stop(state.stop, _seconds_until_next_aligned(interval_seconds))
         if stopped:
             return
 
@@ -137,6 +151,7 @@ async def speedtest_loop(cfg: AppConfig, state: RunningState) -> None:
 
         await run_speedtest_once(cfg)
 
-        stopped = await _sleep_or_stop(state.stop, interval_seconds)
+        # Kolejne testy wyrównane do "od północy" zamiast od momentu zapisu ustawień.
+        stopped = await _sleep_or_stop(state.stop, _seconds_until_next_aligned(interval_seconds))
         if stopped:
             return
