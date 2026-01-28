@@ -31,6 +31,20 @@ class AppConfig:
     speedtest_timeout_seconds: float = float(os.getenv("SPEEDTEST_TIMEOUT_SECONDS", "10"))
     speedtest_skip_if_offline: bool = _env_bool("SPEEDTEST_SKIP_IF_OFFLINE", True)
 
+    # SMTP configuration for email notifications (all optional).
+    smtp_host: str | None = os.getenv("SMTP_HOST") or None
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user: str | None = os.getenv("SMTP_USER") or None
+    smtp_password: str | None = os.getenv("SMTP_PASSWORD") or None
+    smtp_from: str | None = os.getenv("SMTP_FROM") or None
+    smtp_to: str | None = os.getenv("SMTP_TO") or None
+    smtp_use_tls: bool = _env_bool("SMTP_USE_TLS", True)
+    smtp_min_outage_seconds: int = int(os.getenv("SMTP_MIN_OUTAGE_SECONDS", "60"))
+
+    @property
+    def smtp_enabled(self) -> bool:
+        return bool(self.smtp_host and self.smtp_user and self.smtp_password and self.smtp_to)
+
     @property
     def db_path(self) -> str:
         return os.path.join(self.data_dir, "app.db")

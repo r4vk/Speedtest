@@ -5,7 +5,8 @@ Minimalistyczna aplikacja (FastAPI + SQLite) do:
 - monitoringu łączności z internetem co `CONNECT_INTERVAL_SECONDS`,
 - testu prędkości pobierania co `SPEEDTEST_INTERVAL_SECONDS`,
 - podglądu wykresu w UI,
-- eksportu CSV oraz raportu jakości usługi (awarie + czas niedostępności).
+- eksportu CSV oraz raportu jakości usługi (awarie + czas niedostępności),
+- powiadomień email (SMTP) o awariach i przywróceniu łączności.
 
 ## Konfiguracja
 
@@ -50,6 +51,50 @@ docker run -d --name r4vk-speedtest \
 ```
 
 W Container Manager (DSM 7.2+): Volume Settings → Add File → `/etc/localtime` → `/etc/localtime` (Read-Only).
+
+### Powiadomienia email (SMTP)
+
+Aplikacja może wysyłać powiadomienia email o awariach i przywróceniu łączności. Konfiguracja przez zmienne środowiskowe:
+
+- `SMTP_HOST` – serwer SMTP (np. `smtp.gmail.com`, `smtp-mail.outlook.com`, `poczta.interia.pl`)
+- `SMTP_PORT` – port SMTP (domyślnie: `587`)
+- `SMTP_USER` – login/email do autoryzacji
+- `SMTP_PASSWORD` – hasło (dla Gmail użyj "App Password")
+- `SMTP_FROM` – adres nadawcy (opcjonalnie, domyślnie = `SMTP_USER`)
+- `SMTP_TO` – adres odbiorcy powiadomień
+- `SMTP_USE_TLS` – czy używać STARTTLS (domyślnie: `true`)
+- `SMTP_MIN_OUTAGE_SECONDS` – minimalna długość awarii do wysłania maila (domyślnie: `60`)
+
+Powiadomienia są wysyłane **tylko po przywróceniu** internetu (gdy awaria się skończy i trwała dłużej niż `SMTP_MIN_OUTAGE_SECONDS`).
+
+#### Przykłady konfiguracji
+
+**Gmail** (wymaga [App Password](https://support.google.com/accounts/answer/185833)):
+```bash
+-e SMTP_HOST=smtp.gmail.com \
+-e SMTP_PORT=587 \
+-e SMTP_USER=twoj-email@gmail.com \
+-e SMTP_PASSWORD=xxxx-xxxx-xxxx-xxxx \
+-e SMTP_TO=odbiorca@example.com
+```
+
+**Outlook/Live**:
+```bash
+-e SMTP_HOST=smtp-mail.outlook.com \
+-e SMTP_PORT=587 \
+-e SMTP_USER=twoj-email@outlook.com \
+-e SMTP_PASSWORD=twoje-haslo \
+-e SMTP_TO=odbiorca@example.com
+```
+
+**Interia**:
+```bash
+-e SMTP_HOST=poczta.interia.pl \
+-e SMTP_PORT=587 \
+-e SMTP_USER=twoj-email@interia.pl \
+-e SMTP_PASSWORD=twoje-haslo \
+-e SMTP_TO=odbiorca@example.com
+```
 
 ## Uruchomienie lokalnie
 

@@ -13,6 +13,14 @@ services:
       # - SPEEDTEST_URL=https://example.com/largefile.iso
       # - SPEEDTEST_INTERVAL_SECONDS=900
       # - CONNECT_TARGET=google.com
+      # SMTP notifications (uncomment and fill to enable):
+      # - SMTP_HOST=smtp.gmail.com
+      # - SMTP_PORT=587
+      # - SMTP_USER=your-email@gmail.com
+      # - SMTP_PASSWORD=your-app-password
+      # - SMTP_FROM=your-email@gmail.com
+      # - SMTP_TO=recipient@example.com
+      # - SMTP_USE_TLS=true
 
 volumes:
   speedtest-data:
