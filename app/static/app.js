@@ -9,6 +9,44 @@ function paramsFromInputs() {
   return params;
 }
 
+function isoWithOffset(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const y = date.getFullYear();
+  const m = pad(date.getMonth() + 1);
+  const d = pad(date.getDate());
+  const hh = pad(date.getHours());
+  const mm = pad(date.getMinutes());
+  const ss = pad(date.getSeconds());
+  const tz = -date.getTimezoneOffset(); // minutes
+  const sign = tz >= 0 ? "+" : "-";
+  const tzh = pad(Math.floor(Math.abs(tz) / 60));
+  const tzm = pad(Math.abs(tz) % 60);
+  return `${y}-${m}-${d}T${hh}:${mm}:${ss}${sign}${tzh}:${tzm}`;
+}
+
+function initDatePickers() {
+  if (typeof flatpickr !== "function") return;
+  const common = {
+    enableTime: true,
+    time_24hr: true,
+    seconds: false,
+    allowInput: true,
+    dateFormat: "Y-m-d H:i",
+  };
+  flatpickr(qs("from"), {
+    ...common,
+    onChange: (selectedDates, _dateStr, instance) => {
+      if (selectedDates?.[0]) instance.input.value = isoWithOffset(selectedDates[0]);
+    },
+  });
+  flatpickr(qs("to"), {
+    ...common,
+    onChange: (selectedDates, _dateStr, instance) => {
+      if (selectedDates?.[0]) instance.input.value = isoWithOffset(selectedDates[0]);
+    },
+  });
+}
+
 function formatSeconds(sec) {
   const s = Math.floor(sec);
   const h = Math.floor(s / 3600);
@@ -359,6 +397,7 @@ for (const r of document.querySelectorAll("input[name='speedtest-mode']")) {
 }
 
  (async () => {
+  initDatePickers();
   await loadConfig();
   await refreshAll();
   setInterval(loadStatus, 2000);

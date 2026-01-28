@@ -129,6 +129,46 @@ button:hover, .linkbtn:hover { border-color: rgba(255,255,255,.2); }
 .outage { padding: 10px; border: 1px solid var(--border); border-radius: 12px; color: var(--muted); font-size: 12px; }
 .footer { margin-top: 14px; color: var(--muted); font-size: 12px; }
 code { color: #c7d2fe; }
+
+/* flatpickr (dark-ish overrides) */
+.flatpickr-calendar {
+  background: rgba(18,26,51,0.98);
+  border: 1px solid var(--border);
+  box-shadow: 0 14px 40px rgba(0,0,0,.45);
+}
+.flatpickr-months .flatpickr-month,
+.flatpickr-weekdays,
+.flatpickr-weekday {
+  background: transparent;
+  color: var(--muted);
+}
+.flatpickr-current-month .flatpickr-monthDropdown-months,
+.flatpickr-current-month input.cur-year {
+  color: var(--text);
+}
+.flatpickr-day {
+  color: rgba(231,236,255,.9);
+}
+.flatpickr-day:hover,
+.flatpickr-day:focus {
+  background: rgba(99,102,241,.18);
+  border-color: rgba(99,102,241,.35);
+}
+.flatpickr-day.selected,
+.flatpickr-day.selected:hover,
+.flatpickr-day.startRange,
+.flatpickr-day.endRange {
+  background: rgba(99,102,241,.9);
+  border-color: rgba(99,102,241,.9);
+  color: white;
+}
+.flatpickr-time input,
+.flatpickr-time .flatpickr-am-pm {
+  color: var(--text);
+}
+.flatpickr-time {
+  border-top: 1px solid var(--border);
+}
 @media (max-width: 900px) {
   .grid { grid-template-columns: 1fr; }
   .range { grid-template-columns: 1fr 1fr; }
