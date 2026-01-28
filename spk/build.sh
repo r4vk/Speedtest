@@ -3,6 +3,12 @@ set -euo pipefail
 
 export COPYFILE_DISABLE=1
 
+TAR_BIN="${TAR_BIN:-tar}"
+TAR_FLAGS=()
+if "${TAR_BIN}" --version 2>/dev/null | rg -qi "bsdtar"; then
+  TAR_FLAGS+=(--no-mac-metadata --no-xattrs --no-acls --no-fflags)
+fi
+
 VERSION="${1:-}"
 if [[ -z "${VERSION}" ]]; then
   echo "Usage: ./build.sh <version>  (np. ./build.sh 0.0.1)" >&2
@@ -29,11 +35,9 @@ sed \
 rm -f "${WORK_DIR}/INFO.in"
 
 # Build payload tarball
-tar --no-mac-metadata --no-xattrs --no-acls --no-fflags \
-  -C "${ROOT_DIR}/src/package" -czf "${WORK_DIR}/package.tgz" .
+"${TAR_BIN}" "${TAR_FLAGS[@]}" -C "${ROOT_DIR}/src/package" -czf "${WORK_DIR}/package.tgz" .
 
 # Build SPK (tar archive)
-tar --no-mac-metadata --no-xattrs --no-acls --no-fflags \
-  -C "${WORK_DIR}" -cf "${OUT_DIR}/${PKG}_${VERSION}.spk" INFO package.tgz scripts
+"${TAR_BIN}" "${TAR_FLAGS[@]}" -C "${WORK_DIR}" -cf "${OUT_DIR}/${PKG}_${VERSION}.spk" INFO package.tgz scripts
 
 echo "Built: ${OUT_DIR}/${PKG}_${VERSION}.spk"
