@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Speedtest Monitor</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>Speedtest Monitor</h1>
+        <div class="badges">
+          <span id="badge-online" class="badge badge-gray">...</span>
+          <span id="badge-last" class="badge badge-gray">...</span>
+        </div>
+      </header>
+
+      <section class="panel">
+        <h2>Zakres</h2>
+        <div class="range">
+          <label>
+            Od (ISO)
+            <input id="from" type="text" placeholder="2026-01-28T00:00:00Z" />
+          </label>
+          <label>
+            Do (ISO)
+            <input id="to" type="text" placeholder="2026-01-28T23:59:59Z" />
+          </label>
+          <button id="refresh">Odśwież</button>
+          <a id="export-speed" class="linkbtn" href="#">CSV: prędkość</a>
+          <a id="export-outages" class="linkbtn" href="#">CSV: awarie</a>
+        </div>
+        <p class="hint">Puste pola = ostatnie 24h.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Ustawienia</h2>
+        <div class="settings">
+          <label>
+            Test internetu (URL lub host)
+            <input id="cfg-connect-target" type="text" placeholder="google.com" />
+          </label>
+          <label>
+            Interwał testu internetu (sek)
+            <input id="cfg-connect-interval" type="number" min="0.2" step="0.1" />
+          </label>
+          <label>
+            URL testu prędkości (ftp/http/https)
+            <input id="cfg-speed-url" type="text" placeholder="https://..." />
+          </label>
+          <label>
+            Interwał testu prędkości (sek)
+            <input id="cfg-speed-interval" type="number" min="1" step="1" />
+          </label>
+          <button id="cfg-save">Zapisz</button>
+          <span id="cfg-msg" class="cfgmsg"></span>
+        </div>
+        <p class="hint">
+          Ustawienia zapisują się w bazie SQLite (w wolumenie). Zmiany działają bez restartu.
+        </p>
+      </section>
+
+      <section class="grid">
+        <section class="panel">
+          <h2>Wykres prędkości (Mbps)</h2>
+          <canvas id="speedChart" height="120"></canvas>
+        </section>
+
+        <section class="panel">
+          <h2>Jakość usługi</h2>
+          <div id="quality" class="quality">
+            <div class="qitem"><span class="qlabel">Awarie</span><span id="q-incidents" class="qvalue">-</span></div>
+            <div class="qitem"><span class="qlabel">Czas awarii</span><span id="q-downtime" class="qvalue">-</span></div>
+            <div class="qitem"><span class="qlabel">% okresu</span><span id="q-percent" class="qvalue">-</span></div>
+          </div>
+          <details class="details">
+            <summary>Lista awarii w zakresie</summary>
+            <div id="outagesList" class="outages"></div>
+          </details>
+        </section>
+      </section>
+
+      <footer class="footer">
+        <span>API: <code>/api/status</code>, <code>/api/speed</code>, <code>/api/report/quality</code></span>
+      </footer>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

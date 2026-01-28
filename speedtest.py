@@ -72,7 +72,6 @@ while True:
     if os.path.exists(file_path):
         os.remove(file_path)
 
-    # Zresetuj flagę i poczekaj 5 minut przed kolejnym pomiarem
+    # Zresetuj flagę i poczekaj 15 minut przed kolejnym pomiarem
     stop_thread = False
-    time.sleep(300)
-
+    time.sleep(900 - 30)
