@@ -8,12 +8,11 @@ distributor="r4vk"
 distributor_url="https://github.com/r4vk/Speedtest"
 support_url="https://github.com/r4vk/Speedtest/issues"
 
-# DSM7 / DS220+ (apollolake). Jeśli chcesz wspierać więcej modeli, dopisz arch.
-arch="apollolake"
+# DS220+ to x86_64 (Gemini Lake Refresh). Używamy arch=x86_64, żeby działało na większości modeli Intel/AMD.
+arch="x86_64"
 os_min_ver="7.0-40000"
 
 startable="yes"
 reloadui="yes"
 silent_install="yes"
 silent_upgrade="yes"
-

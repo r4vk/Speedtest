@@ -28,3 +28,6 @@ Po instalacji (DSM):
 - plik konfiguracyjny: `/var/packages/r4vk-speedtest/etc/config.env`
 - potem zrestartuj pakiet.
 
+## DS220+
+
+DS220+ jest `x86_64` (Intel), więc wybieraj SPK dla `x86_64`.
