@@ -1,0 +1,97 @@
+name: Release Docker image tarballs
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          file: ./app/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: r4vk-speedtest:${{ steps.ver.outputs.version }}-amd64
+          build-args: |
+            APP_VERSION=${{ steps.ver.outputs.version }}
+
+      - name: Save tar (linux/amd64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          docker save r4vk-speedtest:${{ steps.ver.outputs.version }}-amd64 -o dist/r4vk-speedtest_${{ steps.ver.outputs.version }}_linux_amd64.tar
+
+      - name: Build (linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          file: ./app/Dockerfile
+          platforms: linux/arm64
+          load: true
+          tags: r4vk-speedtest:${{ steps.ver.outputs.version }}-arm64
+          build-args: |
+            APP_VERSION=${{ steps.ver.outputs.version }}
+
+      - name: Save tar (linux/arm64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker save r4vk-speedtest:${{ steps.ver.outputs.version }}-arm64 -o dist/r4vk-speedtest_${{ steps.ver.outputs.version }}_linux_arm64.tar
+
+      - name: Add instructions
+        shell: bash
+        run: |
+          cat > dist/README.txt <<'TXT'
+          Speedtest Monitor - Docker image tarballs
+
+          1) Download the tar matching your CPU arch:
+             - linux/amd64: Intel/AMD x86_64
+             - linux/arm64: ARM64 (np. część NAS-ów Synology)
+
+          2) Import image:
+             docker load -i r4vk-speedtest_<VERSION>_linux_amd64.tar
+             # albo:
+             docker load -i r4vk-speedtest_<VERSION>_linux_arm64.tar
+
+          3) Run (persistent DB in volume):
+             docker volume create r4vk-speedtest-data
+             docker run -d --name r4vk-speedtest -p 8000:8000 -v r4vk-speedtest-data:/data r4vk-speedtest:<VERSION>-<arch>
+
+          UI: http://localhost:8000
+          TXT
+
+      - name: Create GitHub Release + upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar
+            dist/README.txt
+
