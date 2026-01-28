@@ -19,7 +19,7 @@ class AppConfig:
     connect_target: str = os.getenv("CONNECT_TARGET", "google.com")
     connect_default_port: int = int(os.getenv("CONNECT_DEFAULT_PORT", "443"))
     connect_timeout_seconds: float = float(os.getenv("CONNECT_TIMEOUT_SECONDS", "1"))
-    connect_interval_seconds: float = float(os.getenv("CONNECT_INTERVAL_SECONDS", "1"))
+    connect_interval_seconds: float = float(os.getenv("CONNECT_INTERVAL_SECONDS", "5"))
 
     # Domyślny plik (user może zmienić przez UI).
     speedtest_url: str | None = os.getenv(

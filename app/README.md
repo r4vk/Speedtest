@@ -19,7 +19,7 @@ ENV dalej działa jako wartości startowe / domyślne.
 - `CONNECT_TARGET` (domyślnie: `google.com`)
 - `CONNECT_DEFAULT_PORT` (domyślnie: `443`)
 - `CONNECT_TIMEOUT_SECONDS` (domyślnie: `1`)
-- `CONNECT_INTERVAL_SECONDS` (domyślnie: `1`)
+- `CONNECT_INTERVAL_SECONDS` (domyślnie: `5`)
 
 Test łączności jest robiony przez szybkie połączenie TCP (host/URL → host+port) – działa w kontenerze bez uprawnień do ICMP.
 

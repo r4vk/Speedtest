@@ -74,7 +74,7 @@ Większość ustawień można zmienić w UI (Ustawienia). Zmienne środowiskowe 
 |---------|-----------|------|
 | `CONNECT_TARGET` | `google.com` | Host do sprawdzania łączności |
 | `CONNECT_DEFAULT_PORT` | `443` | Port TCP |
-| `CONNECT_INTERVAL_SECONDS` | `1` | Interwał sprawdzania (sekundy) |
+| `CONNECT_INTERVAL_SECONDS` | `5` | Interwał sprawdzania (sekundy) |
 | `CONNECT_TIMEOUT_SECONDS` | `1` | Timeout połączenia |
 
 ### Test prędkości

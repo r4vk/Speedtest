@@ -3,7 +3,7 @@ name: Release Docker image tarballs
 on:
   push:
     tags:
-      - "v*"
+      - "[0-9]*"
 
 permissions:
   contents: write
