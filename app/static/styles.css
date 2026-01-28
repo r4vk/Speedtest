@@ -128,6 +128,8 @@ button:hover, .linkbtn:hover { border-color: rgba(255,255,255,.2); }
 .outages { display: grid; gap: 8px; margin-top: 10px; }
 .outage { padding: 10px; border: 1px solid var(--border); border-radius: 12px; color: var(--muted); font-size: 12px; }
 .footer { margin-top: 14px; color: var(--muted); font-size: 12px; }
+.footer { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.footer-right { margin-left: auto; }
 code { color: #c7d2fe; }
 
 /* flatpickr (dark-ish overrides) */

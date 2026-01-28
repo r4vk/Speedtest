@@ -1,0 +1,92 @@
+name: Build Docker image artifact
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(git describe --tags --always --dirty)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          file: ./app/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: r4vk-speedtest:${{ steps.ver.outputs.version }}-amd64
+          build-args: |
+            APP_VERSION=${{ steps.ver.outputs.version }}
+
+      - name: Save artifact (linux/amd64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          docker save r4vk-speedtest:${{ steps.ver.outputs.version }}-amd64 -o artifact/r4vk-speedtest_${{ steps.ver.outputs.version }}_linux_amd64.tar
+
+      - name: Build (linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          file: ./app/Dockerfile
+          platforms: linux/arm64
+          load: true
+          tags: r4vk-speedtest:${{ steps.ver.outputs.version }}-arm64
+          build-args: |
+            APP_VERSION=${{ steps.ver.outputs.version }}
+
+      - name: Save artifact (linux/arm64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker save r4vk-speedtest:${{ steps.ver.outputs.version }}-arm64 -o artifact/r4vk-speedtest_${{ steps.ver.outputs.version }}_linux_arm64.tar
+
+      - name: Add instructions
+        shell: bash
+        run: |
+          cat > artifact/README.txt <<'TXT'
+          Speedtest Monitor - Docker image artifact
+
+          1) Import image:
+             docker load -i r4vk-speedtest_<VERSION>_linux_amd64.tar
+             # lub:
+             docker load -i r4vk-speedtest_<VERSION>_linux_arm64.tar
+
+          2) Run (persistent DB in volume):
+             docker volume create r4vk-speedtest-data
+             docker run -d --name r4vk-speedtest -p 8000:8000 -v r4vk-speedtest-data:/data r4vk-speedtest:<VERSION>-<arch>
+
+          UI: http://localhost:8000
+          TXT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: r4vk-speedtest-image-${{ steps.ver.outputs.version }}
+          path: artifact/*
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,8 @@ ensure_default_setting(cfg.db_path, "speedtest_mode", "url")
 ensure_default_setting(cfg.db_path, "speedtest_url", cfg.speedtest_url or "")
 ensure_default_setting(cfg.db_path, "speedtest_interval_seconds", str(cfg.speedtest_interval_seconds))
 
-app = FastAPI(title="Speedtest Monitor", version="0.1.0")
+APP_VERSION = os.getenv("APP_VERSION", "dev")
+app = FastAPI(title="Speedtest Monitor", version=APP_VERSION)
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _STATIC_DIR = _BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
@@ -51,6 +53,11 @@ def index():
 @app.get("/healthz", include_in_schema=False)
 def healthz():
     return {"ok": True}
+
+
+@app.get("/api/version")
+def api_version():
+    return {"version": APP_VERSION}
 
 
 @app.on_event("startup")

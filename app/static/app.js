@@ -47,6 +47,18 @@ function initDatePickers() {
   });
 }
 
+async function loadVersion() {
+  try {
+    const resp = await fetch("/api/version");
+    const data = await resp.json();
+    const el = qs("app-version");
+    if (el) el.textContent = data.version ?? "dev";
+  } catch {
+    const el = qs("app-version");
+    if (el) el.textContent = "dev";
+  }
+}
+
 function formatSeconds(sec) {
   const s = Math.floor(sec);
   const h = Math.floor(s / 3600);
@@ -408,6 +420,7 @@ for (const r of document.querySelectorAll("input[name='speedtest-mode']")) {
 
  (async () => {
   initDatePickers();
+  loadVersion();
   await loadConfig();
   await refreshAll();
   setInterval(loadStatus, 2000);

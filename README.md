@@ -9,3 +9,6 @@ To repo zawiera:
 
 Dokumentacja uruchomienia i konfiguracji: `app/README.md`.
 
+## License
+
+Projekt udostępniony na licencji **PolyForm Noncommercial 1.0.0** (możesz używać i modyfikować, ale nie sprzedawać / nie używać komercyjnie): `LICENSE`.
