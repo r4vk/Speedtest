@@ -67,23 +67,43 @@ UI: `http://localhost:8000`
 
 ## Docker (Synology)
 
-### Build
+### Docker Compose (zalecane)
+
+```bash
+cd Speedtest/app
+docker-compose up -d
+```
+
+Dane są przechowywane w named volume `speedtest-data` i przetrwają restarty oraz aktualizacje obrazu.
+
+### Aktualizacja do nowej wersji
+
+```bash
+docker-compose pull
+docker-compose up -d
+```
+
+Dane w `/data` (baza SQLite) są zachowywane dzięki volume.
+
+### Build lokalny
 
 ```bash
 cd Speedtest/app
 docker build -t r4vk-speedtest:latest .
 ```
 
-### Run
+### Run (bez compose)
 
 ```bash
 docker run -d --name r4vk-speedtest \
   -p 8000:8000 \
-  -e SPEEDTEST_URL='ftp://user:pass@host/path/to/file.iso' \
-  -e CONNECT_HOST='1.1.1.1' -e CONNECT_PORT='53' \
   -v r4vk-speedtest-data:/data \
-  r4vk-speedtest:latest
+  -v /etc/localtime:/etc/localtime:ro \
+  -e TZ=Europe/Warsaw \
+  ghcr.io/r4vk/speedtest:latest
 ```
+
+**Ważne:** Volume `-v r4vk-speedtest-data:/data` zapewnia persystencję danych między restartami i aktualizacjami.
 
 ## API (skrót)
 

@@ -1,0 +1,18 @@
+services:
+  speedtest:
+    image: ghcr.io/r4vk/speedtest:latest
+    container_name: r4vk-speedtest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - speedtest-data:/data
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - TZ=Europe/Warsaw
+      # - SPEEDTEST_URL=https://example.com/largefile.iso
+      # - SPEEDTEST_INTERVAL_SECONDS=900
+      # - CONNECT_TARGET=google.com
+
+volumes:
+  speedtest-data:
