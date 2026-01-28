@@ -21,10 +21,12 @@ function formatSeconds(sec) {
 
 let speedChart;
 let currentAvgMbps = 0;
+let lastLoadedConfig = null;
 
 async function loadConfig() {
   const resp = await fetch("/api/config");
   const cfg = await resp.json();
+  lastLoadedConfig = cfg;
   qs("cfg-connect-target").value = cfg.connect_target ?? "";
   qs("cfg-connect-interval").value = cfg.connect_interval_seconds ?? 1;
   const speedMode = cfg.speedtest_mode ?? "url";
@@ -80,7 +82,16 @@ async function saveConfig() {
     setCfgMsg(`Błąd zapisu: ${text}`, false);
     return;
   }
+  const newCfg = await resp.json();
   setCfgMsg("Zapisano.", true);
+  const modeChanged = (lastLoadedConfig?.speedtest_mode ?? "url") !== (newCfg?.speedtest_mode ?? "url");
+  const urlChanged = (lastLoadedConfig?.speedtest_url ?? "") !== (newCfg?.speedtest_url ?? "");
+  lastLoadedConfig = newCfg;
+
+  if (modeChanged || urlChanged) {
+    // po zmianie typu/usługi testu prędkości uruchom od razu pomiar
+    fetch("/api/speedtest/run", { method: "POST" }).catch(() => {});
+  }
   await refreshAll();
 }
 
@@ -123,14 +134,19 @@ async function loadStatus() {
   badgeOnline.textContent = isUp ? "Online" : "Offline";
   badgeOnline.className = `badge ${isUp ? "badge-ok" : "badge-bad"}`;
 
-  if (data.last_speed_test?.started_at) {
-    const mbps = (data.last_speed_test.mbps ?? 0).toFixed(1);
-    const err = data.last_speed_test.error ? ` (${data.last_speed_test.error})` : "";
-    badgeLast.textContent = `Ostatni test: ${mbps} Mbps${err}`;
-    badgeLast.className = `badge ${data.last_speed_test.error ? "badge-gray" : "badge-ok"}`;
-  } else {
-    badgeLast.textContent = "Ostatni test: brak";
+  if (data.speedtest_running) {
+    badgeLast.style.display = "";
+    badgeLast.textContent = "Trwa pomiar prędkości…";
     badgeLast.className = "badge badge-gray";
+  } else if (data.last_speed_test?.started_at && !data.last_speed_test?.error) {
+    badgeLast.style.display = "";
+    const mbps = (data.last_speed_test.mbps ?? 0).toFixed(1);
+    badgeLast.textContent = `Ostatni test: ${mbps} Mbps`;
+    badgeLast.className = "badge badge-ok";
+  } else {
+    // jeśli nie trwa pomiar, nie pokazuj komunikatu o błędzie
+    badgeLast.textContent = "";
+    badgeLast.style.display = "none";
   }
 }
 

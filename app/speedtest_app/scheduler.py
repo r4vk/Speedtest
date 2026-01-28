@@ -12,6 +12,7 @@ from .db import (
     record_speed_test,
 )
 from .ookla_speedtest import run_ookla
+from .runtime import get_runtime
 from .speedtest import run_speed_test
 from .time_utils import to_iso_z, utc_now
 
@@ -26,7 +27,66 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
         await asyncio.wait_for(stop.wait(), timeout=max(0.001, seconds))
         return True
     except asyncio.TimeoutError:
-        return False
+            return False
+
+
+async def run_speedtest_once(cfg: AppConfig) -> None:
+    runtime = get_runtime()
+    async with runtime.lock:
+        runtime.running = True
+        runtime.running_since_iso = to_iso_z(utc_now())
+        try:
+            values = get_settings(cfg.db_path, ["speedtest_mode", "speedtest_url"])
+            speedtest_mode = (values.get("speedtest_mode") or "url").strip()
+            speedtest_url = (values.get("speedtest_url") or cfg.speedtest_url or "").strip()
+
+            started_at = utc_now()
+            started_at_iso = to_iso_z(started_at)
+
+            error: str | None = None
+            bytes_downloaded = 0
+            duration_seconds = 0.0
+            mbps = 0.0
+
+            if cfg.speedtest_skip_if_offline:
+                current = get_current_connectivity_period(cfg.db_path)
+                if current is not None and not bool(current["is_up"]):
+                    error = "offline (skipped)"
+                    duration_seconds = 0.0
+
+            if error is None:
+                if speedtest_mode in {"speedtest.net", "speedtest.pl"}:
+                    result = await asyncio.to_thread(run_ookla, speedtest_mode, cfg.speedtest_timeout_seconds)
+                    error = result.error
+                    duration_seconds = result.duration_seconds
+                    mbps = result.download_mbps
+                    bytes_downloaded = 0
+                else:
+                    if speedtest_url:
+                        result = await asyncio.to_thread(
+                            run_speed_test,
+                            speedtest_url,
+                            cfg.speedtest_duration_seconds,
+                            cfg.speedtest_timeout_seconds,
+                        )
+                        error = result.error
+                        bytes_downloaded = result.bytes_downloaded
+                        duration_seconds = result.duration_seconds
+                        mbps = result.mbps
+                    else:
+                        error = "speedtest_url not set (skipped)"
+
+            record_speed_test(
+                cfg.db_path,
+                started_at_iso=started_at_iso,
+                duration_seconds=duration_seconds,
+                bytes_downloaded=bytes_downloaded,
+                mbps=mbps,
+                error=error,
+            )
+        finally:
+            runtime.running = False
+            runtime.running_since_iso = None
 
 
 async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
@@ -54,57 +114,13 @@ async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
 async def speedtest_loop(cfg: AppConfig, state: RunningState) -> None:
     while not state.stop.is_set():
         values = get_settings(cfg.db_path, ["speedtest_mode", "speedtest_url", "speedtest_interval_seconds"])
-        speedtest_mode = (values.get("speedtest_mode") or "url").strip()
-        speedtest_url = values.get("speedtest_url", cfg.speedtest_url or "")
         try:
             interval_seconds = float(values.get("speedtest_interval_seconds", str(cfg.speedtest_interval_seconds)))
         except ValueError:
             interval_seconds = cfg.speedtest_interval_seconds
         interval_seconds = max(1.0, interval_seconds)
 
-        started_at = utc_now()
-        started_at_iso = to_iso_z(started_at)
-
-        error: str | None = None
-        bytes_downloaded = 0
-        duration_seconds = 0.0
-        mbps = 0.0
-
-        if cfg.speedtest_skip_if_offline:
-            current = get_current_connectivity_period(cfg.db_path)
-            if current is not None and not bool(current["is_up"]):
-                error = "offline (skipped)"
-                duration_seconds = 0.0
-        if error is None:
-            if speedtest_mode in {"speedtest.net", "speedtest.pl"}:
-                result = await asyncio.to_thread(run_ookla, speedtest_mode, cfg.speedtest_timeout_seconds)
-                error = result.error
-                duration_seconds = result.duration_seconds
-                mbps = result.download_mbps
-                bytes_downloaded = 0
-            else:
-                if speedtest_url.strip():
-                    result = await asyncio.to_thread(
-                        run_speed_test,
-                        speedtest_url,
-                        cfg.speedtest_duration_seconds,
-                        cfg.speedtest_timeout_seconds,
-                    )
-                    error = result.error
-                    bytes_downloaded = result.bytes_downloaded
-                    duration_seconds = result.duration_seconds
-                    mbps = result.mbps
-                else:
-                    error = "speedtest_url not set (skipped)"
-
-        record_speed_test(
-            cfg.db_path,
-            started_at_iso=started_at_iso,
-            duration_seconds=duration_seconds,
-            bytes_downloaded=bytes_downloaded,
-            mbps=mbps,
-            error=error,
-        )
+        await run_speedtest_once(cfg)
 
         stopped = await _sleep_or_stop(state.stop, interval_seconds)
         if stopped:

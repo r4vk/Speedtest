@@ -24,7 +24,8 @@ from .db import (
     set_setting,
     get_settings,
 )
-from .scheduler import RunningState, connectivity_loop, speedtest_loop
+from .runtime import get_runtime, init_runtime
+from .scheduler import RunningState, connectivity_loop, run_speedtest_once, speedtest_loop
 from .time_utils import parse_range, to_iso_z, utc_now
 
 
@@ -54,6 +55,7 @@ def healthz():
 
 @app.on_event("startup")
 async def _startup() -> None:
+    init_runtime()
     state = RunningState(stop=asyncio.Event())
     app.state.running_state = state
     app.state.tasks = [
@@ -80,10 +82,13 @@ def api_status() -> dict[str, Any]:
     current = get_current_connectivity_period(cfg.db_path)
     last_speed = get_last_speed_test(cfg.db_path)
     eff = _effective_config()
+    rt = get_runtime()
     return {
         "now": to_iso_z(utc_now()),
         "connectivity": current,
         "last_speed_test": last_speed,
+        "speedtest_running": bool(rt.running),
+        "speedtest_running_since": rt.running_since_iso,
         "config": {
             "connect_target": eff.connect_target,
             "connect_interval_seconds": eff.connect_interval_seconds,
@@ -178,6 +183,19 @@ def api_update_config(update: ConfigUpdate):
     if cfg2.speedtest_interval_seconds <= 0:
         raise HTTPException(status_code=400, detail="speedtest_interval_seconds must be > 0")
     return cfg2
+
+
+@app.post("/api/speedtest/run")
+async def api_speedtest_run():
+    rt = get_runtime()
+    if rt.running:
+        return {"started": False, "running": True}
+
+    async def _run():
+        await run_speedtest_once(cfg)
+
+    asyncio.create_task(_run())
+    return {"started": True, "running": True}
 
 
 @app.get("/api/speed")
