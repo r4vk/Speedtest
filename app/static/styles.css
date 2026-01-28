@@ -69,9 +69,15 @@ h2 { margin: 0 0 10px 0; font-size: 16px; color: var(--text); }
 .badge-gray { background: rgba(100,116,139,.15); border-color: rgba(100,116,139,.35); }
 .range {
   display: grid;
-  grid-template-columns: 1fr 1fr auto auto auto;
+  grid-template-columns: 1fr 1fr;
   gap: 10px;
   align-items: end;
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
 }
  .settings {
   display: grid;
@@ -182,7 +188,30 @@ code { color: #c7d2fe; }
   flex-wrap: wrap;
   margin-top: 10px;
 }
-.modal-actions .cfgmsg { margin-left: auto; }
+.modal-actions .cfgmsg { flex: 1; }
+.paypal-link {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,112,243,.45);
+  background: rgba(255,255,255,.08);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13px;
+  transition: border-color .15s, background .15s;
+}
+.paypal-link:hover {
+  border-color: rgba(0,112,243,.7);
+  background: rgba(255,255,255,.12);
+}
+.paypal-link img {
+  height: 24px;
+  width: auto;
+  border-radius: 4px;
+}
 
 .btn-dirty {
   border-color: rgba(245,158,11,.85) !important;

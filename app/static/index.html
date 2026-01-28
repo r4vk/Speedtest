@@ -30,22 +30,15 @@
             Do (data i czas)
             <input id="to" type="text" placeholder="2026-01-28 23:59:59" />
           </label>
+        </div>
+        <div class="toolbar">
           <button id="refresh">Odśwież</button>
           <a id="export-speed" class="linkbtn" href="#">CSV: prędkość</a>
           <a id="export-outages" class="linkbtn" href="#">CSV: awarie</a>
           <a id="export-pings" class="linkbtn" href="#">CSV: pingi</a>
+          <button id="open-settings" class="btn-secondary" type="button">Ustawienia</button>
         </div>
         <p class="hint">Puste pola = ostatnie 24h.</p>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Ustawienia</h2>
-          <button id="open-settings" class="btn-secondary" type="button">Otwórz</button>
-        </div>
-        <p class="hint">
-          Ustawienia zapisują się w bazie SQLite (w wolumenie). Zmiany działają bez restartu.
-        </p>
       </section>
 
       <dialog id="settings-modal" class="modal">
@@ -84,6 +77,15 @@
             <button id="cfg-save" type="button">Zapisz</button>
             <button id="dismiss-settings" class="btn-secondary" type="button">Zamknij</button>
             <span id="cfg-msg" class="cfgmsg"></span>
+            <a
+              href="https://www.paypal.com/paypalme/kaweckir"
+              rel="noopener"
+              target="_blank"
+              class="paypal-link"
+            >
+              <span>Postaw kawę</span>
+              <img src="https://www.paypalobjects.com/webstatic/mktg/logo/pp_cc_mark_74x46.jpg" alt="PayPal" />
+            </a>
           </div>
         </div>
       </dialog>
