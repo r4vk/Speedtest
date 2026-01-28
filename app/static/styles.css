@@ -39,6 +39,14 @@ h2 { margin: 0 0 10px 0; font-size: 16px; color: var(--text); }
   padding: 14px;
   backdrop-filter: blur(10px);
 }
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.panel-head h2 { margin-bottom: 0; }
 .grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
@@ -119,6 +127,15 @@ button, .linkbtn {
   font-size: 13px;
 }
 button:hover, .linkbtn:hover { border-color: rgba(255,255,255,.2); }
+.btn-secondary { opacity: 0.92; }
+.iconbtn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 10px;
+  font-size: 18px;
+  line-height: 1;
+}
 .hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
 .quality { display: grid; gap: 10px; }
 .qitem { display:flex; justify-content: space-between; gap: 10px; padding: 10px; border-radius: 12px; border: 1px solid var(--border); }
@@ -131,6 +148,51 @@ button:hover, .linkbtn:hover { border-color: rgba(255,255,255,.2); }
 .footer { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .footer-right { margin-left: auto; }
 code { color: #c7d2fe; }
+
+/* Modal */
+.modal {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+}
+.modal::backdrop {
+  background: rgba(2,6,23,0.72);
+  backdrop-filter: blur(4px);
+}
+.modal-card {
+  width: min(980px, calc(100vw - 28px));
+  background: rgba(18,26,51,0.92);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.modal-head h3 { margin: 0; font-size: 16px; color: var(--text); }
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.modal-actions .cfgmsg { margin-left: auto; }
+
+.btn-dirty {
+  border-color: rgba(245,158,11,.85) !important;
+  box-shadow: 0 0 0 3px rgba(245,158,11,.18);
+  animation: btnpulse 1.25s ease-in-out infinite;
+}
+@keyframes btnpulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(245,158,11,.14); }
+  50% { box-shadow: 0 0 0 6px rgba(245,158,11,.22); }
+}
 
 /* flatpickr (dark-ish overrides) */
 .flatpickr-calendar {

@@ -51,6 +51,49 @@ function formatSeconds(sec) {
 let speedChart;
 let currentAvgMbps = 0;
 let lastLoadedConfig = null;
+let lastIsUp = null;
+let lastSpeedTestId = null;
+let timeSeriesRefreshInFlight = null;
+let lastTimeSeriesRefreshAtMs = 0;
+const AUTO_SERIES_REFRESH_MS = 30_000;
+let cfgDirty = false;
+
+function setCfgDirty(isDirty) {
+  cfgDirty = Boolean(isDirty);
+  const btn = qs("cfg-save");
+  if (!btn) return;
+  btn.classList.toggle("btn-dirty", cfgDirty);
+}
+
+function normalizeNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function currentConfigDraft() {
+  return {
+    connect_target: qs("cfg-connect-target").value.trim(),
+    connect_interval_seconds: normalizeNum(qs("cfg-connect-interval").value),
+    speedtest_mode: selectedSpeedtestMode(),
+    speedtest_url: qs("cfg-speed-url").value.trim(),
+    speedtest_interval_seconds: normalizeNum(qs("cfg-speed-interval").value),
+  };
+}
+
+function isDraftDifferent(draft, cfg) {
+  if (!cfg) return false;
+  if ((cfg.connect_target ?? "").trim() !== (draft.connect_target ?? "").trim()) return true;
+  if (normalizeNum(cfg.connect_interval_seconds) !== normalizeNum(draft.connect_interval_seconds)) return true;
+  if ((cfg.speedtest_mode ?? "url") !== (draft.speedtest_mode ?? "url")) return true;
+  if ((cfg.speedtest_url ?? "").trim() !== (draft.speedtest_url ?? "").trim()) return true;
+  if (normalizeNum(cfg.speedtest_interval_seconds) !== normalizeNum(draft.speedtest_interval_seconds)) return true;
+  return false;
+}
+
+function updateCfgDirty() {
+  const draft = currentConfigDraft();
+  setCfgDirty(isDraftDifferent(draft, lastLoadedConfig));
+}
 
 async function loadConfig() {
   const resp = await fetch("/api/config");
@@ -64,6 +107,7 @@ async function loadConfig() {
   qs("cfg-speed-url").value = cfg.speedtest_url ?? "";
   qs("cfg-speed-interval").value = cfg.speedtest_interval_seconds ?? 900;
   applySpeedtestModeUi(speedMode);
+  setCfgDirty(false);
 }
 
 function setCfgMsg(text, ok) {
@@ -117,6 +161,7 @@ async function saveConfig() {
   const urlChanged = (lastLoadedConfig?.speedtest_url ?? "") !== (newCfg?.speedtest_url ?? "");
   const intervalChanged = Number(lastLoadedConfig?.speedtest_interval_seconds ?? 0) !== Number(newCfg?.speedtest_interval_seconds ?? 0);
   lastLoadedConfig = newCfg;
+  setCfgDirty(false);
 
   if (modeChanged || urlChanged || intervalChanged) {
     // po zmianie typu/usługi testu prędkości uruchom od razu pomiar
@@ -177,6 +222,7 @@ async function loadStatus() {
   const badgeLast = qs("badge-last");
 
   const isUp = data.connectivity?.is_up === 1;
+  const lastSpeedId = (typeof data.last_speed_test?.id === "number") ? data.last_speed_test.id : null;
   badgeOnline.textContent = isUp ? "Online" : "Offline";
   badgeOnline.className = `badge ${isUp ? "badge-ok" : "badge-bad"}`;
 
@@ -225,6 +271,17 @@ async function loadStatus() {
 
     badgeLast.textContent = "";
     badgeLast.style.display = "none";
+  }
+
+  const connectivityChanged = (lastIsUp !== null) && (isUp !== lastIsUp);
+  const speedTestChanged = (lastSpeedTestId !== null) && (lastSpeedId !== null) && (lastSpeedId !== lastSpeedTestId);
+  lastIsUp = isUp;
+  lastSpeedTestId = lastSpeedId;
+
+  const followNow = !qs("to").value.trim();
+  const dueToTime = followNow && lastTimeSeriesRefreshAtMs && (Date.now() - lastTimeSeriesRefreshAtMs > AUTO_SERIES_REFRESH_MS);
+  if (connectivityChanged || speedTestChanged || dueToTime) {
+    scheduleTimeSeriesRefresh();
   }
 }
 
@@ -432,15 +489,36 @@ function refreshExports() {
   qs("export-outages").href = `/api/export/outages.csv${q ? "?" + q : ""}`;
 }
 
+async function refreshTimeSeries() {
+  refreshExports();
+  await Promise.all([loadChart(), loadQuality(), loadOutagesList()]);
+}
+
+function scheduleTimeSeriesRefresh() {
+  if (timeSeriesRefreshInFlight) return;
+  timeSeriesRefreshInFlight = (async () => {
+    try {
+      await refreshTimeSeries();
+      lastTimeSeriesRefreshAtMs = Date.now();
+    } finally {
+      timeSeriesRefreshInFlight = null;
+    }
+  })();
+}
+
 async function refreshAll() {
   refreshExports();
   await Promise.all([loadStatus(), loadChart(), loadQuality(), loadOutagesList()]);
+  lastTimeSeriesRefreshAtMs = Date.now();
 }
 
 qs("refresh").addEventListener("click", refreshAll);
 qs("cfg-save").addEventListener("click", saveConfig);
 for (const r of document.querySelectorAll("input[name='speedtest-mode']")) {
-  r.addEventListener("change", () => applySpeedtestModeUi(selectedSpeedtestMode()));
+  r.addEventListener("change", () => {
+    applySpeedtestModeUi(selectedSpeedtestMode());
+    updateCfgDirty();
+  });
 }
 
  (async () => {
@@ -452,3 +530,39 @@ for (const r of document.querySelectorAll("input[name='speedtest-mode']")) {
 })().catch((e) => {
   console.error(e);
 });
+
+function getSettingsDialog() {
+  return qs("settings-modal");
+}
+
+function openSettings() {
+  const dlg = getSettingsDialog();
+  if (!dlg) return;
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "open");
+}
+
+function closeSettings() {
+  const dlg = getSettingsDialog();
+  if (!dlg) return;
+  if (typeof dlg.close === "function") dlg.close();
+  else dlg.removeAttribute("open");
+}
+
+qs("open-settings")?.addEventListener("click", openSettings);
+qs("close-settings")?.addEventListener("click", closeSettings);
+qs("dismiss-settings")?.addEventListener("click", closeSettings);
+
+getSettingsDialog()?.addEventListener("click", (e) => {
+  const dlg = getSettingsDialog();
+  if (dlg && e.target === dlg) closeSettings();
+});
+
+for (const el of [
+  qs("cfg-connect-target"),
+  qs("cfg-connect-interval"),
+  qs("cfg-speed-url"),
+  qs("cfg-speed-interval"),
+]) {
+  el?.addEventListener("input", updateCfgDirty);
+}

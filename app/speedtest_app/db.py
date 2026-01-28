@@ -64,6 +64,19 @@ def ensure_db(db_path: str) -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS connectivity_checks (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              checked_at TEXT NOT NULL,
+              is_up INTEGER NOT NULL CHECK (is_up IN (0,1)),
+              latency_ms REAL NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_connectivity_checks_checked_at ON connectivity_checks(checked_at)"
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS speed_tests (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               started_at TEXT NOT NULL,
@@ -185,6 +198,20 @@ def record_connectivity(db_path: str, is_up: bool, now_iso: str | None = None) -
         )
 
 
+def record_connectivity_check(
+    db_path: str,
+    is_up: bool,
+    checked_at_iso: str | None = None,
+    latency_ms: float | None = None,
+) -> None:
+    checked_at_iso = checked_at_iso or _utc_now_iso()
+    with db_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO connectivity_checks(checked_at, is_up, latency_ms) VALUES (?,?,?)",
+            (checked_at_iso, 1 if is_up else 0, latency_ms),
+        )
+
+
 def record_speed_test(
     db_path: str,
     started_at_iso: str,
@@ -289,5 +316,19 @@ def query_connectivity_periods(db_path: str, tr: TimeRange, is_up: bool | None =
             ORDER BY started_at ASC
             """,
             tuple(params),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def query_connectivity_checks(db_path: str, tr: TimeRange):
+    with db_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT checked_at, is_up, latency_ms
+            FROM connectivity_checks
+            WHERE checked_at >= ? AND checked_at <= ?
+            ORDER BY checked_at ASC
+            """,
+            (tr.start_iso, tr.end_iso),
         ).fetchall()
         return [dict(r) for r in rows]

@@ -38,37 +38,54 @@
       </section>
 
       <section class="panel">
-        <h2>Ustawienia</h2>
-        <div class="settings">
-          <label>
-            Test internetu (URL lub host)
-            <input id="cfg-connect-target" type="text" placeholder="google.com" />
-          </label>
-          <label>
-            Interwał testu internetu (sek)
-            <input id="cfg-connect-interval" type="number" min="0.2" step="0.1" />
-          </label>
-          <div class="radio-group">
-            <div class="rlabel">Test prędkości</div>
-            <label class="radio"><input type="radio" name="speedtest-mode" value="url" checked /> Plik URL</label>
-            <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.net" /> speedtest.net</label>
-            <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.pl" /> speedtest.pl</label>
-          </div>
-          <label>
-            URL testu prędkości (ftp/http/https)
-            <input id="cfg-speed-url" type="text" placeholder="https://..." />
-          </label>
-          <label>
-            Interwał testu prędkości (sek)
-            <input id="cfg-speed-interval" type="number" min="1" step="1" />
-          </label>
-          <button id="cfg-save">Zapisz</button>
-          <span id="cfg-msg" class="cfgmsg"></span>
+        <div class="panel-head">
+          <h2>Ustawienia</h2>
+          <button id="open-settings" class="btn-secondary" type="button">Otwórz</button>
         </div>
         <p class="hint">
           Ustawienia zapisują się w bazie SQLite (w wolumenie). Zmiany działają bez restartu.
         </p>
       </section>
+
+      <dialog id="settings-modal" class="modal">
+        <div class="modal-card">
+          <div class="modal-head">
+            <h3>Ustawienia</h3>
+            <button id="close-settings" class="iconbtn" type="button" aria-label="Zamknij">×</button>
+          </div>
+
+          <div class="settings">
+            <label>
+              Test internetu (URL lub host)
+              <input id="cfg-connect-target" type="text" placeholder="google.com" />
+            </label>
+            <label>
+              Interwał testu internetu (sek)
+              <input id="cfg-connect-interval" type="number" min="0.2" step="0.1" />
+            </label>
+            <div class="radio-group">
+              <div class="rlabel">Test prędkości</div>
+              <label class="radio"><input type="radio" name="speedtest-mode" value="url" checked /> Plik URL</label>
+              <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.net" /> speedtest.net</label>
+              <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.pl" /> speedtest.pl</label>
+            </div>
+            <label>
+              URL testu prędkości (ftp/http/https)
+              <input id="cfg-speed-url" type="text" placeholder="https://..." />
+            </label>
+            <label>
+              Interwał testu prędkości (sek)
+              <input id="cfg-speed-interval" type="number" min="1" step="1" />
+            </label>
+          </div>
+
+          <div class="modal-actions">
+            <button id="cfg-save" type="button">Zapisz</button>
+            <button id="dismiss-settings" class="btn-secondary" type="button">Zamknij</button>
+            <span id="cfg-msg" class="cfgmsg"></span>
+          </div>
+        </div>
+      </dialog>
 
       <section class="grid">
         <section class="panel">

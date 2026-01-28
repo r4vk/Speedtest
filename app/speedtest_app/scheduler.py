@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -10,6 +11,7 @@ from .db import (
     get_settings,
     get_current_connectivity_period,
     record_connectivity,
+    record_connectivity_check,
     record_speed_test,
 )
 from .ookla_speedtest import run_ookla
@@ -127,13 +129,17 @@ async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
             interval_seconds = cfg.connect_interval_seconds
         interval_seconds = max(0.1, interval_seconds)
 
+        t0 = time.perf_counter()
         is_up = await asyncio.to_thread(
             check_target,
             connect_target,
             cfg.connect_default_port,
             cfg.connect_timeout_seconds,
         )
-        record_connectivity(cfg.db_path, is_up=is_up, now_iso=to_iso_z(utc_now()))
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        now_iso = to_iso_z(utc_now())
+        record_connectivity_check(cfg.db_path, is_up=is_up, checked_at_iso=now_iso, latency_ms=dt_ms)
+        record_connectivity(cfg.db_path, is_up=is_up, now_iso=now_iso)
         # Interwał liczony od początku doby (lokalna strefa czasowa kontenera/hosta).
         stopped = await _sleep_or_stop(state.stop, _seconds_until_next_aligned(interval_seconds))
         if stopped:

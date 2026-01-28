@@ -22,6 +22,7 @@ from .db import (
     get_last_speed_test,
     get_last_success_speed_test,
     query_connectivity_periods,
+    query_connectivity_checks,
     query_speed_tests,
     set_setting,
     get_settings,
@@ -256,6 +257,26 @@ def api_outages(
         ended_at = to_local_iso(parse_dt(r["ended_at"])) if r["ended_at"] else to_local_iso(utc_now())
         items.append({"started_at": started_at, "ended_at": ended_at})
 
+    return {"range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)}, "items": items}
+
+
+@app.get("/api/pings")
+def api_pings(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+) -> dict[str, Any]:
+    pr = parse_range(from_, to)
+    tr = TimeRange(start_iso=to_iso_z(pr.start), end_iso=to_iso_z(pr.end))
+    rows = query_connectivity_checks(cfg.db_path, tr=tr)
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        items.append(
+            {
+                "checked_at": to_local_iso(parse_dt(r["checked_at"])),
+                "is_up": r["is_up"],
+                "latency_ms": r.get("latency_ms"),
+            }
+        )
     return {"range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)}, "items": items}
 
 
