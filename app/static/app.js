@@ -320,7 +320,13 @@ async function loadChart() {
       options: {
         responsive: true,
         scales: {
-          x: { ticks: { color: "rgba(169,180,221,.8)", maxRotation: 0, autoSkip: true } },
+          x: {
+            ticks: { color: "rgba(194,204,240,.92)", maxRotation: 0, autoSkip: true },
+            grid: {
+              color: "rgba(231,236,255,.10)",
+              tickColor: "rgba(231,236,255,.10)",
+            },
+          },
           yRel: {
             position: "left",
             min: 0,
@@ -329,6 +335,7 @@ async function loadChart() {
               color: "rgba(169,180,221,.8)",
               callback: (v) => (v === 0 || v === 1 ? String(v) : ""),
             },
+            grid: { color: "rgba(231,236,255,.06)" },
             title: { display: true, text: "Online (0/1)", color: "rgba(169,180,221,.9)" },
           },
           yMbps: {
