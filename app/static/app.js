@@ -178,8 +178,18 @@ async function loadStatus() {
     badgeLast.className = "badge badge-gray";
   } else if (data.last_speed_test?.started_at && !data.last_speed_test?.error) {
     badgeLast.style.display = "";
-    const mbps = (data.last_speed_test.mbps ?? 0).toFixed(1);
-    badgeLast.textContent = `Ostatni test: ${mbps} Mbps`;
+    const dl = (data.last_speed_test.mbps ?? 0);
+    const ul = data.last_speed_test.upload_mbps;
+    const ping = data.last_speed_test.ping_ms;
+    const mode = data.last_speed_test.speedtest_mode || data.config?.speedtest_mode || "";
+    const parts = [`Ostatni test: ${dl.toFixed(1)}↓ Mbps`];
+    if (typeof ul === "number" && Number.isFinite(ul) && ul > 0) parts.push(`${ul.toFixed(1)}↑ Mbps`);
+    if (typeof ping === "number" && Number.isFinite(ping) && ping > 0) parts.push(`ping ${ping.toFixed(0)} ms`);
+    const srv = data.last_speed_test.server_name;
+    const cc = data.last_speed_test.server_country;
+    if (srv) parts.push(`serwer: ${srv}${cc ? " (" + cc + ")" : ""}`);
+    if (mode && mode !== "url") parts.push(`tryb: ${mode}`);
+    badgeLast.textContent = parts.join(" · ");
     badgeLast.className = "badge badge-ok";
   } else {
     // jeśli nie trwa pomiar, nie pokazuj komunikatu o błędzie

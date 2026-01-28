@@ -66,6 +66,7 @@ def ensure_db(db_path: str) -> None:
             )
             """
         )
+        _ensure_speed_tests_columns(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS settings (
@@ -79,6 +80,21 @@ def ensure_db(db_path: str) -> None:
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
+
+
+def _ensure_speed_tests_columns(conn: sqlite3.Connection) -> None:
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(speed_tests)").fetchall()}
+    desired: list[tuple[str, str]] = [
+        ("speedtest_mode", "TEXT"),
+        ("upload_mbps", "REAL"),
+        ("ping_ms", "REAL"),
+        ("server_name", "TEXT"),
+        ("server_country", "TEXT"),
+    ]
+    for name, ctype in desired:
+        if name in cols:
+            continue
+        conn.execute(f"ALTER TABLE speed_tests ADD COLUMN {name} {ctype} NULL")
 
 
 def get_settings(db_path: str, keys: list[str]) -> dict[str, str]:
@@ -168,14 +184,33 @@ def record_speed_test(
     bytes_downloaded: int,
     mbps: float,
     error: str | None,
+    speedtest_mode: str | None = None,
+    upload_mbps: float | None = None,
+    ping_ms: float | None = None,
+    server_name: str | None = None,
+    server_country: str | None = None,
 ) -> None:
     with db_conn(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO speed_tests(started_at, duration_seconds, bytes_downloaded, mbps, error)
-            VALUES (?,?,?,?,?)
+            INSERT INTO speed_tests(
+              started_at, duration_seconds, bytes_downloaded, mbps, error,
+              speedtest_mode, upload_mbps, ping_ms, server_name, server_country
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
-            (started_at_iso, duration_seconds, bytes_downloaded, mbps, error),
+            (
+                started_at_iso,
+                duration_seconds,
+                bytes_downloaded,
+                mbps,
+                error,
+                speedtest_mode,
+                upload_mbps,
+                ping_ms,
+                server_name,
+                server_country,
+            ),
         )
 
 
@@ -183,7 +218,8 @@ def get_last_speed_test(db_path: str):
     with db_conn(db_path) as conn:
         row = conn.execute(
             """
-            SELECT id, started_at, duration_seconds, bytes_downloaded, mbps, error
+            SELECT id, started_at, duration_seconds, bytes_downloaded, mbps, error,
+                   speedtest_mode, upload_mbps, ping_ms, server_name, server_country
             FROM speed_tests
             ORDER BY id DESC
             LIMIT 1
@@ -202,7 +238,8 @@ def query_speed_tests(db_path: str, tr: TimeRange):
     with db_conn(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT started_at, duration_seconds, bytes_downloaded, mbps, error
+            SELECT started_at, duration_seconds, bytes_downloaded, mbps, error,
+                   speedtest_mode, upload_mbps, ping_ms, server_name, server_country
             FROM speed_tests
             WHERE started_at >= ? AND started_at <= ?
             ORDER BY started_at ASC

@@ -290,12 +290,30 @@ def export_speed_csv(
     pr = parse_range(from_, to)
     tr = TimeRange(start_iso=to_iso_z(pr.start), end_iso=to_iso_z(pr.end))
     items = query_speed_tests(cfg.db_path, tr)
-    rows: list[list[Any]] = [["started_at", "mbps", "duration_seconds", "bytes_downloaded", "error"]]
+    rows: list[list[Any]] = [
+        [
+            "started_at",
+            "download_mbps",
+            "upload_mbps",
+            "ping_ms",
+            "server_name",
+            "server_country",
+            "speedtest_mode",
+            "duration_seconds",
+            "bytes_downloaded",
+            "error",
+        ]
+    ]
     for it in items:
         rows.append(
             [
                 it["started_at"],
                 it["mbps"],
+                it.get("upload_mbps"),
+                it.get("ping_ms"),
+                it.get("server_name") or "",
+                it.get("server_country") or "",
+                it.get("speedtest_mode") or "",
                 it["duration_seconds"],
                 it["bytes_downloaded"],
                 it["error"] or "",

@@ -61,6 +61,20 @@ async def run_speedtest_once(cfg: AppConfig) -> None:
                     duration_seconds = result.duration_seconds
                     mbps = result.download_mbps
                     bytes_downloaded = 0
+                    record_speed_test(
+                        cfg.db_path,
+                        started_at_iso=started_at_iso,
+                        duration_seconds=duration_seconds,
+                        bytes_downloaded=bytes_downloaded,
+                        mbps=mbps,
+                        error=error,
+                        speedtest_mode=speedtest_mode,
+                        upload_mbps=result.upload_mbps,
+                        ping_ms=result.ping_ms,
+                        server_name=result.server_name,
+                        server_country=result.server_country,
+                    )
+                    return
                 else:
                     if speedtest_url:
                         result = await asyncio.to_thread(
@@ -83,6 +97,7 @@ async def run_speedtest_once(cfg: AppConfig) -> None:
                 bytes_downloaded=bytes_downloaded,
                 mbps=mbps,
                 error=error,
+                speedtest_mode=speedtest_mode,
             )
         finally:
             runtime.running = False
