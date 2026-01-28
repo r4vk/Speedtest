@@ -30,13 +30,19 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
 
 async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
     while not state.stop.is_set():
-        values = get_settings(cfg.db_path, ["connect_target", "connect_interval_seconds"])
+        values = get_settings(cfg.db_path, ["connect_check_mode", "connect_target", "connect_interval_seconds"])
+        mode = values.get("connect_check_mode", "target")
         connect_target = values.get("connect_target", cfg.connect_target)
         try:
             interval_seconds = float(values.get("connect_interval_seconds", str(cfg.connect_interval_seconds)))
         except ValueError:
             interval_seconds = cfg.connect_interval_seconds
         interval_seconds = max(0.1, interval_seconds)
+
+        if mode == "speedtest.net":
+            connect_target = "https://www.speedtest.net"
+        elif mode == "speedtest.pl":
+            connect_target = "https://www.speedtest.pl"
 
         is_up = await asyncio.to_thread(
             check_target,

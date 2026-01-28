@@ -30,6 +30,7 @@ from .time_utils import parse_range, to_iso_z, utc_now
 
 cfg = AppConfig()
 ensure_db(cfg.db_path)
+ensure_default_setting(cfg.db_path, "connect_check_mode", "target")
 ensure_default_setting(cfg.db_path, "connect_target", cfg.connect_target)
 ensure_default_setting(cfg.db_path, "connect_interval_seconds", str(cfg.connect_interval_seconds))
 ensure_default_setting(cfg.db_path, "speedtest_url", cfg.speedtest_url or "")
@@ -85,6 +86,7 @@ def api_status() -> dict[str, Any]:
         "last_speed_test": last_speed,
         "config": {
             "connect_target": eff.connect_target,
+            "connect_check_mode": eff.connect_check_mode,
             "connect_interval_seconds": eff.connect_interval_seconds,
             "speedtest_interval_seconds": eff.speedtest_interval_seconds,
             "speedtest_duration_seconds": eff.speedtest_duration_seconds,
@@ -95,6 +97,7 @@ def api_status() -> dict[str, Any]:
 
 
 class ConfigResponse(BaseModel):
+    connect_check_mode: str
     connect_target: str
     connect_interval_seconds: float
     speedtest_url: str
@@ -103,6 +106,7 @@ class ConfigResponse(BaseModel):
 
 
 class ConfigUpdate(BaseModel):
+    connect_check_mode: str | None = Field(default=None)
     connect_target: str | None = Field(default=None, min_length=1, max_length=1024)
     connect_interval_seconds: float | None = Field(default=None, gt=0.1, le=3600)
     speedtest_url: str | None = Field(default=None, max_length=2048)
@@ -113,12 +117,14 @@ def _effective_config() -> ConfigResponse:
     values = get_settings(
         cfg.db_path,
         [
+            "connect_check_mode",
             "connect_target",
             "connect_interval_seconds",
             "speedtest_url",
             "speedtest_interval_seconds",
         ],
     )
+    connect_check_mode = values.get("connect_check_mode", "target")
     connect_target = values.get("connect_target", cfg.connect_target)
     try:
         connect_interval = float(values.get("connect_interval_seconds", str(cfg.connect_interval_seconds)))
@@ -132,6 +138,7 @@ def _effective_config() -> ConfigResponse:
         speedtest_interval = cfg.speedtest_interval_seconds
 
     return ConfigResponse(
+        connect_check_mode=connect_check_mode,
         connect_target=connect_target,
         connect_interval_seconds=connect_interval,
         speedtest_url=speedtest_url,
@@ -148,6 +155,11 @@ def api_get_config():
 @app.put("/api/config", response_model=ConfigResponse)
 def api_update_config(update: ConfigUpdate):
     now_iso = to_iso_z(utc_now())
+    if update.connect_check_mode is not None:
+        mode = update.connect_check_mode.strip()
+        if mode not in {"target", "speedtest.net", "speedtest.pl"}:
+            raise HTTPException(status_code=400, detail="connect_check_mode must be one of: target, speedtest.net, speedtest.pl")
+        set_setting(cfg.db_path, "connect_check_mode", mode, now_iso=now_iso)
     if update.connect_target is not None:
         set_setting(cfg.db_path, "connect_target", update.connect_target.strip(), now_iso=now_iso)
     if update.connect_interval_seconds is not None:

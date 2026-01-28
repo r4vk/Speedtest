@@ -25,10 +25,14 @@ let currentAvgMbps = 0;
 async function loadConfig() {
   const resp = await fetch("/api/config");
   const cfg = await resp.json();
+  const mode = cfg.connect_check_mode ?? "target";
+  const radios = document.querySelectorAll("input[name='connect-mode']");
+  for (const r of radios) r.checked = (r.value === mode);
   qs("cfg-connect-target").value = cfg.connect_target ?? "";
   qs("cfg-connect-interval").value = cfg.connect_interval_seconds ?? 1;
   qs("cfg-speed-url").value = cfg.speedtest_url ?? "";
   qs("cfg-speed-interval").value = cfg.speedtest_interval_seconds ?? 900;
+  applyConnectModeUi(mode);
 }
 
 function setCfgMsg(text, ok) {
@@ -38,13 +42,33 @@ function setCfgMsg(text, ok) {
   setTimeout(() => { el.textContent = ""; el.style.color = ""; }, 3500);
 }
 
+function selectedConnectMode() {
+  const el = document.querySelector("input[name='connect-mode']:checked");
+  return el ? el.value : "target";
+}
+
+function applyConnectModeUi(mode) {
+  const input = qs("cfg-connect-target");
+  const label = input.closest("label");
+  if (mode === "target") {
+    label.style.display = "";
+    return;
+  }
+  // speedtest.* => pole niepotrzebne
+  label.style.display = "none";
+}
+
 async function saveConfig() {
+  const mode = selectedConnectMode();
+  applyConnectModeUi(mode);
+
   const connectTarget = qs("cfg-connect-target").value.trim();
-  if (!connectTarget) {
+  if (mode === "target" && !connectTarget) {
     setCfgMsg("Podaj adres do testu internetu.", false);
     return;
   }
   const payload = {
+    connect_check_mode: mode,
     connect_target: connectTarget,
     connect_interval_seconds: Number(qs("cfg-connect-interval").value),
     speedtest_url: qs("cfg-speed-url").value.trim(),
@@ -318,6 +342,9 @@ async function refreshAll() {
 
 qs("refresh").addEventListener("click", refreshAll);
 qs("cfg-save").addEventListener("click", saveConfig);
+for (const r of document.querySelectorAll("input[name='connect-mode']")) {
+  r.addEventListener("change", () => applyConnectModeUi(selectedConnectMode()));
+}
 
  (async () => {
   await loadConfig();

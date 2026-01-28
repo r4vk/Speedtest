@@ -38,6 +38,12 @@
       <section class="panel">
         <h2>Ustawienia</h2>
         <div class="settings">
+          <div class="radio-group">
+            <div class="rlabel">Test internetu</div>
+            <label class="radio"><input type="radio" name="connect-mode" value="target" checked /> URL / host</label>
+            <label class="radio"><input type="radio" name="connect-mode" value="speedtest.net" /> speedtest.net</label>
+            <label class="radio"><input type="radio" name="connect-mode" value="speedtest.pl" /> speedtest.pl</label>
+          </div>
           <label>
             Test internetu (URL lub host)
             <input id="cfg-connect-target" type="text" placeholder="google.com" />

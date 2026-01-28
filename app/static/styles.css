@@ -71,6 +71,25 @@ h2 { margin: 0 0 10px 0; font-size: 16px; color: var(--text); }
   gap: 10px;
   align-items: end;
 }
+ .radio-group {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto auto auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+ .rlabel { color: var(--muted); font-size: 12px; }
+ .radio {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text);
+}
+ .radio input { width: 16px; height: 16px; }
  .cfgmsg {
   color: var(--muted);
   font-size: 12px;
@@ -114,4 +133,5 @@ code { color: #c7d2fe; }
   .grid { grid-template-columns: 1fr; }
   .range { grid-template-columns: 1fr 1fr; }
   .settings { grid-template-columns: 1fr; }
+  .radio-group { grid-template-columns: 1fr; align-items: start; }
 }

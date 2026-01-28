@@ -22,6 +22,8 @@ ENV dalej działa jako wartości startowe / domyślne.
 
 Test łączności jest robiony przez szybkie połączenie TCP (host/URL → host+port) – działa w kontenerze bez uprawnień do ICMP.
 
+W UI możesz też wybrać gotowy tryb: `speedtest.net` lub `speedtest.pl` (wtedy nie podajesz URL/host).
+
 ### Test prędkości pobierania
 
 - `SPEEDTEST_URL` (domyślnie: wskazany plik ISO) – `ftp://...` lub `http(s)://...`
