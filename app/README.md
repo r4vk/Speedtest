@@ -27,7 +27,7 @@ W UI możesz też wybrać gotowy tryb: `speedtest.net` lub `speedtest.pl` (wtedy
 ### Test prędkości pobierania
 
 - `SPEEDTEST_URL` (domyślnie: wskazany plik ISO) – `ftp://...` lub `http(s)://...`
-- `SPEEDTEST_DURATION_SECONDS` (domyślnie: `30`)
+- `SPEEDTEST_DURATION_SECONDS` (domyślnie: `10`)
 - `SPEEDTEST_INTERVAL_SECONDS` (domyślnie: `900`)
 - `SPEEDTEST_TIMEOUT_SECONDS` (domyślnie: `10`)
 - `SPEEDTEST_SKIP_IF_OFFLINE` (domyślnie: `true`)
@@ -36,7 +36,20 @@ W UI możesz też wybrać gotowy tryb: `speedtest.net` lub `speedtest.pl` (wtedy
 
 - `DATA_DIR` (domyślnie: `/data`) – tu trzymany jest `app.db`
 - `PORT` (domyślnie: `8000`)
-- `TZ` (domyślnie: `UTC`) – strefa czasowa dla “czasów lokalnych” w UI/CSV (np. `Europe/Warsaw`)
+- `TZ` – strefa czasowa dla "czasów lokalnych" w UI/CSV (np. `Europe/Warsaw`). Jeśli nie ustawione, kontener próbuje wykryć strefę z hosta.
+
+#### Strefa czasowa na Synology DSM 7.1+
+
+Aby kontener używał strefy czasowej z DSM, zamontuj `/etc/localtime` z hosta:
+
+```bash
+docker run -d --name r4vk-speedtest \
+  -v /etc/localtime:/etc/localtime:ro \
+  -e TZ=Europe/Warsaw \
+  ...
+```
+
+W Container Manager (DSM 7.2+): Volume Settings → Add File → `/etc/localtime` → `/etc/localtime` (Read-Only).
 
 ## Uruchomienie lokalnie
 
@@ -78,7 +91,9 @@ docker run -d --name r4vk-speedtest \
 - `GET /api/speed?from=...&to=...`
 - `GET /api/outages?from=...&to=...`
 - `GET /api/report/quality?from=...&to=...`
+- `GET /api/pings?from=...&to=...`
 - `GET /api/export/speed.csv?from=...&to=...`
 - `GET /api/export/outages.csv?from=...&to=...`
+- `GET /api/export/pings.csv?from=...&to=...`
 
 Daty: ISO-8601, np. `2026-01-28T00:00:00Z`.

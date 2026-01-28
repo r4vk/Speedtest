@@ -1,7 +1,20 @@
 from __future__ import annotations
 
+import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+
+
+def _init_tz() -> None:
+    """Force timezone re-initialization from TZ env var or /etc/localtime."""
+    tz = os.environ.get("TZ")
+    if tz:
+        os.environ["TZ"] = tz
+        time.tzset()
+
+
+_init_tz()
 
 
 def utc_now() -> datetime:

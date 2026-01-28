@@ -53,6 +53,7 @@ let currentAvgMbps = 0;
 let lastLoadedConfig = null;
 let lastIsUp = null;
 let lastSpeedTestId = null;
+let lastSpeedtestRunning = null;
 let timeSeriesRefreshInFlight = null;
 let lastTimeSeriesRefreshAtMs = 0;
 const AUTO_SERIES_REFRESH_MS = 30_000;
@@ -200,18 +201,31 @@ function isOnlineAt(outageIntervals, tMs) {
   return 1;
 }
 
+function normalizeIsoKey(iso) {
+  // Normalize ISO string to consistent format for Map keys: "YYYY-MM-DD HH:MM:SS"
+  if (!iso) return null;
+  const s = String(iso).trim().replace("T", " ");
+  // Remove any timezone suffix and keep only date/time part
+  const m = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/.exec(s);
+  return m ? m[1] : s;
+}
+
 function uniqueSortedIso(values) {
   const map = new Map();
   for (const v of values) {
     if (!v) continue;
     const ms = parseIsoToMs(v);
     if (ms == null) continue;
-    // normalize key to original iso for display, but sort by ms
-    map.set(v, ms);
+    const key = normalizeIsoKey(v);
+    if (!key) continue;
+    // Store normalized key with ms for sorting, keep original for display
+    if (!map.has(key)) {
+      map.set(key, { ms, display: v });
+    }
   }
   return [...map.entries()]
-    .sort((a, b) => a[1] - b[1])
-    .map(([iso]) => iso);
+    .sort((a, b) => a[1].ms - b[1].ms)
+    .map(([key]) => key);
 }
 
 async function loadStatus() {
@@ -273,14 +287,17 @@ async function loadStatus() {
     badgeLast.style.display = "none";
   }
 
+  const speedtestRunning = Boolean(data.speedtest_running);
   const connectivityChanged = (lastIsUp !== null) && (isUp !== lastIsUp);
   const speedTestChanged = (lastSpeedTestId !== null) && (lastSpeedId !== null) && (lastSpeedId !== lastSpeedTestId);
+  const speedtestRunningChanged = (lastSpeedtestRunning !== null) && (speedtestRunning !== lastSpeedtestRunning);
   lastIsUp = isUp;
   lastSpeedTestId = lastSpeedId;
+  lastSpeedtestRunning = speedtestRunning;
 
   const followNow = !qs("to").value.trim();
   const dueToTime = followNow && lastTimeSeriesRefreshAtMs && (Date.now() - lastTimeSeriesRefreshAtMs > AUTO_SERIES_REFRESH_MS);
-  if (connectivityChanged || speedTestChanged || dueToTime) {
+  if (connectivityChanged || speedTestChanged || speedtestRunningChanged || dueToTime) {
     scheduleTimeSeriesRefresh();
   }
 }
@@ -319,7 +336,7 @@ async function loadChart() {
   const labels = uniqueSortedIso(labelCandidates);
 
   const speedByTs = new Map();
-  for (const it of items) speedByTs.set(it.started_at, it);
+  for (const it of items) speedByTs.set(normalizeIsoKey(it.started_at), it);
 
   const speedRel = labels.map((ts) => {
     const it = speedByTs.get(ts);
@@ -487,6 +504,7 @@ function refreshExports() {
   const q = params.toString();
   qs("export-speed").href = `/api/export/speed.csv${q ? "?" + q : ""}`;
   qs("export-outages").href = `/api/export/outages.csv${q ? "?" + q : ""}`;
+  qs("export-pings").href = `/api/export/pings.csv${q ? "?" + q : ""}`;
 }
 
 async function refreshTimeSeries() {

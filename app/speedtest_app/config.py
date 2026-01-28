@@ -26,7 +26,7 @@ class AppConfig:
         "SPEEDTEST_URL",
         "https://webmail.psm.pulawy.pl/debian-12.9.0-amd64-DVD-1.iso",
     )
-    speedtest_duration_seconds: float = float(os.getenv("SPEEDTEST_DURATION_SECONDS", "30"))
+    speedtest_duration_seconds: float = float(os.getenv("SPEEDTEST_DURATION_SECONDS", "10"))
     speedtest_interval_seconds: float = float(os.getenv("SPEEDTEST_INTERVAL_SECONDS", "900"))
     speedtest_timeout_seconds: float = float(os.getenv("SPEEDTEST_TIMEOUT_SECONDS", "10"))
     speedtest_skip_if_offline: bool = _env_bool("SPEEDTEST_SKIP_IF_OFFLINE", True)

@@ -385,3 +385,18 @@ def export_outages_csv(
         ended_local = to_local_display(parse_dt(it["ended_at"])) if it["ended_at"] else to_local_display(parse_dt(now_iso))
         rows.append([started_local, ended_local])
     return _csv_response("outages.csv", rows)
+
+
+@app.get("/api/export/pings.csv")
+def export_pings_csv(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+):
+    pr = parse_range(from_, to)
+    tr = TimeRange(start_iso=to_iso_z(pr.start), end_iso=to_iso_z(pr.end))
+    items = query_connectivity_checks(cfg.db_path, tr=tr)
+    rows: list[list[Any]] = [["checked_at", "is_up", "latency_ms"]]
+    for it in items:
+        checked_local = to_local_display(parse_dt(it["checked_at"]))
+        rows.append([checked_local, it["is_up"], it.get("latency_ms") or ""])
+    return _csv_response("pings.csv", rows)
