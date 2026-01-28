@@ -78,6 +78,20 @@ function isOnlineAt(outageIntervals, tMs) {
   return 1;
 }
 
+function uniqueSortedIso(values) {
+  const map = new Map();
+  for (const v of values) {
+    if (!v) continue;
+    const ms = parseIsoToMs(v);
+    if (ms == null) continue;
+    // normalize key to original iso for display, but sort by ms
+    map.set(v, ms);
+  }
+  return [...map.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([iso]) => iso);
+}
+
 async function loadStatus() {
   const resp = await fetch("/api/status");
   const data = await resp.json();
@@ -111,6 +125,9 @@ async function loadChart() {
   const items = speedData.items || [];
   const outages = outagesData.items || [];
 
+  const rangeFrom = speedData?.range?.from || outagesData?.range?.from || null;
+  const rangeTo = speedData?.range?.to || outagesData?.range?.to || null;
+
   const outageIntervals = outages
     .map(o => ({ startMs: parseIsoToMs(o.started_at), endMs: parseIsoToMs(o.ended_at) }))
     .filter(o => o.startMs != null && o.endMs != null);
@@ -119,13 +136,27 @@ async function loadChart() {
   const avgMbps = okSpeeds.length ? (okSpeeds.reduce((a, b) => a + b, 0) / okSpeeds.length) : 0;
   currentAvgMbps = avgMbps;
 
-  const labels = items.map(i => i.started_at);
-  const speedRel = items.map(i => {
-    if (i.error || typeof i.mbps !== "number" || i.mbps <= 0 || avgMbps <= 0) return null;
-    return i.mbps / avgMbps;
+  // Labels = union: range endpoints + speed tests + outage boundaries.
+  const labelCandidates = [];
+  if (rangeFrom) labelCandidates.push(rangeFrom);
+  if (rangeTo) labelCandidates.push(rangeTo);
+  for (const it of items) labelCandidates.push(it.started_at);
+  for (const o of outages) {
+    labelCandidates.push(o.started_at);
+    labelCandidates.push(o.ended_at);
+  }
+  const labels = uniqueSortedIso(labelCandidates);
+
+  const speedByTs = new Map();
+  for (const it of items) speedByTs.set(it.started_at, it);
+
+  const speedRel = labels.map((ts) => {
+    const it = speedByTs.get(ts);
+    if (!it || it.error || typeof it.mbps !== "number" || it.mbps <= 0 || avgMbps <= 0) return null;
+    return it.mbps / avgMbps;
   });
-  const onlineRel = items.map(i => {
-    const tMs = parseIsoToMs(i.started_at);
+  const onlineRel = labels.map((ts) => {
+    const tMs = parseIsoToMs(ts);
     return isOnlineAt(outageIntervals, tMs);
   });
 
@@ -145,11 +176,15 @@ async function loadChart() {
         datasets: [{
           label: "Prędkość (Mbps)",
           yAxisID: "yMbps",
-          data: items.map((it, idx) => ({
-            x: labels[idx],
-            y: speedRel[idx],
-            mbps: (it && !it.error) ? it.mbps : null,
-          })),
+          data: labels.map((ts, idx) => {
+            const it = speedByTs.get(ts);
+            return {
+              x: ts,
+              y: speedRel[idx],
+              mbps: (it && !it.error) ? it.mbps : null,
+              error: it?.error || null,
+            };
+          }),
           borderColor: "rgba(99, 102, 241, 0.95)",
           backgroundColor: "rgba(99, 102, 241, 0.2)",
           borderWidth: 2,
@@ -220,11 +255,15 @@ async function loadChart() {
     });
   } else {
     speedChart.data.labels = labels;
-    speedChart.data.datasets[0].data = items.map((it, idx) => ({
-      x: labels[idx],
-      y: speedRel[idx],
-      mbps: (it && !it.error) ? it.mbps : null,
-    }));
+    speedChart.data.datasets[0].data = labels.map((ts, idx) => {
+      const it = speedByTs.get(ts);
+      return {
+        x: ts,
+        y: speedRel[idx],
+        mbps: (it && !it.error) ? it.mbps : null,
+        error: it?.error || null,
+      };
+    });
     speedChart.data.datasets[1].data = onlineRel;
     speedChart.options.scales.yRel.max = relMax;
     speedChart.options.scales.yMbps.max = relMax;
