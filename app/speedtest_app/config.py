@@ -24,7 +24,7 @@ class AppConfig:
     # Domyślny plik (user może zmienić przez UI).
     speedtest_url: str | None = os.getenv(
         "SPEEDTEST_URL",
-        "https://webmail.psm.pulawy.pl/debian-edu-11.5.0-amd64-BD-1.iso",
+        "https://webmail.psm.pulawy.pl/debian-12.9.0-amd64-DVD-1.iso",
     )
     speedtest_duration_seconds: float = float(os.getenv("SPEEDTEST_DURATION_SECONDS", "30"))
     speedtest_interval_seconds: float = float(os.getenv("SPEEDTEST_INTERVAL_SECONDS", "900"))
