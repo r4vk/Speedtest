@@ -20,6 +20,7 @@ from .db import (
     ensure_default_setting,
     get_current_connectivity_period,
     get_last_speed_test,
+    get_last_success_speed_test,
     query_connectivity_periods,
     query_speed_tests,
     set_setting,
@@ -88,6 +89,7 @@ async def _shutdown() -> None:
 def api_status() -> dict[str, Any]:
     current = get_current_connectivity_period(cfg.db_path)
     last_speed = get_last_speed_test(cfg.db_path)
+    last_speed_ok = get_last_success_speed_test(cfg.db_path)
     eff = _effective_config()
     rt = get_runtime()
 
@@ -99,11 +101,15 @@ def api_status() -> dict[str, Any]:
     if last_speed:
         last_speed = dict(last_speed)
         last_speed["started_at"] = to_local_iso(parse_dt(last_speed["started_at"]))
+    if last_speed_ok:
+        last_speed_ok = dict(last_speed_ok)
+        last_speed_ok["started_at"] = to_local_iso(parse_dt(last_speed_ok["started_at"]))
 
     return {
         "now": to_local_iso(utc_now()),
         "connectivity": current,
         "last_speed_test": last_speed,
+        "last_speed_test_ok": last_speed_ok,
         "speedtest_running": bool(rt.running),
         "speedtest_running_since": to_local_iso(parse_dt(rt.running_since_iso)) if rt.running_since_iso else None,
         "config": {

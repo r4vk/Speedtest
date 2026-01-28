@@ -184,23 +184,45 @@ async function loadStatus() {
     badgeLast.style.display = "";
     badgeLast.textContent = "Trwa pomiar prędkości…";
     badgeLast.className = "badge badge-gray";
-  } else if (data.last_speed_test?.started_at && !data.last_speed_test?.error) {
-    badgeLast.style.display = "";
-    const dl = (data.last_speed_test.mbps ?? 0);
-    const ul = data.last_speed_test.upload_mbps;
-    const ping = data.last_speed_test.ping_ms;
-    const mode = data.last_speed_test.speedtest_mode || data.config?.speedtest_mode || "";
-    const parts = [`Ostatni test: ${dl.toFixed(1)}↓ Mbps`];
-    if (typeof ul === "number" && Number.isFinite(ul) && ul > 0) parts.push(`${ul.toFixed(1)}↑ Mbps`);
-    if (typeof ping === "number" && Number.isFinite(ping) && ping > 0) parts.push(`ping ${ping.toFixed(0)} ms`);
-    const srv = data.last_speed_test.server_name;
-    const cc = data.last_speed_test.server_country;
-    if (srv) parts.push(`serwer: ${srv}${cc ? " (" + cc + ")" : ""}`);
-    if (mode && mode !== "url") parts.push(`tryb: ${mode}`);
-    badgeLast.textContent = parts.join(" · ");
-    badgeLast.className = "badge badge-ok";
   } else {
-    // jeśli nie trwa pomiar, nie pokazuj komunikatu o błędzie
+    const last = data.last_speed_test || null;
+    const ok = data.last_speed_test_ok || null;
+
+    const formatOk = (it) => {
+      const dl = (it.mbps ?? 0);
+      const ul = it.upload_mbps;
+      const ping = it.ping_ms;
+      const mode = it.speedtest_mode || data.config?.speedtest_mode || "";
+      const parts = [`${dl.toFixed(1)}↓ Mbps`];
+      if (typeof ul === "number" && Number.isFinite(ul) && ul > 0) parts.push(`${ul.toFixed(1)}↑ Mbps`);
+      if (typeof ping === "number" && Number.isFinite(ping) && ping > 0) parts.push(`ping ${ping.toFixed(0)} ms`);
+      const srv = it.server_name;
+      const cc = it.server_country;
+      if (srv) parts.push(`serwer: ${srv}${cc ? " (" + cc + ")" : ""}`);
+      if (mode && mode !== "url") parts.push(`tryb: ${mode}`);
+      return parts.join(" · ");
+    };
+
+    if (last?.started_at && last.error) {
+      // pokaż, że test się odbył, ale bez szczegółów błędu
+      const time = String(last.started_at).replace("T", " ");
+      if (ok?.started_at) {
+        badgeLast.textContent = `Ostatni test: ${time} (nieudany) · Ostatni udany: ${formatOk(ok)}`;
+      } else {
+        badgeLast.textContent = `Ostatni test: ${time} (nieudany)`;
+      }
+      badgeLast.className = "badge badge-gray";
+      badgeLast.style.display = "";
+      return;
+    }
+
+    if (ok?.started_at) {
+      badgeLast.textContent = `Ostatni udany test: ${formatOk(ok)}`;
+      badgeLast.className = "badge badge-ok";
+      badgeLast.style.display = "";
+      return;
+    }
+
     badgeLast.textContent = "";
     badgeLast.style.display = "none";
   }

@@ -236,6 +236,21 @@ def get_last_speed_test(db_path: str):
         return dict(row) if row else None
 
 
+def get_last_success_speed_test(db_path: str):
+    with db_conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, started_at, duration_seconds, bytes_downloaded, mbps, error,
+                   speedtest_mode, upload_mbps, ping_ms, server_name, server_country
+            FROM speed_tests
+            WHERE error IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row else None
+
+
 @dataclass(frozen=True)
 class TimeRange:
     start_iso: str
