@@ -324,10 +324,8 @@ async function loadChart() {
   const avgMbps = okSpeeds.length ? (okSpeeds.reduce((a, b) => a + b, 0) / okSpeeds.length) : 0;
   currentAvgMbps = avgMbps;
 
-  // Labels = union: range endpoints + speed tests + outage boundaries.
+  // Labels = union: speed tests + outage boundaries (only actual data points).
   const labelCandidates = [];
-  if (rangeFrom) labelCandidates.push(rangeFrom);
-  if (rangeTo) labelCandidates.push(rangeTo);
   for (const it of items) labelCandidates.push(it.started_at);
   for (const o of outages) {
     labelCandidates.push(o.started_at);
