@@ -114,15 +114,6 @@ jobs:
           UI: http://localhost:8000
           TXT
 
-      - name: Build DSM SPK (DSM 7)
-        shell: bash
-        run: |
-          set -euo pipefail
-          SPK_VER="${{ steps.ver.outputs.version }}"
-          SPK_VER="${SPK_VER#v}"
-          ./spk/build.sh "${SPK_VER}"
-          cp "spk/dist/r4vk-speedtest_${SPK_VER}.spk" "dist/r4vk-speedtest_${{ steps.ver.outputs.version }}_DSM7_x86_64.spk"
-
       - name: Create GitHub Release + upload assets
         uses: softprops/action-gh-release@v2
         with:
@@ -131,5 +122,4 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*.tar
-            dist/*.spk
             dist/README.txt
