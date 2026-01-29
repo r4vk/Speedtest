@@ -26,6 +26,15 @@ function initDatePickers() {
   });
 }
 
+function setDefaultDateRange() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  qs("from").value = `${y}-${m}-${d} 00:00:00`;
+  qs("to").value = `${y}-${m}-${d} 23:59:59`;
+}
+
 async function loadVersion() {
   try {
     const resp = await fetch("/api/version");
@@ -343,7 +352,9 @@ async function loadChart() {
   });
   const onlineRel = labels.map((ts) => {
     const tMs = parseIsoToMs(ts);
-    return isOnlineAt(outageIntervals, tMs);
+    const online = isOnlineAt(outageIntervals, tMs);
+    // Skaluj wartość online (1) do 0.8, żeby linia nie zlewała się ze średnią prędkością
+    return online === 1 ? 0.8 : online;
   });
 
   const ctx = qs("speedChart").getContext("2d");
@@ -437,7 +448,7 @@ async function loadChart() {
                 }
                 if (ctx.dataset?.label?.startsWith("Online")) {
                   const v = ctx.raw;
-                  return `Online: ${v === 1 ? "1" : "0"}`;
+                  return `Online: ${v > 0 ? "1" : "0"}`;
                 }
                 return ctx.formattedValue;
               }
@@ -539,6 +550,7 @@ for (const r of document.querySelectorAll("input[name='speedtest-mode']")) {
 
  (async () => {
   initDatePickers();
+  setDefaultDateRange();
   loadVersion();
   await loadConfig();
   await refreshAll();

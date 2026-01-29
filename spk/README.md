@@ -10,10 +10,10 @@ Ten katalog zawiera minimalny pakiet **SPK** dla DSM 7, który:
 
 ```bash
 cd Speedtest/spk
-./build.sh 0.0.1
+./build.sh 0.0.2
 ```
 
-Wynik: `dist/r4vk-speedtest_0.0.1.spk`
+Wynik: `dist/r4vk-speedtest_0.0.2.spk`
 
 ## Install (manual)
 

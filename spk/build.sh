@@ -11,7 +11,7 @@ fi
 
 VERSION="${1:-}"
 if [[ -z "${VERSION}" ]]; then
-  echo "Usage: ./build.sh <version>  (np. ./build.sh 0.0.1)" >&2
+  echo "Usage: ./build.sh <version>  (np. ./build.sh 0.0.2)" >&2
   exit 1
 fi
 
