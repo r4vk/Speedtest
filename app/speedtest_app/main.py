@@ -40,7 +40,15 @@ ensure_default_setting(cfg.db_path, "speedtest_mode", "url")
 ensure_default_setting(cfg.db_path, "speedtest_url", cfg.speedtest_url or "")
 ensure_default_setting(cfg.db_path, "speedtest_interval_seconds", str(cfg.speedtest_interval_seconds))
 
-APP_VERSION = os.getenv("APP_VERSION", "dev")
+def _read_version() -> str:
+    """Odczytaj wersję z pliku VERSION (wbudowanego w obraz Docker)."""
+    version_file = Path(__file__).resolve().parent.parent / "VERSION"
+    try:
+        return version_file.read_text().strip()
+    except FileNotFoundError:
+        return "dev"
+
+APP_VERSION = _read_version()
 app = FastAPI(title="Speedtest Monitor", version=APP_VERSION)
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _STATIC_DIR = _BASE_DIR / "static"

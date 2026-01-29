@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DATA_DIR=/data \
     PORT=8000 \
-    APP_VERSION=${APP_VERSION}
+    TZ=Europe/Warsaw
 
 WORKDIR /app
 
@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY speedtest_app /app/speedtest_app
 COPY static /app/static
+
+# Zapisz wersję do pliku (nie zmienna środowiskowa, żeby aktualizowała się z obrazem)
+RUN echo "${APP_VERSION}" > /app/VERSION
 
 EXPOSE 8000
 
