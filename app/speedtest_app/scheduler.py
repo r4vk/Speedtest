@@ -55,9 +55,13 @@ async def run_speedtest_once(cfg: AppConfig) -> None:
         runtime.running = True
         runtime.running_since_iso = to_iso_z(utc_now())
         try:
-            values = get_settings(cfg.db_path, ["speedtest_mode", "speedtest_url"])
+            values = get_settings(cfg.db_path, ["speedtest_mode", "speedtest_url", "speedtest_duration_seconds"])
             speedtest_mode = (values.get("speedtest_mode") or "url").strip()
             speedtest_url = (values.get("speedtest_url") or cfg.speedtest_url or "").strip()
+            try:
+                speedtest_duration = float(values.get("speedtest_duration_seconds", str(cfg.speedtest_duration_seconds)))
+            except ValueError:
+                speedtest_duration = cfg.speedtest_duration_seconds
 
             started_at = utc_now()
             started_at_iso = to_iso_z(started_at)
@@ -99,7 +103,7 @@ async def run_speedtest_once(cfg: AppConfig) -> None:
                         result = await asyncio.to_thread(
                             run_speed_test,
                             speedtest_url,
-                            cfg.speedtest_duration_seconds,
+                            speedtest_duration,
                             cfg.speedtest_timeout_seconds,
                         )
                         error = result.error

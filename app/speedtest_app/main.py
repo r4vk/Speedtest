@@ -39,6 +39,7 @@ ensure_default_setting(cfg.db_path, "connect_interval_seconds", str(cfg.connect_
 ensure_default_setting(cfg.db_path, "speedtest_mode", "url")
 ensure_default_setting(cfg.db_path, "speedtest_url", cfg.speedtest_url or "")
 ensure_default_setting(cfg.db_path, "speedtest_interval_seconds", str(cfg.speedtest_interval_seconds))
+ensure_default_setting(cfg.db_path, "speedtest_duration_seconds", str(cfg.speedtest_duration_seconds))
 
 def _read_version() -> str:
     """Odczytaj wersję z pliku VERSION (wbudowanego w obraz Docker)."""
@@ -148,6 +149,7 @@ class ConfigUpdate(BaseModel):
     speedtest_mode: str | None = Field(default=None)
     speedtest_url: str | None = Field(default=None, max_length=2048)
     speedtest_interval_seconds: float | None = Field(default=None, gt=1, le=7 * 24 * 3600)
+    speedtest_duration_seconds: float | None = Field(default=None, ge=5, le=120)
 
 
 def _effective_config() -> ConfigResponse:
@@ -159,6 +161,7 @@ def _effective_config() -> ConfigResponse:
             "speedtest_mode",
             "speedtest_url",
             "speedtest_interval_seconds",
+            "speedtest_duration_seconds",
         ],
     )
     connect_target = values.get("connect_target", cfg.connect_target)
@@ -177,13 +180,18 @@ def _effective_config() -> ConfigResponse:
     except ValueError:
         speedtest_interval = cfg.speedtest_interval_seconds
 
+    try:
+        speedtest_duration = float(values.get("speedtest_duration_seconds", str(cfg.speedtest_duration_seconds)))
+    except ValueError:
+        speedtest_duration = cfg.speedtest_duration_seconds
+
     return ConfigResponse(
         connect_target=connect_target,
         connect_interval_seconds=connect_interval,
         speedtest_mode=speedtest_mode,
         speedtest_url=speedtest_url,
         speedtest_interval_seconds=speedtest_interval,
-        speedtest_duration_seconds=cfg.speedtest_duration_seconds,
+        speedtest_duration_seconds=speedtest_duration,
     )
 
 
@@ -208,6 +216,8 @@ def api_update_config(update: ConfigUpdate):
         set_setting(cfg.db_path, "speedtest_url", update.speedtest_url.strip(), now_iso=now_iso)
     if update.speedtest_interval_seconds is not None:
         set_setting(cfg.db_path, "speedtest_interval_seconds", str(update.speedtest_interval_seconds), now_iso=now_iso)
+    if update.speedtest_duration_seconds is not None:
+        set_setting(cfg.db_path, "speedtest_duration_seconds", str(update.speedtest_duration_seconds), now_iso=now_iso)
 
     cfg2 = _effective_config()
     if cfg2.connect_interval_seconds <= 0:

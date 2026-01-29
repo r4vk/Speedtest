@@ -87,6 +87,7 @@ function currentConfigDraft() {
     speedtest_mode: selectedSpeedtestMode(),
     speedtest_url: qs("cfg-speed-url").value.trim(),
     speedtest_interval_seconds: normalizeNum(qs("cfg-speed-interval").value),
+    speedtest_duration_seconds: normalizeNum(qs("cfg-speed-duration").value),
   };
 }
 
@@ -97,6 +98,7 @@ function isDraftDifferent(draft, cfg) {
   if ((cfg.speedtest_mode ?? "url") !== (draft.speedtest_mode ?? "url")) return true;
   if ((cfg.speedtest_url ?? "").trim() !== (draft.speedtest_url ?? "").trim()) return true;
   if (normalizeNum(cfg.speedtest_interval_seconds) !== normalizeNum(draft.speedtest_interval_seconds)) return true;
+  if (normalizeNum(cfg.speedtest_duration_seconds) !== normalizeNum(draft.speedtest_duration_seconds)) return true;
   return false;
 }
 
@@ -116,6 +118,7 @@ async function loadConfig() {
   for (const r of radios) r.checked = (r.value === speedMode);
   qs("cfg-speed-url").value = cfg.speedtest_url ?? "";
   qs("cfg-speed-interval").value = cfg.speedtest_interval_seconds ?? 900;
+  qs("cfg-speed-duration").value = cfg.speedtest_duration_seconds ?? 10;
   applySpeedtestModeUi(speedMode);
   setCfgDirty(false);
 }
@@ -154,6 +157,7 @@ async function saveConfig() {
     speedtest_mode: speedMode,
     speedtest_url: qs("cfg-speed-url").value.trim(),
     speedtest_interval_seconds: Number(qs("cfg-speed-interval").value),
+    speedtest_duration_seconds: Number(qs("cfg-speed-duration").value),
   };
   const resp = await fetch("/api/config", {
     method: "PUT",
@@ -591,6 +595,7 @@ for (const el of [
   qs("cfg-connect-interval"),
   qs("cfg-speed-url"),
   qs("cfg-speed-interval"),
+  qs("cfg-speed-duration"),
 ]) {
   el?.addEventListener("input", updateCfgDirty);
 }
