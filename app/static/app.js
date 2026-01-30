@@ -323,6 +323,60 @@ async function loadStatus() {
   }
 }
 
+function buildOnlineDataPoints(outageIntervals, rangeFromMs, rangeToMs) {
+  // Generate online status data points with proper time-based representation.
+  // For each outage, we create 4 points: before-start (online), at-start (offline),
+  // at-end (offline), after-end (online).
+  // This ensures the offline period is accurately represented in time.
+  const points = [];
+  const ONLINE_Y = 0.8; // Scale to not overlap with speed average line
+
+  // Sort outages by start time
+  const sorted = [...outageIntervals].sort((a, b) => a.startMs - b.startMs);
+
+  if (sorted.length === 0) {
+    // No outages - just show online for entire range
+    points.push({ x: rangeFromMs, y: ONLINE_Y });
+    points.push({ x: rangeToMs, y: ONLINE_Y });
+    return points;
+  }
+
+  // Start with online at range beginning (if before first outage)
+  if (sorted[0].startMs > rangeFromMs) {
+    points.push({ x: rangeFromMs, y: ONLINE_Y });
+  }
+
+  for (let i = 0; i < sorted.length; i++) {
+    const outage = sorted[i];
+    const startMs = Math.max(outage.startMs, rangeFromMs);
+    const endMs = Math.min(outage.endMs, rangeToMs);
+
+    // Point just before outage (online) - only if there's a gap
+    if (startMs > rangeFromMs && (points.length === 0 || points[points.length - 1].x < startMs - 1)) {
+      points.push({ x: startMs - 1, y: ONLINE_Y });
+    }
+
+    // Outage start (transition to offline)
+    points.push({ x: startMs, y: 0 });
+
+    // Outage end (still offline)
+    points.push({ x: endMs, y: 0 });
+
+    // Point just after outage (back online)
+    if (endMs < rangeToMs) {
+      points.push({ x: endMs + 1, y: ONLINE_Y });
+    }
+  }
+
+  // End with online at range end (if after last outage)
+  const lastOutageEnd = sorted[sorted.length - 1].endMs;
+  if (lastOutageEnd < rangeToMs && (points.length === 0 || points[points.length - 1].x < rangeToMs)) {
+    points.push({ x: rangeToMs, y: ONLINE_Y });
+  }
+
+  return points;
+}
+
 async function loadChart() {
   const params = paramsFromInputs();
   const [speedResp, outagesResp] = await Promise.all([
@@ -336,6 +390,8 @@ async function loadChart() {
 
   const rangeFrom = speedData?.range?.from || outagesData?.range?.from || null;
   const rangeTo = speedData?.range?.to || outagesData?.range?.to || null;
+  const rangeFromMs = parseIsoToMs(rangeFrom);
+  const rangeToMs = parseIsoToMs(rangeTo);
 
   const outageIntervals = outages
     .map(o => ({ startMs: parseIsoToMs(o.started_at), endMs: parseIsoToMs(o.ended_at) }))
@@ -345,142 +401,134 @@ async function loadChart() {
   const avgMbps = okSpeeds.length ? (okSpeeds.reduce((a, b) => a + b, 0) / okSpeeds.length) : 0;
   currentAvgMbps = avgMbps;
 
-  // Labels = union: speed tests + outage boundaries (only actual data points).
-  const labelCandidates = [];
-  for (const it of items) labelCandidates.push(it.started_at);
-  for (const o of outages) {
-    labelCandidates.push(o.started_at);
-    labelCandidates.push(o.ended_at);
-  }
-  const labels = uniqueSortedIso(labelCandidates);
+  // Build speed data points with timestamps
+  const speedDataPoints = items
+    .filter(it => !it.error && typeof it.mbps === "number" && it.mbps > 0 && avgMbps > 0)
+    .map(it => {
+      const tMs = parseIsoToMs(it.started_at);
+      return {
+        x: tMs,
+        y: it.mbps / avgMbps,
+        mbps: it.mbps,
+      };
+    })
+    .filter(p => p.x != null)
+    .sort((a, b) => a.x - b.x);
 
-  const speedByTs = new Map();
-  for (const it of items) speedByTs.set(normalizeIsoKey(it.started_at), it);
-
-  const speedRel = labels.map((ts) => {
-    const it = speedByTs.get(ts);
-    if (!it || it.error || typeof it.mbps !== "number" || it.mbps <= 0 || avgMbps <= 0) return null;
-    return it.mbps / avgMbps;
-  });
-  const onlineRel = labels.map((ts) => {
-    const tMs = parseIsoToMs(ts);
-    const online = isOnlineAt(outageIntervals, tMs);
-    // Skaluj wartość online (1) do 0.8, żeby linia nie zlewała się ze średnią prędkością
-    return online === 1 ? 0.8 : online;
-  });
+  // Build online status data points (time-accurate)
+  const onlineDataPoints = buildOnlineDataPoints(outageIntervals, rangeFromMs, rangeToMs);
 
   const ctx = qs("speedChart").getContext("2d");
   const maxRel = Math.max(
     1.2,
-    ...speedRel.filter(v => typeof v === "number" && Number.isFinite(v)),
-    ...onlineRel.filter(v => typeof v === "number" && Number.isFinite(v)),
+    ...speedDataPoints.map(p => p.y).filter(v => Number.isFinite(v)),
+    ...onlineDataPoints.map(p => p.y).filter(v => Number.isFinite(v)),
   );
   const relMax = Math.max(1.2, maxRel * 1.15);
 
-  if (!speedChart) {
-    speedChart = new Chart(ctx, {
-      type: "line",
-      data: {
-        labels,
-        datasets: [{
-          label: "Prędkość (Mbps)",
-          yAxisID: "yMbps",
-          data: labels.map((ts, idx) => {
-            const it = speedByTs.get(ts);
-            return {
-              x: ts,
-              y: speedRel[idx],
-              mbps: (it && !it.error) ? it.mbps : null,
-              error: it?.error || null,
-            };
-          }),
-          borderColor: "rgba(99, 102, 241, 0.95)",
-          backgroundColor: "rgba(99, 102, 241, 0.2)",
-          borderWidth: 2,
-          pointRadius: 1.5,
-          tension: 0.25,
-          spanGaps: true,
-        }, {
-          label: "Online (0/1)",
-          yAxisID: "yRel",
-          data: onlineRel,
-          borderColor: "rgba(34, 197, 94, 0.95)",
-          backgroundColor: "rgba(34, 197, 94, 0.15)",
-          borderWidth: 2,
-          pointRadius: 0,
-          stepped: true,
-          spanGaps: true,
-        }],
-      },
-      options: {
-        responsive: true,
-        scales: {
-          x: {
-            ticks: { color: "rgba(194,204,240,.92)", maxRotation: 0, autoSkip: true },
-            grid: {
-              color: "rgba(231,236,255,.10)",
-              tickColor: "rgba(231,236,255,.10)",
+  const chartConfig = {
+    type: "line",
+    data: {
+      datasets: [{
+        label: "Prędkość (Mbps)",
+        yAxisID: "yMbps",
+        data: speedDataPoints,
+        borderColor: "rgba(99, 102, 241, 0.95)",
+        backgroundColor: "rgba(99, 102, 241, 0.2)",
+        borderWidth: 2,
+        pointRadius: 1.5,
+        tension: 0.25,
+        spanGaps: true,
+      }, {
+        label: "Online (0/1)",
+        yAxisID: "yRel",
+        data: onlineDataPoints,
+        borderColor: "rgba(34, 197, 94, 0.95)",
+        backgroundColor: "rgba(34, 197, 94, 0.15)",
+        borderWidth: 2,
+        pointRadius: 0,
+        stepped: true,
+        fill: true,
+        spanGaps: false,
+      }],
+    },
+    options: {
+      responsive: true,
+      scales: {
+        x: {
+          type: "time",
+          time: {
+            displayFormats: {
+              hour: "HH:mm",
+              minute: "HH:mm",
+              second: "HH:mm:ss",
+              day: "MM-dd",
             },
+            tooltipFormat: "yyyy-MM-dd HH:mm:ss",
           },
-          yRel: {
-            position: "left",
-            min: 0,
-            max: relMax,
-            ticks: {
-              color: "rgba(169,180,221,.8)",
-              callback: (v) => (v === 0 || v === 1 ? String(v) : ""),
-            },
-            grid: { color: "rgba(231,236,255,.06)" },
-            title: { display: true, text: "Online (0/1)", color: "rgba(169,180,221,.9)" },
-          },
-          yMbps: {
-            position: "right",
-            min: 0,
-            max: relMax,
-            grid: { drawOnChartArea: false },
-            ticks: {
-              color: "rgba(169,180,221,.8)",
-              callback: (v) => {
-                if (!currentAvgMbps || !Number.isFinite(currentAvgMbps)) return "";
-                return (Number(v) * currentAvgMbps).toFixed(0);
-              },
-            },
-            title: { display: true, text: "Prędkość (Mbps)", color: "rgba(169,180,221,.9)" },
+          min: rangeFromMs,
+          max: rangeToMs,
+          ticks: { color: "rgba(194,204,240,.92)", maxRotation: 0, autoSkip: true },
+          grid: {
+            color: "rgba(231,236,255,.10)",
+            tickColor: "rgba(231,236,255,.10)",
           },
         },
-        plugins: {
-          legend: { labels: { color: "rgba(231,236,255,.9)" } },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => {
-                if (ctx.dataset?.label?.startsWith("Prędkość")) {
-                  const mbps = ctx.raw && typeof ctx.raw === "object" ? ctx.raw.mbps : null;
-                  if (typeof mbps === "number" && Number.isFinite(mbps)) return `Prędkość: ${mbps.toFixed(2)} Mbps`;
-                  return "Prędkość: brak";
-                }
-                if (ctx.dataset?.label?.startsWith("Online")) {
-                  const v = ctx.raw;
-                  return `Online: ${v > 0 ? "1" : "0"}`;
-                }
-                return ctx.formattedValue;
+        yRel: {
+          position: "left",
+          min: 0,
+          max: relMax,
+          ticks: {
+            color: "rgba(169,180,221,.8)",
+            callback: (v) => (v === 0 || v === 1 ? String(v) : ""),
+          },
+          grid: { color: "rgba(231,236,255,.06)" },
+          title: { display: true, text: "Online (0/1)", color: "rgba(169,180,221,.9)" },
+        },
+        yMbps: {
+          position: "right",
+          min: 0,
+          max: relMax,
+          grid: { drawOnChartArea: false },
+          ticks: {
+            color: "rgba(169,180,221,.8)",
+            callback: (v) => {
+              if (!currentAvgMbps || !Number.isFinite(currentAvgMbps)) return "";
+              return (Number(v) * currentAvgMbps).toFixed(0);
+            },
+          },
+          title: { display: true, text: "Prędkość (Mbps)", color: "rgba(169,180,221,.9)" },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: "rgba(231,236,255,.9)" } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              if (ctx.dataset?.label?.startsWith("Prędkość")) {
+                const mbps = ctx.raw && typeof ctx.raw === "object" ? ctx.raw.mbps : null;
+                if (typeof mbps === "number" && Number.isFinite(mbps)) return `Prędkość: ${mbps.toFixed(2)} Mbps`;
+                return "Prędkość: brak";
               }
+              if (ctx.dataset?.label?.startsWith("Online")) {
+                const v = ctx.raw && typeof ctx.raw === "object" ? ctx.raw.y : ctx.raw;
+                return `Online: ${v > 0 ? "1" : "0"}`;
+              }
+              return ctx.formattedValue;
             }
           }
         }
       }
-    });
+    }
+  };
+
+  if (!speedChart) {
+    speedChart = new Chart(ctx, chartConfig);
   } else {
-    speedChart.data.labels = labels;
-    speedChart.data.datasets[0].data = labels.map((ts, idx) => {
-      const it = speedByTs.get(ts);
-      return {
-        x: ts,
-        y: speedRel[idx],
-        mbps: (it && !it.error) ? it.mbps : null,
-        error: it?.error || null,
-      };
-    });
-    speedChart.data.datasets[1].data = onlineRel;
+    speedChart.data.datasets[0].data = speedDataPoints;
+    speedChart.data.datasets[1].data = onlineDataPoints;
+    speedChart.options.scales.x.min = rangeFromMs;
+    speedChart.options.scales.x.max = rangeToMs;
     speedChart.options.scales.yRel.max = relMax;
     speedChart.options.scales.yMbps.max = relMax;
     speedChart.update();
