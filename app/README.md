@@ -20,6 +20,8 @@ ENV dalej działa jako wartości startowe / domyślne.
 - `CONNECT_DEFAULT_PORT` (domyślnie: `443`)
 - `CONNECT_TIMEOUT_SECONDS` (domyślnie: `1`)
 - `CONNECT_INTERVAL_SECONDS` (domyślnie: `5`)
+- `CONNECTIVITY_CHECK_BUFFER_SECONDS` (domyślnie: `600`) – buforowanie pingów w pamięci; zapis do SQLite co N sekund
+- `CONNECTIVITY_CHECK_BUFFER_MAX` (domyślnie: `300`) – maks. liczba pingów w buforze (flush po przekroczeniu)
 
 Test łączności jest robiony przez szybkie połączenie TCP (host/URL → host+port) – działa w kontenerze bez uprawnień do ICMP.
 

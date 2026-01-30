@@ -212,6 +212,26 @@ def record_connectivity_check(
         )
 
 
+def record_connectivity_checks_batch(
+    db_path: str,
+    rows: list[tuple[str, bool, float | None]],
+) -> None:
+    if not rows:
+        return
+    values = [(checked_at_iso, 1 if is_up else 0, latency_ms) for checked_at_iso, is_up, latency_ms in rows]
+    with db_conn(db_path) as conn:
+        try:
+            conn.execute("BEGIN")
+            conn.executemany(
+                "INSERT INTO connectivity_checks(checked_at, is_up, latency_ms) VALUES (?,?,?)",
+                values,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
 def record_speed_test(
     db_path: str,
     started_at_iso: str,

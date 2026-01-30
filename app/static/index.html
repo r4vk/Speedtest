@@ -76,6 +76,16 @@
               <input id="cfg-speed-duration" type="number" min="5" max="120" step="1" value="10" />
               <span class="hint-inline">domyślnie 10s, zalecane 5-30s</span>
             </label>
+            <label>
+              Bufor pingów (sek)
+              <input id="cfg-ping-buffer-seconds" type="number" min="0" step="1" />
+              <span class="hint-inline">zapis do bazy co N sekund</span>
+            </label>
+            <label>
+              Bufor pingów (max wpisów)
+              <input id="cfg-ping-buffer-max" type="number" min="1" step="1" />
+              <span class="hint-inline">flush po przekroczeniu limitu</span>
+            </label>
           </div>
 
           <div class="modal-actions">

@@ -88,6 +88,8 @@ function currentConfigDraft() {
     speedtest_url: qs("cfg-speed-url").value.trim(),
     speedtest_interval_seconds: normalizeNum(qs("cfg-speed-interval").value),
     speedtest_duration_seconds: normalizeNum(qs("cfg-speed-duration").value),
+    connectivity_check_buffer_seconds: normalizeNum(qs("cfg-ping-buffer-seconds").value),
+    connectivity_check_buffer_max: normalizeNum(qs("cfg-ping-buffer-max").value),
   };
 }
 
@@ -99,6 +101,8 @@ function isDraftDifferent(draft, cfg) {
   if ((cfg.speedtest_url ?? "").trim() !== (draft.speedtest_url ?? "").trim()) return true;
   if (normalizeNum(cfg.speedtest_interval_seconds) !== normalizeNum(draft.speedtest_interval_seconds)) return true;
   if (normalizeNum(cfg.speedtest_duration_seconds) !== normalizeNum(draft.speedtest_duration_seconds)) return true;
+  if (normalizeNum(cfg.connectivity_check_buffer_seconds) !== normalizeNum(draft.connectivity_check_buffer_seconds)) return true;
+  if (normalizeNum(cfg.connectivity_check_buffer_max) !== normalizeNum(draft.connectivity_check_buffer_max)) return true;
   return false;
 }
 
@@ -119,6 +123,8 @@ async function loadConfig() {
   qs("cfg-speed-url").value = cfg.speedtest_url ?? "";
   qs("cfg-speed-interval").value = cfg.speedtest_interval_seconds ?? 900;
   qs("cfg-speed-duration").value = cfg.speedtest_duration_seconds ?? 10;
+  qs("cfg-ping-buffer-seconds").value = cfg.connectivity_check_buffer_seconds ?? 600;
+  qs("cfg-ping-buffer-max").value = cfg.connectivity_check_buffer_max ?? 300;
   applySpeedtestModeUi(speedMode);
   setCfgDirty(false);
 }
@@ -158,6 +164,8 @@ async function saveConfig() {
     speedtest_url: qs("cfg-speed-url").value.trim(),
     speedtest_interval_seconds: Number(qs("cfg-speed-interval").value),
     speedtest_duration_seconds: Number(qs("cfg-speed-duration").value),
+    connectivity_check_buffer_seconds: Number(qs("cfg-ping-buffer-seconds").value),
+    connectivity_check_buffer_max: Number(qs("cfg-ping-buffer-max").value),
   };
   const resp = await fetch("/api/config", {
     method: "PUT",
@@ -596,6 +604,8 @@ for (const el of [
   qs("cfg-speed-url"),
   qs("cfg-speed-interval"),
   qs("cfg-speed-duration"),
+  qs("cfg-ping-buffer-seconds"),
+  qs("cfg-ping-buffer-max"),
 ]) {
   el?.addEventListener("input", updateCfgDirty);
 }

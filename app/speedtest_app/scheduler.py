@@ -13,6 +13,7 @@ from .db import (
     get_current_connectivity_period,
     record_connectivity,
     record_connectivity_check,
+    record_connectivity_checks_batch,
     record_speed_test,
 )
 from .email_notify import send_outage_notification
@@ -130,6 +131,16 @@ async def run_speedtest_once(cfg: AppConfig) -> None:
 async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
     last_is_up: bool | None = None
     outage_started_at: str | None = None
+    pending_checks: list[tuple[str, bool, float | None]] = []
+    last_flush_ts = time.monotonic()
+
+    def _flush_pending() -> None:
+        nonlocal pending_checks, last_flush_ts
+        if not pending_checks:
+            return
+        record_connectivity_checks_batch(cfg.db_path, pending_checks)
+        pending_checks = []
+        last_flush_ts = time.monotonic()
 
     # Get initial state from DB.
     current_period = get_current_connectivity_period(cfg.db_path)
@@ -138,68 +149,96 @@ async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
         if not last_is_up:
             outage_started_at = current_period["started_at"]
 
-    while not state.stop.is_set():
-        values = get_settings(cfg.db_path, ["connect_target", "connect_interval_seconds"])
-        connect_target = values.get("connect_target", cfg.connect_target)
-        try:
-            interval_seconds = float(values.get("connect_interval_seconds", str(cfg.connect_interval_seconds)))
-        except ValueError:
-            interval_seconds = cfg.connect_interval_seconds
-        interval_seconds = max(0.1, interval_seconds)
+    try:
+        while not state.stop.is_set():
+            values = get_settings(
+                cfg.db_path,
+                [
+                    "connect_target",
+                    "connect_interval_seconds",
+                    "connectivity_check_buffer_seconds",
+                    "connectivity_check_buffer_max",
+                ],
+            )
+            connect_target = values.get("connect_target", cfg.connect_target)
+            try:
+                interval_seconds = float(values.get("connect_interval_seconds", str(cfg.connect_interval_seconds)))
+            except ValueError:
+                interval_seconds = cfg.connect_interval_seconds
+            interval_seconds = max(0.1, interval_seconds)
+            try:
+                buffer_seconds = float(
+                    values.get("connectivity_check_buffer_seconds", str(cfg.connectivity_check_buffer_seconds))
+                )
+            except ValueError:
+                buffer_seconds = cfg.connectivity_check_buffer_seconds
+            try:
+                buffer_max = int(values.get("connectivity_check_buffer_max", str(cfg.connectivity_check_buffer_max)))
+            except ValueError:
+                buffer_max = cfg.connectivity_check_buffer_max
+            buffer_seconds = max(0.0, buffer_seconds)
+            buffer_max = max(1, buffer_max)
 
-        t0 = time.perf_counter()
-        is_up = await asyncio.to_thread(
-            check_target,
-            connect_target,
-            cfg.connect_default_port,
-            cfg.connect_timeout_seconds,
-        )
-        dt_ms = (time.perf_counter() - t0) * 1000.0
-        now_iso = to_iso_z(utc_now())
-        record_connectivity_check(cfg.db_path, is_up=is_up, checked_at_iso=now_iso, latency_ms=dt_ms)
-        record_connectivity(cfg.db_path, is_up=is_up, now_iso=now_iso)
-
-        # Detect state changes and send email notifications.
-        if last_is_up is not None and is_up != last_is_up:
-            if not is_up:
-                # Internet went down - remember outage start time.
-                outage_started_at = now_iso
-                log.info("Internet outage detected at %s", to_local_display(parse_dt(now_iso)))
+            t0 = time.perf_counter()
+            is_up = await asyncio.to_thread(
+                check_target,
+                connect_target,
+                cfg.connect_default_port,
+                cfg.connect_timeout_seconds,
+            )
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            now_iso = to_iso_z(utc_now())
+            if buffer_seconds <= 0 and buffer_max <= 1:
+                record_connectivity_check(cfg.db_path, is_up=is_up, checked_at_iso=now_iso, latency_ms=dt_ms)
             else:
-                # Internet restored - send notification if outage was long enough.
-                ended_local = to_local_display(parse_dt(now_iso))
-                started_local = to_local_display(parse_dt(outage_started_at)) if outage_started_at else "?"
-                log.info("Internet restored at %s", ended_local)
+                pending_checks.append((now_iso, is_up, dt_ms))
+                if len(pending_checks) >= buffer_max or (time.monotonic() - last_flush_ts) >= buffer_seconds:
+                    _flush_pending()
+            record_connectivity(cfg.db_path, is_up=is_up, now_iso=now_iso)
 
-                if cfg.smtp_enabled and outage_started_at:
-                    outage_start_dt = parse_dt(outage_started_at)
-                    outage_end_dt = parse_dt(now_iso)
-                    outage_duration_seconds = (outage_end_dt - outage_start_dt).total_seconds()
+            # Detect state changes and send email notifications.
+            if last_is_up is not None and is_up != last_is_up:
+                if not is_up:
+                    # Internet went down - remember outage start time.
+                    outage_started_at = now_iso
+                    log.info("Internet outage detected at %s", to_local_display(parse_dt(now_iso)))
+                else:
+                    # Internet restored - send notification if outage was long enough.
+                    ended_local = to_local_display(parse_dt(now_iso))
+                    started_local = to_local_display(parse_dt(outage_started_at)) if outage_started_at else "?"
+                    log.info("Internet restored at %s", ended_local)
 
-                    if outage_duration_seconds >= cfg.smtp_min_outage_seconds:
-                        log.info(
-                            "Outage lasted %.0f seconds (>= %d), sending email notification",
-                            outage_duration_seconds,
-                            cfg.smtp_min_outage_seconds,
-                        )
-                        await asyncio.to_thread(
-                            send_outage_notification, cfg, started_local, ended_local, outage_duration_seconds
-                        )
-                    else:
-                        log.info(
-                            "Outage lasted %.0f seconds (< %d), skipping email notification",
-                            outage_duration_seconds,
-                            cfg.smtp_min_outage_seconds,
-                        )
+                    if cfg.smtp_enabled and outage_started_at:
+                        outage_start_dt = parse_dt(outage_started_at)
+                        outage_end_dt = parse_dt(now_iso)
+                        outage_duration_seconds = (outage_end_dt - outage_start_dt).total_seconds()
 
-                outage_started_at = None
+                        if outage_duration_seconds >= cfg.smtp_min_outage_seconds:
+                            log.info(
+                                "Outage lasted %.0f seconds (>= %d), sending email notification",
+                                outage_duration_seconds,
+                                cfg.smtp_min_outage_seconds,
+                            )
+                            await asyncio.to_thread(
+                                send_outage_notification, cfg, started_local, ended_local, outage_duration_seconds
+                            )
+                        else:
+                            log.info(
+                                "Outage lasted %.0f seconds (< %d), skipping email notification",
+                                outage_duration_seconds,
+                                cfg.smtp_min_outage_seconds,
+                            )
 
-        last_is_up = is_up
+                    outage_started_at = None
 
-        # Interwał liczony od początku doby (lokalna strefa czasowa kontenera/hosta).
-        stopped = await _sleep_or_stop(state.stop, _seconds_until_next_aligned(interval_seconds))
-        if stopped:
-            return
+            last_is_up = is_up
+
+            # Interwał liczony od początku doby (lokalna strefa czasowa kontenera/hosta).
+            stopped = await _sleep_or_stop(state.stop, _seconds_until_next_aligned(interval_seconds))
+            if stopped:
+                return
+    finally:
+        _flush_pending()
 
 
 async def speedtest_loop(cfg: AppConfig, state: RunningState) -> None:

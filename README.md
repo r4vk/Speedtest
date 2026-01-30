@@ -76,6 +76,8 @@ Większość ustawień można zmienić w UI (Ustawienia). Zmienne środowiskowe 
 | `CONNECT_DEFAULT_PORT` | `443` | Port TCP |
 | `CONNECT_INTERVAL_SECONDS` | `5` | Interwał sprawdzania (sekundy) |
 | `CONNECT_TIMEOUT_SECONDS` | `1` | Timeout połączenia |
+| `CONNECTIVITY_CHECK_BUFFER_SECONDS` | `600` | Buforuj pingi w RAM i zapisuj co N sekund |
+| `CONNECTIVITY_CHECK_BUFFER_MAX` | `300` | Maks. liczba pingów w buforze (flush po przekroczeniu) |
 
 ### Test prędkości
 

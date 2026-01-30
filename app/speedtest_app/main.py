@@ -40,6 +40,8 @@ ensure_default_setting(cfg.db_path, "speedtest_mode", "url")
 ensure_default_setting(cfg.db_path, "speedtest_url", cfg.speedtest_url or "")
 ensure_default_setting(cfg.db_path, "speedtest_interval_seconds", str(cfg.speedtest_interval_seconds))
 ensure_default_setting(cfg.db_path, "speedtest_duration_seconds", str(cfg.speedtest_duration_seconds))
+ensure_default_setting(cfg.db_path, "connectivity_check_buffer_seconds", str(cfg.connectivity_check_buffer_seconds))
+ensure_default_setting(cfg.db_path, "connectivity_check_buffer_max", str(cfg.connectivity_check_buffer_max))
 
 def _read_version() -> str:
     """Odczytaj wersję z pliku VERSION (wbudowanego w obraz Docker)."""
@@ -130,6 +132,8 @@ def api_status() -> dict[str, Any]:
             "speedtest_duration_seconds": eff.speedtest_duration_seconds,
             "speedtest_skip_if_offline": cfg.speedtest_skip_if_offline,
             "speedtest_url_configured": bool(eff.speedtest_url.strip()),
+            "connectivity_check_buffer_seconds": eff.connectivity_check_buffer_seconds,
+            "connectivity_check_buffer_max": eff.connectivity_check_buffer_max,
         },
     }
 
@@ -141,6 +145,8 @@ class ConfigResponse(BaseModel):
     speedtest_url: str
     speedtest_interval_seconds: float
     speedtest_duration_seconds: float
+    connectivity_check_buffer_seconds: float
+    connectivity_check_buffer_max: int
 
 
 class ConfigUpdate(BaseModel):
@@ -150,6 +156,8 @@ class ConfigUpdate(BaseModel):
     speedtest_url: str | None = Field(default=None, max_length=2048)
     speedtest_interval_seconds: float | None = Field(default=None, gt=1, le=7 * 24 * 3600)
     speedtest_duration_seconds: float | None = Field(default=None, ge=5, le=120)
+    connectivity_check_buffer_seconds: float | None = Field(default=None, ge=0, le=24 * 3600)
+    connectivity_check_buffer_max: int | None = Field(default=None, ge=1, le=100000)
 
 
 def _effective_config() -> ConfigResponse:
@@ -162,6 +170,8 @@ def _effective_config() -> ConfigResponse:
             "speedtest_url",
             "speedtest_interval_seconds",
             "speedtest_duration_seconds",
+            "connectivity_check_buffer_seconds",
+            "connectivity_check_buffer_max",
         ],
     )
     connect_target = values.get("connect_target", cfg.connect_target)
@@ -185,6 +195,18 @@ def _effective_config() -> ConfigResponse:
     except ValueError:
         speedtest_duration = cfg.speedtest_duration_seconds
 
+    try:
+        buffer_seconds = float(
+            values.get("connectivity_check_buffer_seconds", str(cfg.connectivity_check_buffer_seconds))
+        )
+    except ValueError:
+        buffer_seconds = cfg.connectivity_check_buffer_seconds
+
+    try:
+        buffer_max = int(values.get("connectivity_check_buffer_max", str(cfg.connectivity_check_buffer_max)))
+    except ValueError:
+        buffer_max = cfg.connectivity_check_buffer_max
+
     return ConfigResponse(
         connect_target=connect_target,
         connect_interval_seconds=connect_interval,
@@ -192,6 +214,8 @@ def _effective_config() -> ConfigResponse:
         speedtest_url=speedtest_url,
         speedtest_interval_seconds=speedtest_interval,
         speedtest_duration_seconds=speedtest_duration,
+        connectivity_check_buffer_seconds=buffer_seconds,
+        connectivity_check_buffer_max=buffer_max,
     )
 
 
@@ -218,6 +242,20 @@ def api_update_config(update: ConfigUpdate):
         set_setting(cfg.db_path, "speedtest_interval_seconds", str(update.speedtest_interval_seconds), now_iso=now_iso)
     if update.speedtest_duration_seconds is not None:
         set_setting(cfg.db_path, "speedtest_duration_seconds", str(update.speedtest_duration_seconds), now_iso=now_iso)
+    if update.connectivity_check_buffer_seconds is not None:
+        set_setting(
+            cfg.db_path,
+            "connectivity_check_buffer_seconds",
+            str(update.connectivity_check_buffer_seconds),
+            now_iso=now_iso,
+        )
+    if update.connectivity_check_buffer_max is not None:
+        set_setting(
+            cfg.db_path,
+            "connectivity_check_buffer_max",
+            str(update.connectivity_check_buffer_max),
+            now_iso=now_iso,
+        )
 
     cfg2 = _effective_config()
     if cfg2.connect_interval_seconds <= 0:

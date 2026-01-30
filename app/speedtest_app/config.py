@@ -20,6 +20,8 @@ class AppConfig:
     connect_default_port: int = int(os.getenv("CONNECT_DEFAULT_PORT", "443"))
     connect_timeout_seconds: float = float(os.getenv("CONNECT_TIMEOUT_SECONDS", "1"))
     connect_interval_seconds: float = float(os.getenv("CONNECT_INTERVAL_SECONDS", "5"))
+    connectivity_check_buffer_seconds: float = float(os.getenv("CONNECTIVITY_CHECK_BUFFER_SECONDS", "600"))
+    connectivity_check_buffer_max: int = int(os.getenv("CONNECTIVITY_CHECK_BUFFER_MAX", "300"))
 
     # Domyślny plik (user może zmienić przez UI).
     speedtest_url: str | None = os.getenv(
