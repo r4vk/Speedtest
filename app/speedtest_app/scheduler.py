@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from .db import (
     record_connectivity_check,
     record_connectivity_checks_batch,
     record_speed_test,
+    start_blocked_period,
+    end_blocked_period,
 )
 from .email_notify import send_outage_notification
 from .ookla_speedtest import run_ookla
@@ -23,6 +26,45 @@ from .speedtest import run_speed_test
 from .time_utils import to_iso_z, to_local_display, parse_dt, utc_now
 
 log = logging.getLogger(__name__)
+
+
+def _is_blocked_by_schedule(schedules_json: str) -> bool:
+    """Check if current time is within any blocking schedule.
+
+    Schedule format: [{"from": "HH:MM", "to": "HH:MM", "days": [0,1,2,3,4]}]
+    Days: 0=Monday, 1=Tuesday, ..., 6=Sunday
+    """
+    try:
+        schedules = json.loads(schedules_json) if schedules_json else []
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+    if not schedules:
+        return False
+
+    now = datetime.now().astimezone()
+    current_day = now.weekday()  # 0=Monday, 6=Sunday
+    current_time = now.strftime("%H:%M")
+
+    for sched in schedules:
+        days = sched.get("days", [])
+        if not days or current_day not in days:
+            continue
+
+        time_from = sched.get("from", "00:00")
+        time_to = sched.get("to", "23:59")
+
+        # Handle time range (including overnight ranges)
+        if time_from <= time_to:
+            # Normal range: e.g., 08:00 - 16:00
+            if time_from <= current_time <= time_to:
+                return True
+        else:
+            # Overnight range: e.g., 22:00 - 06:00
+            if current_time >= time_from or current_time <= time_to:
+                return True
+
+    return False
 
 
 @dataclass(frozen=True)
@@ -158,8 +200,32 @@ async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
                     "connect_interval_seconds",
                     "connectivity_check_buffer_seconds",
                     "connectivity_check_buffer_max",
+                    "ping_enabled",
+                    "ping_schedules",
                 ],
             )
+
+            # Check if ping is enabled
+            ping_enabled = values.get("ping_enabled", "true").lower() == "true"
+            if not ping_enabled:
+                start_blocked_period(cfg.db_path, "ping", "disabled")
+                stopped = await _sleep_or_stop(state.stop, 1.0)
+                if stopped:
+                    return
+                continue
+
+            # Check if blocked by schedule
+            ping_schedules = values.get("ping_schedules", "[]")
+            if _is_blocked_by_schedule(ping_schedules):
+                start_blocked_period(cfg.db_path, "ping", "schedule")
+                stopped = await _sleep_or_stop(state.stop, 1.0)
+                if stopped:
+                    return
+                continue
+
+            # Not blocked - end any active blocked period
+            end_blocked_period(cfg.db_path, "ping")
+
             connect_target = values.get("connect_target", cfg.connect_target)
             try:
                 interval_seconds = float(values.get("connect_interval_seconds", str(cfg.connect_interval_seconds)))
@@ -243,7 +309,32 @@ async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
 
 async def speedtest_loop(cfg: AppConfig, state: RunningState) -> None:
     while not state.stop.is_set():
-        values = get_settings(cfg.db_path, ["speedtest_mode", "speedtest_url", "speedtest_interval_seconds"])
+        values = get_settings(
+            cfg.db_path,
+            ["speedtest_mode", "speedtest_url", "speedtest_interval_seconds", "speed_enabled", "speed_schedules"],
+        )
+
+        # Check if speed test is enabled
+        speed_enabled = values.get("speed_enabled", "true").lower() == "true"
+        if not speed_enabled:
+            start_blocked_period(cfg.db_path, "speed", "disabled")
+            stopped = await _sleep_or_stop(state.stop, 1.0)
+            if stopped:
+                return
+            continue
+
+        # Check if blocked by schedule
+        speed_schedules = values.get("speed_schedules", "[]")
+        if _is_blocked_by_schedule(speed_schedules):
+            start_blocked_period(cfg.db_path, "speed", "schedule")
+            stopped = await _sleep_or_stop(state.stop, 1.0)
+            if stopped:
+                return
+            continue
+
+        # Not blocked - end any active blocked period
+        end_blocked_period(cfg.db_path, "speed")
+
         try:
             interval_seconds = float(values.get("speedtest_interval_seconds", str(cfg.speedtest_interval_seconds)))
         except ValueError:

@@ -42,6 +42,10 @@ ensure_default_setting(cfg.db_path, "speedtest_interval_seconds", str(cfg.speedt
 ensure_default_setting(cfg.db_path, "speedtest_duration_seconds", str(cfg.speedtest_duration_seconds))
 ensure_default_setting(cfg.db_path, "connectivity_check_buffer_seconds", str(cfg.connectivity_check_buffer_seconds))
 ensure_default_setting(cfg.db_path, "connectivity_check_buffer_max", str(cfg.connectivity_check_buffer_max))
+ensure_default_setting(cfg.db_path, "ping_enabled", "true")
+ensure_default_setting(cfg.db_path, "speed_enabled", "true")
+ensure_default_setting(cfg.db_path, "ping_schedules", "[]")
+ensure_default_setting(cfg.db_path, "speed_schedules", "[]")
 
 def _read_version() -> str:
     """Odczytaj wersję z pliku VERSION (wbudowanego w obraz Docker)."""
@@ -147,6 +151,10 @@ class ConfigResponse(BaseModel):
     speedtest_duration_seconds: float
     connectivity_check_buffer_seconds: float
     connectivity_check_buffer_max: int
+    ping_enabled: bool
+    speed_enabled: bool
+    ping_schedules: str
+    speed_schedules: str
 
 
 class ConfigUpdate(BaseModel):
@@ -158,6 +166,10 @@ class ConfigUpdate(BaseModel):
     speedtest_duration_seconds: float | None = Field(default=None, ge=5, le=120)
     connectivity_check_buffer_seconds: float | None = Field(default=None, ge=0, le=24 * 3600)
     connectivity_check_buffer_max: int | None = Field(default=None, ge=1, le=100000)
+    ping_enabled: bool | None = Field(default=None)
+    speed_enabled: bool | None = Field(default=None)
+    ping_schedules: str | None = Field(default=None, max_length=8192)
+    speed_schedules: str | None = Field(default=None, max_length=8192)
 
 
 def _effective_config() -> ConfigResponse:
@@ -172,6 +184,10 @@ def _effective_config() -> ConfigResponse:
             "speedtest_duration_seconds",
             "connectivity_check_buffer_seconds",
             "connectivity_check_buffer_max",
+            "ping_enabled",
+            "speed_enabled",
+            "ping_schedules",
+            "speed_schedules",
         ],
     )
     connect_target = values.get("connect_target", cfg.connect_target)
@@ -207,6 +223,11 @@ def _effective_config() -> ConfigResponse:
     except ValueError:
         buffer_max = cfg.connectivity_check_buffer_max
 
+    ping_enabled = values.get("ping_enabled", "true").lower() == "true"
+    speed_enabled = values.get("speed_enabled", "true").lower() == "true"
+    ping_schedules = values.get("ping_schedules", "[]")
+    speed_schedules = values.get("speed_schedules", "[]")
+
     return ConfigResponse(
         connect_target=connect_target,
         connect_interval_seconds=connect_interval,
@@ -216,6 +237,10 @@ def _effective_config() -> ConfigResponse:
         speedtest_duration_seconds=speedtest_duration,
         connectivity_check_buffer_seconds=buffer_seconds,
         connectivity_check_buffer_max=buffer_max,
+        ping_enabled=ping_enabled,
+        speed_enabled=speed_enabled,
+        ping_schedules=ping_schedules,
+        speed_schedules=speed_schedules,
     )
 
 
@@ -256,6 +281,14 @@ def api_update_config(update: ConfigUpdate):
             str(update.connectivity_check_buffer_max),
             now_iso=now_iso,
         )
+    if update.ping_enabled is not None:
+        set_setting(cfg.db_path, "ping_enabled", "true" if update.ping_enabled else "false", now_iso=now_iso)
+    if update.speed_enabled is not None:
+        set_setting(cfg.db_path, "speed_enabled", "true" if update.speed_enabled else "false", now_iso=now_iso)
+    if update.ping_schedules is not None:
+        set_setting(cfg.db_path, "ping_schedules", update.ping_schedules, now_iso=now_iso)
+    if update.speed_schedules is not None:
+        set_setting(cfg.db_path, "speed_schedules", update.speed_schedules, now_iso=now_iso)
 
     cfg2 = _effective_config()
     if cfg2.connect_interval_seconds <= 0:
@@ -333,6 +366,32 @@ def api_pings(
                 "latency_ms": r.get("latency_ms"),
             }
         )
+    return {"range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)}, "items": items}
+
+
+@app.get("/api/blocked-periods")
+def api_blocked_periods(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+    test_type: str = Query(default="speed"),
+) -> dict[str, Any]:
+    """Return blocked periods for a given test type (ping or speed) in the specified range."""
+    from .db import query_blocked_periods
+
+    pr = parse_range(from_, to)
+    tr = TimeRange(start_iso=to_iso_z(pr.start), end_iso=to_iso_z(pr.end))
+    rows = query_blocked_periods(cfg.db_path, tr=tr, test_type=test_type)
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        started_at = to_local_iso(parse_dt(r["started_at"]))
+        ended_at = to_local_iso(parse_dt(r["ended_at"])) if r["ended_at"] else to_local_iso(utc_now())
+        items.append({
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "reason": r["reason"],
+        })
+
     return {"range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)}, "items": items}
 
 

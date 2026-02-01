@@ -70,7 +70,11 @@ class ParsedRange:
 
 
 def parse_range(from_q: str | None, to_q: str | None, default_hours: int = 24) -> ParsedRange:
-    end = parse_dt(to_q) if to_q else utc_now()
+    now = utc_now()
+    end = parse_dt(to_q) if to_q else now
+    # Clamp end to now - chart should not extend into the future
+    if end > now:
+        end = now
     start = parse_dt(from_q) if from_q else end - timedelta(hours=default_hours)
     if start > end:
         start, end = end, start

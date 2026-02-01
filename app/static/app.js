@@ -68,6 +68,11 @@ let lastTimeSeriesRefreshAtMs = 0;
 const AUTO_SERIES_REFRESH_MS = 30_000;
 let cfgDirty = false;
 
+// Schedule data
+let pingSchedules = [];
+let speedSchedules = [];
+const DAYS = ["Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd"];
+
 function setCfgDirty(isDirty) {
   cfgDirty = Boolean(isDirty);
   const btn = qs("cfg-save");
@@ -90,6 +95,10 @@ function currentConfigDraft() {
     speedtest_duration_seconds: normalizeNum(qs("cfg-speed-duration").value),
     connectivity_check_buffer_seconds: normalizeNum(qs("cfg-ping-buffer-seconds").value),
     connectivity_check_buffer_max: normalizeNum(qs("cfg-ping-buffer-max").value),
+    ping_enabled: qs("cfg-ping-enabled").checked,
+    speed_enabled: qs("cfg-speed-enabled").checked,
+    ping_schedules: JSON.stringify(pingSchedules),
+    speed_schedules: JSON.stringify(speedSchedules),
   };
 }
 
@@ -103,6 +112,10 @@ function isDraftDifferent(draft, cfg) {
   if (normalizeNum(cfg.speedtest_duration_seconds) !== normalizeNum(draft.speedtest_duration_seconds)) return true;
   if (normalizeNum(cfg.connectivity_check_buffer_seconds) !== normalizeNum(draft.connectivity_check_buffer_seconds)) return true;
   if (normalizeNum(cfg.connectivity_check_buffer_max) !== normalizeNum(draft.connectivity_check_buffer_max)) return true;
+  if (Boolean(cfg.ping_enabled) !== Boolean(draft.ping_enabled)) return true;
+  if (Boolean(cfg.speed_enabled) !== Boolean(draft.speed_enabled)) return true;
+  if ((cfg.ping_schedules ?? "[]") !== (draft.ping_schedules ?? "[]")) return true;
+  if ((cfg.speed_schedules ?? "[]") !== (draft.speed_schedules ?? "[]")) return true;
   return false;
 }
 
@@ -125,8 +138,124 @@ async function loadConfig() {
   qs("cfg-speed-duration").value = cfg.speedtest_duration_seconds ?? 10;
   qs("cfg-ping-buffer-seconds").value = cfg.connectivity_check_buffer_seconds ?? 600;
   qs("cfg-ping-buffer-max").value = cfg.connectivity_check_buffer_max ?? 300;
+
+  // Enable/disable toggles
+  qs("cfg-ping-enabled").checked = cfg.ping_enabled !== false;
+  qs("cfg-speed-enabled").checked = cfg.speed_enabled !== false;
+  updateSectionState("ping");
+  updateSectionState("speed");
+
+  // Schedules
+  try {
+    pingSchedules = JSON.parse(cfg.ping_schedules || "[]");
+  } catch { pingSchedules = []; }
+  try {
+    speedSchedules = JSON.parse(cfg.speed_schedules || "[]");
+  } catch { speedSchedules = []; }
+  renderScheduleList("ping");
+  renderScheduleList("speed");
+
   applySpeedtestModeUi(speedMode);
   setCfgDirty(false);
+}
+
+function updateSectionState(type) {
+  const checkbox = qs(`cfg-${type}-enabled`);
+  const section = checkbox.closest(".settings-section");
+  if (checkbox.checked) {
+    section.classList.remove("disabled");
+  } else {
+    section.classList.add("disabled");
+  }
+}
+
+function renderScheduleList(type) {
+  const list = qs(`${type}-schedule-list`);
+  const schedules = type === "ping" ? pingSchedules : speedSchedules;
+
+  if (schedules.length === 0) {
+    list.innerHTML = '<div class="schedule-empty">Brak blokad - testy wykonywane zawsze</div>';
+    return;
+  }
+
+  list.innerHTML = "";
+  schedules.forEach((sched, idx) => {
+    const item = document.createElement("div");
+    item.className = "schedule-item";
+
+    // Time from
+    const timeFrom = document.createElement("input");
+    timeFrom.type = "time";
+    timeFrom.value = sched.from || "00:00";
+    timeFrom.addEventListener("change", () => {
+      sched.from = timeFrom.value;
+      updateCfgDirty();
+    });
+
+    // Time to
+    const timeTo = document.createElement("input");
+    timeTo.type = "time";
+    timeTo.value = sched.to || "23:59";
+    timeTo.addEventListener("change", () => {
+      sched.to = timeTo.value;
+      updateCfgDirty();
+    });
+
+    // Days selection
+    const daysDiv = document.createElement("div");
+    daysDiv.className = "days-select";
+    DAYS.forEach((day, dayIdx) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "day-btn" + (sched.days?.includes(dayIdx) ? " active" : "");
+      btn.textContent = day;
+      btn.addEventListener("click", () => {
+        if (!sched.days) sched.days = [];
+        const idx2 = sched.days.indexOf(dayIdx);
+        if (idx2 >= 0) {
+          sched.days.splice(idx2, 1);
+          btn.classList.remove("active");
+        } else {
+          sched.days.push(dayIdx);
+          btn.classList.add("active");
+        }
+        updateCfgDirty();
+      });
+      daysDiv.appendChild(btn);
+    });
+
+    // Remove button
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn-remove";
+    removeBtn.textContent = "×";
+    removeBtn.addEventListener("click", () => {
+      if (type === "ping") {
+        pingSchedules.splice(idx, 1);
+      } else {
+        speedSchedules.splice(idx, 1);
+      }
+      renderScheduleList(type);
+      updateCfgDirty();
+    });
+
+    item.appendChild(timeFrom);
+    item.appendChild(timeTo);
+    item.appendChild(daysDiv);
+    item.appendChild(removeBtn);
+    list.appendChild(item);
+  });
+}
+
+function addSchedule(type) {
+  const newSched = { from: "00:00", to: "23:59", days: [] };
+  if (type === "ping") {
+    pingSchedules.push(newSched);
+  } else {
+    speedSchedules.push(newSched);
+  }
+  renderScheduleList(type);
+  updateCfgDirty();
 }
 
 function setCfgMsg(text, ok) {
@@ -166,6 +295,10 @@ async function saveConfig() {
     speedtest_duration_seconds: Number(qs("cfg-speed-duration").value),
     connectivity_check_buffer_seconds: Number(qs("cfg-ping-buffer-seconds").value),
     connectivity_check_buffer_max: Number(qs("cfg-ping-buffer-max").value),
+    ping_enabled: qs("cfg-ping-enabled").checked,
+    speed_enabled: qs("cfg-speed-enabled").checked,
+    ping_schedules: JSON.stringify(pingSchedules),
+    speed_schedules: JSON.stringify(speedSchedules),
   };
   const resp = await fetch("/api/config", {
     method: "PUT",
@@ -377,16 +510,56 @@ function buildOnlineDataPoints(outageIntervals, rangeFromMs, rangeToMs) {
   return points;
 }
 
+function buildBlockedDataPoints(blockedIntervals, rangeFromMs, rangeToMs) {
+  // Generate blocked periods data points as a dashed line at y=0.4
+  // This shows when measurements were disabled/blocked by schedule
+  const points = [];
+  const BLOCKED_Y = 0.4;
+
+  if (!blockedIntervals || blockedIntervals.length === 0) {
+    return points;
+  }
+
+  // Sort by start time
+  const sorted = [...blockedIntervals].sort((a, b) => a.startMs - b.startMs);
+
+  for (const block of sorted) {
+    const startMs = Math.max(block.startMs, rangeFromMs);
+    const endMs = Math.min(block.endMs, rangeToMs);
+
+    if (startMs < endMs) {
+      // Add null before to create gap
+      if (points.length > 0) {
+        points.push({ x: startMs - 1, y: null });
+      }
+      // Blocked period start
+      points.push({ x: startMs, y: BLOCKED_Y });
+      // Blocked period end
+      points.push({ x: endMs, y: BLOCKED_Y });
+      // Add null after to create gap
+      points.push({ x: endMs + 1, y: null });
+    }
+  }
+
+  return points;
+}
+
 async function loadChart() {
   const params = paramsFromInputs();
-  const [speedResp, outagesResp] = await Promise.all([
+  const [speedResp, outagesResp, blockedPingResp, blockedSpeedResp] = await Promise.all([
     fetch(`/api/speed?${params.toString()}`),
     fetch(`/api/outages?${params.toString()}`),
+    fetch(`/api/blocked-periods?${params.toString()}&test_type=ping`),
+    fetch(`/api/blocked-periods?${params.toString()}&test_type=speed`),
   ]);
   const speedData = await speedResp.json();
   const outagesData = await outagesResp.json();
+  const blockedPingData = await blockedPingResp.json();
+  const blockedSpeedData = await blockedSpeedResp.json();
   const items = speedData.items || [];
   const outages = outagesData.items || [];
+  const blockedPing = blockedPingData.items || [];
+  const blockedSpeed = blockedSpeedData.items || [];
 
   const rangeFrom = speedData?.range?.from || outagesData?.range?.from || null;
   const rangeTo = speedData?.range?.to || outagesData?.range?.to || null;
@@ -396,6 +569,14 @@ async function loadChart() {
   const outageIntervals = outages
     .map(o => ({ startMs: parseIsoToMs(o.started_at), endMs: parseIsoToMs(o.ended_at) }))
     .filter(o => o.startMs != null && o.endMs != null);
+
+  const blockedPingIntervals = blockedPing
+    .map(b => ({ startMs: parseIsoToMs(b.started_at), endMs: parseIsoToMs(b.ended_at) }))
+    .filter(b => b.startMs != null && b.endMs != null);
+
+  const blockedSpeedIntervals = blockedSpeed
+    .map(b => ({ startMs: parseIsoToMs(b.started_at), endMs: parseIsoToMs(b.ended_at) }))
+    .filter(b => b.startMs != null && b.endMs != null);
 
   const okSpeeds = items.filter(i => !i.error && typeof i.mbps === "number" && i.mbps > 0).map(i => i.mbps);
   const avgMbps = okSpeeds.length ? (okSpeeds.reduce((a, b) => a + b, 0) / okSpeeds.length) : 0;
@@ -418,6 +599,10 @@ async function loadChart() {
   // Build online status data points (time-accurate)
   const onlineDataPoints = buildOnlineDataPoints(outageIntervals, rangeFromMs, rangeToMs);
 
+  // Build blocked periods data points
+  const blockedPingPoints = buildBlockedDataPoints(blockedPingIntervals, rangeFromMs, rangeToMs);
+  const blockedSpeedPoints = buildBlockedDataPoints(blockedSpeedIntervals, rangeFromMs, rangeToMs);
+
   const ctx = qs("speedChart").getContext("2d");
   const maxRel = Math.max(
     1.2,
@@ -426,32 +611,64 @@ async function loadChart() {
   );
   const relMax = Math.max(1.2, maxRel * 1.15);
 
+  const datasets = [{
+    label: "Prędkość (Mbps)",
+    yAxisID: "yMbps",
+    data: speedDataPoints,
+    borderColor: "rgba(99, 102, 241, 0.95)",
+    backgroundColor: "rgba(99, 102, 241, 0.2)",
+    borderWidth: 2,
+    pointRadius: 1.5,
+    tension: 0.25,
+    spanGaps: true,
+  }, {
+    label: "Online (0/1)",
+    yAxisID: "yRel",
+    data: onlineDataPoints,
+    borderColor: "rgba(34, 197, 94, 0.95)",
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
+    borderWidth: 2,
+    pointRadius: 0,
+    stepped: true,
+    fill: true,
+    spanGaps: false,
+  }];
+
+  // Add blocked ping dataset if there are blocked periods
+  if (blockedPingPoints.length > 0) {
+    datasets.push({
+      label: "Ping wył.",
+      yAxisID: "yRel",
+      data: blockedPingPoints,
+      borderColor: "rgba(245, 158, 11, 0.8)",
+      backgroundColor: "rgba(245, 158, 11, 0.1)",
+      borderWidth: 2,
+      borderDash: [6, 4],
+      pointRadius: 0,
+      fill: false,
+      spanGaps: false,
+    });
+  }
+
+  // Add blocked speed dataset if there are blocked periods
+  if (blockedSpeedPoints.length > 0) {
+    datasets.push({
+      label: "Speedtest wył.",
+      yAxisID: "yRel",
+      data: blockedSpeedPoints,
+      borderColor: "rgba(239, 68, 68, 0.8)",
+      backgroundColor: "rgba(239, 68, 68, 0.1)",
+      borderWidth: 2,
+      borderDash: [6, 4],
+      pointRadius: 0,
+      fill: false,
+      spanGaps: false,
+    });
+  }
+
   const chartConfig = {
     type: "line",
-    data: {
-      datasets: [{
-        label: "Prędkość (Mbps)",
-        yAxisID: "yMbps",
-        data: speedDataPoints,
-        borderColor: "rgba(99, 102, 241, 0.95)",
-        backgroundColor: "rgba(99, 102, 241, 0.2)",
-        borderWidth: 2,
-        pointRadius: 1.5,
-        tension: 0.25,
-        spanGaps: true,
-      }, {
-        label: "Online (0/1)",
-        yAxisID: "yRel",
-        data: onlineDataPoints,
-        borderColor: "rgba(34, 197, 94, 0.95)",
-        backgroundColor: "rgba(34, 197, 94, 0.15)",
-        borderWidth: 2,
-        pointRadius: 0,
-        stepped: true,
-        fill: true,
-        spanGaps: false,
-      }],
-    },
+    data: { datasets },
     options: {
       responsive: true,
       scales: {
@@ -514,6 +731,9 @@ async function loadChart() {
                 const v = ctx.raw && typeof ctx.raw === "object" ? ctx.raw.y : ctx.raw;
                 return `Online: ${v > 0 ? "1" : "0"}`;
               }
+              if (ctx.dataset?.label?.includes("wył.")) {
+                return `${ctx.dataset.label}: pomiar wyłączony`;
+              }
               return ctx.formattedValue;
             }
           }
@@ -525,8 +745,7 @@ async function loadChart() {
   if (!speedChart) {
     speedChart = new Chart(ctx, chartConfig);
   } else {
-    speedChart.data.datasets[0].data = speedDataPoints;
-    speedChart.data.datasets[1].data = onlineDataPoints;
+    speedChart.data.datasets = datasets;
     speedChart.options.scales.x.min = rangeFromMs;
     speedChart.options.scales.x.max = rangeToMs;
     speedChart.options.scales.yRel.max = relMax;
@@ -657,3 +876,17 @@ for (const el of [
 ]) {
   el?.addEventListener("input", updateCfgDirty);
 }
+
+// Toggle switches
+qs("cfg-ping-enabled")?.addEventListener("change", () => {
+  updateSectionState("ping");
+  updateCfgDirty();
+});
+qs("cfg-speed-enabled")?.addEventListener("change", () => {
+  updateSectionState("speed");
+  updateCfgDirty();
+});
+
+// Schedule buttons
+qs("add-ping-schedule")?.addEventListener("click", () => addSchedule("ping"));
+qs("add-speed-schedule")?.addEventListener("click", () => addSchedule("speed"));

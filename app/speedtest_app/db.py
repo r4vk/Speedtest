@@ -88,6 +88,7 @@ def ensure_db(db_path: str) -> None:
             """
         )
         _ensure_speed_tests_columns(conn)
+        _ensure_blocked_periods_table(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS settings (
@@ -96,6 +97,23 @@ def ensure_db(db_path: str) -> None:
               updated_at TEXT NOT NULL
             )
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS blocked_periods (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              test_type TEXT NOT NULL CHECK (test_type IN ('ping', 'speed')),
+              started_at TEXT NOT NULL,
+              ended_at TEXT NULL,
+              reason TEXT NOT NULL CHECK (reason IN ('disabled', 'schedule'))
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_blocked_periods_started_at ON blocked_periods(started_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_blocked_periods_test_type ON blocked_periods(test_type)"
         )
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
@@ -116,6 +134,27 @@ def _ensure_speed_tests_columns(conn: sqlite3.Connection) -> None:
         if name in cols:
             continue
         conn.execute(f"ALTER TABLE speed_tests ADD COLUMN {name} {ctype} NULL")
+
+
+def _ensure_blocked_periods_table(conn: sqlite3.Connection) -> None:
+    """Ensure blocked_periods table exists (migration for existing DBs)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS blocked_periods (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          test_type TEXT NOT NULL CHECK (test_type IN ('ping', 'speed')),
+          started_at TEXT NOT NULL,
+          ended_at TEXT NULL,
+          reason TEXT NOT NULL CHECK (reason IN ('disabled', 'schedule'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_blocked_periods_started_at ON blocked_periods(started_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_blocked_periods_test_type ON blocked_periods(test_type)"
+    )
 
 
 def get_settings(db_path: str, keys: list[str]) -> dict[str, str]:
@@ -350,5 +389,70 @@ def query_connectivity_checks(db_path: str, tr: TimeRange):
             ORDER BY checked_at ASC
             """,
             (tr.start_iso, tr.end_iso),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_current_blocked_period(db_path: str, test_type: str):
+    """Get the current open blocked period for a test type."""
+    with db_conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, test_type, started_at, ended_at, reason
+            FROM blocked_periods
+            WHERE test_type = ? AND ended_at IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (test_type,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def start_blocked_period(db_path: str, test_type: str, reason: str, now_iso: str | None = None) -> None:
+    """Start a new blocked period if not already in one."""
+    now_iso = now_iso or _utc_now_iso()
+    current = get_current_blocked_period(db_path, test_type)
+    if current is not None:
+        # Already in a blocked period
+        return
+    with db_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO blocked_periods(test_type, started_at, ended_at, reason) VALUES (?,?,?,?)",
+            (test_type, now_iso, None, reason),
+        )
+
+
+def end_blocked_period(db_path: str, test_type: str, now_iso: str | None = None) -> None:
+    """End the current blocked period if there is one."""
+    now_iso = now_iso or _utc_now_iso()
+    current = get_current_blocked_period(db_path, test_type)
+    if current is None:
+        return
+    with db_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE blocked_periods SET ended_at = ? WHERE id = ?",
+            (now_iso, current["id"]),
+        )
+
+
+def query_blocked_periods(db_path: str, tr: TimeRange, test_type: str | None = None):
+    """Query blocked periods within a time range."""
+    where_type = ""
+    params: list = [tr.end_iso, tr.start_iso]
+    if test_type is not None:
+        where_type = " AND test_type = ?"
+        params.append(test_type)
+    with db_conn(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT test_type, started_at, ended_at, reason
+            FROM blocked_periods
+            WHERE started_at < ?
+              AND (ended_at IS NULL OR ended_at > ?)
+              {where_type}
+            ORDER BY started_at ASC
+            """,
+            tuple(params),
         ).fetchall()
         return [dict(r) for r in rows]

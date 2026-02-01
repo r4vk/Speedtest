@@ -49,44 +49,94 @@
             <button id="close-settings" class="iconbtn" type="button" aria-label="Zamknij">×</button>
           </div>
 
-          <div class="settings">
-            <label>
-              Test internetu (URL lub host)
-              <input id="cfg-connect-target" type="text" placeholder="google.com" />
-            </label>
-            <label>
-              Interwał testu internetu (sek)
-              <input id="cfg-connect-interval" type="number" min="0.2" step="0.1" />
-            </label>
-            <div class="radio-group">
-              <div class="rlabel">Test prędkości</div>
-              <label class="radio"><input type="radio" name="speedtest-mode" value="url" checked /> Plik URL</label>
-              <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.net" /> speedtest.net</label>
-              <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.pl" /> speedtest.pl</label>
+          <div class="settings-sections">
+            <!-- Sekcja: Test łączności (ping) -->
+            <div class="settings-section">
+              <div class="section-header">
+                <h4>Test łączności (ping)</h4>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cfg-ping-enabled" checked />
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Włączony</span>
+                </label>
+              </div>
+              <div class="settings" id="ping-settings">
+                <label>
+                  Test internetu (URL lub host)
+                  <input id="cfg-connect-target" type="text" placeholder="google.com" />
+                </label>
+                <label>
+                  Interwał testu (sek)
+                  <input id="cfg-connect-interval" type="number" min="0.2" step="0.1" />
+                </label>
+                <div class="schedule-section">
+                  <div class="schedule-header">
+                    <span class="schedule-label">Harmonogram blokad</span>
+                    <button type="button" class="btn-small" id="add-ping-schedule">+ Dodaj</button>
+                  </div>
+                  <div class="schedule-list" id="ping-schedule-list"></div>
+                </div>
+              </div>
             </div>
-            <label>
-              URL testu prędkości (ftp/http/https)
-              <input id="cfg-speed-url" type="text" placeholder="https://..." />
-            </label>
-            <label>
-              Interwał testu prędkości (sek)
-              <input id="cfg-speed-interval" type="number" min="1" step="1" />
-            </label>
-            <label>
-              Czas pomiaru prędkości (sek)
-              <input id="cfg-speed-duration" type="number" min="5" max="120" step="1" value="10" />
-              <span class="hint-inline">domyślnie 10s, zalecane 5-30s</span>
-            </label>
-            <label>
-              Bufor pingów (sek)
-              <input id="cfg-ping-buffer-seconds" type="number" min="0" step="1" />
-              <span class="hint-inline">zapis do bazy co N sekund</span>
-            </label>
-            <label>
-              Bufor pingów (max wpisów)
-              <input id="cfg-ping-buffer-max" type="number" min="1" step="1" />
-              <span class="hint-inline">flush po przekroczeniu limitu</span>
-            </label>
+
+            <!-- Sekcja: Test prędkości -->
+            <div class="settings-section">
+              <div class="section-header">
+                <h4>Test prędkości</h4>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cfg-speed-enabled" checked />
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Włączony</span>
+                </label>
+              </div>
+              <div class="settings" id="speed-settings">
+                <div class="radio-group">
+                  <div class="rlabel">Tryb testu</div>
+                  <label class="radio"><input type="radio" name="speedtest-mode" value="url" checked /> Plik URL</label>
+                  <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.net" /> speedtest.net</label>
+                  <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.pl" /> speedtest.pl</label>
+                </div>
+                <label>
+                  URL testu prędkości (ftp/http/https)
+                  <input id="cfg-speed-url" type="text" placeholder="https://..." />
+                </label>
+                <label>
+                  Interwał testu prędkości (sek)
+                  <input id="cfg-speed-interval" type="number" min="1" step="1" />
+                </label>
+                <label>
+                  Czas pomiaru prędkości (sek)
+                  <input id="cfg-speed-duration" type="number" min="5" max="120" step="1" value="10" />
+                  <span class="hint-inline">domyślnie 10s, zalecane 5-30s</span>
+                </label>
+                <div class="schedule-section">
+                  <div class="schedule-header">
+                    <span class="schedule-label">Harmonogram blokad</span>
+                    <button type="button" class="btn-small" id="add-speed-schedule">+ Dodaj</button>
+                  </div>
+                  <div class="schedule-list" id="speed-schedule-list"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Sekcja: Buforowanie zapisu -->
+            <div class="settings-section">
+              <div class="section-header">
+                <h4>Buforowanie zapisu</h4>
+              </div>
+              <div class="settings">
+                <label>
+                  Bufor pingów (sek)
+                  <input id="cfg-ping-buffer-seconds" type="number" min="0" step="1" />
+                  <span class="hint-inline">zapis do bazy co N sekund</span>
+                </label>
+                <label>
+                  Bufor pingów (max wpisów)
+                  <input id="cfg-ping-buffer-max" type="number" min="1" step="1" />
+                  <span class="hint-inline">flush po przekroczeniu limitu</span>
+                </label>
+              </div>
+            </div>
           </div>
 
           <div class="modal-actions">
