@@ -106,7 +106,7 @@ function isDraftDifferent(draft, cfg) {
   if (!cfg) return false;
   if ((cfg.connect_target ?? "").trim() !== (draft.connect_target ?? "").trim()) return true;
   if (normalizeNum(cfg.connect_interval_seconds) !== normalizeNum(draft.connect_interval_seconds)) return true;
-  if ((cfg.speedtest_mode ?? "url") !== (draft.speedtest_mode ?? "url")) return true;
+  if ((cfg.speedtest_mode ?? "speedtest.net") !== (draft.speedtest_mode ?? "speedtest.net")) return true;
   if ((cfg.speedtest_url ?? "").trim() !== (draft.speedtest_url ?? "").trim()) return true;
   if (normalizeNum(cfg.speedtest_interval_seconds) !== normalizeNum(draft.speedtest_interval_seconds)) return true;
   if (normalizeNum(cfg.speedtest_duration_seconds) !== normalizeNum(draft.speedtest_duration_seconds)) return true;
@@ -130,7 +130,7 @@ async function loadConfig() {
   lastLoadedConfig = cfg;
   qs("cfg-connect-target").value = cfg.connect_target ?? "";
   qs("cfg-connect-interval").value = cfg.connect_interval_seconds ?? 1;
-  const speedMode = cfg.speedtest_mode ?? "url";
+  const speedMode = cfg.speedtest_mode ?? "speedtest.net";
   const radios = document.querySelectorAll("input[name='speedtest-mode']");
   for (const r of radios) r.checked = (r.value === speedMode);
   qs("cfg-speed-url").value = cfg.speedtest_url ?? "";
@@ -267,7 +267,7 @@ function setCfgMsg(text, ok) {
 
 function selectedSpeedtestMode() {
   const el = document.querySelector("input[name='speedtest-mode']:checked");
-  return el ? el.value : "url";
+  return el ? el.value : "speedtest.net";
 }
 
 function applySpeedtestModeUi(mode) {
@@ -312,7 +312,7 @@ async function saveConfig() {
   }
   const newCfg = await resp.json();
   setCfgMsg("Zapisano.", true);
-  const modeChanged = (lastLoadedConfig?.speedtest_mode ?? "url") !== (newCfg?.speedtest_mode ?? "url");
+  const modeChanged = (lastLoadedConfig?.speedtest_mode ?? "speedtest.net") !== (newCfg?.speedtest_mode ?? "speedtest.net");
   const urlChanged = (lastLoadedConfig?.speedtest_url ?? "") !== (newCfg?.speedtest_url ?? "");
   const intervalChanged = Number(lastLoadedConfig?.speedtest_interval_seconds ?? 0) !== Number(newCfg?.speedtest_interval_seconds ?? 0);
   lastLoadedConfig = newCfg;

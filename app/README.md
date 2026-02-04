@@ -29,7 +29,7 @@ W UI możesz też wybrać gotowy tryb: `speedtest.net` lub `speedtest.pl` (wtedy
 
 ### Test prędkości pobierania
 
-- `SPEEDTEST_URL` (domyślnie: wskazany plik ISO) – `ftp://...` lub `http(s)://...`
+- `SPEEDTEST_URL` (domyślnie: puste) – `ftp://...` lub `http(s)://...`
 - `SPEEDTEST_DURATION_SECONDS` (domyślnie: `10`)
 - `SPEEDTEST_INTERVAL_SECONDS` (domyślnie: `900`)
 - `SPEEDTEST_TIMEOUT_SECONDS` (domyślnie: `10`)

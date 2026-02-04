@@ -23,11 +23,8 @@ class AppConfig:
     connectivity_check_buffer_seconds: float = float(os.getenv("CONNECTIVITY_CHECK_BUFFER_SECONDS", "600"))
     connectivity_check_buffer_max: int = int(os.getenv("CONNECTIVITY_CHECK_BUFFER_MAX", "300"))
 
-    # Domyślny plik (user może zmienić przez UI).
-    speedtest_url: str | None = os.getenv(
-        "SPEEDTEST_URL",
-        "https://webmail.psm.pulawy.pl/debian-12.9.0-amd64-DVD-1.iso",
-    )
+    # Domyślnie brak URL (user może zmienić przez UI).
+    speedtest_url: str | None = (os.getenv("SPEEDTEST_URL") or "").strip() or None
     speedtest_duration_seconds: float = float(os.getenv("SPEEDTEST_DURATION_SECONDS", "10"))
     speedtest_interval_seconds: float = float(os.getenv("SPEEDTEST_INTERVAL_SECONDS", "900"))
     speedtest_timeout_seconds: float = float(os.getenv("SPEEDTEST_TIMEOUT_SECONDS", "10"))

@@ -92,12 +92,20 @@
               <div class="settings" id="speed-settings">
                 <div class="radio-group">
                   <div class="rlabel">Tryb testu</div>
-                  <label class="radio"><input type="radio" name="speedtest-mode" value="url" checked /> Plik URL</label>
-                  <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.net" /> speedtest.net</label>
+                  <label class="radio"><input type="radio" name="speedtest-mode" value="url" /> Plik URL</label>
+                  <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.net" checked /> speedtest.net</label>
                   <label class="radio"><input type="radio" name="speedtest-mode" value="speedtest.pl" /> speedtest.pl</label>
                 </div>
                 <label>
-                  URL testu prędkości (ftp/http/https)
+                  <span class="label-row">
+                    URL testu prędkości (ftp/http/https)
+                    <span
+                      class="info-icon"
+                      role="img"
+                      aria-label="Informacja"
+                      title="Dla użytkowników PSM Puławy: https://webmail.psm.pulawy.pl/debian-12.9.0-amd64-DVD-1.iso"
+                    >i</span>
+                  </span>
                   <input id="cfg-speed-url" type="text" placeholder="https://..." />
                 </label>
                 <label>
