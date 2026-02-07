@@ -4,5 +4,3 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        APP_VERSION: 0.0.11

@@ -23,6 +23,20 @@ jobs:
           set -euo pipefail
           echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Validate app version file
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(tr -d '\r\n' < app/speedtest_app/VERSION)"
+          if [[ -z "$APP_VERSION" ]]; then
+            echo "app/speedtest_app/VERSION is empty"
+            exit 1
+          fi
+          if [[ "$APP_VERSION" != "${{ steps.ver.outputs.version }}" ]]; then
+            echo "Tag (${{ steps.ver.outputs.version }}) does not match app version ($APP_VERSION)"
+            exit 1
+          fi
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -54,8 +68,6 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/speedtest:latest
             docker.io/${{ secrets.DOCKERHUB_USERNAME }}/speedtest:${{ steps.ver.outputs.version }}
             docker.io/${{ secrets.DOCKERHUB_USERNAME }}/speedtest:latest
-          build-args: |
-            APP_VERSION=${{ steps.ver.outputs.version }}
 
       - name: Build (linux/amd64)
         uses: docker/build-push-action@v6
@@ -65,8 +77,6 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: r4vk-speedtest:${{ steps.ver.outputs.version }}-amd64
-          build-args: |
-            APP_VERSION=${{ steps.ver.outputs.version }}
 
       - name: Save tar (linux/amd64)
         shell: bash
@@ -83,8 +93,6 @@ jobs:
           platforms: linux/arm64
           load: true
           tags: r4vk-speedtest:${{ steps.ver.outputs.version }}-arm64
-          build-args: |
-            APP_VERSION=${{ steps.ver.outputs.version }}
 
       - name: Save tar (linux/arm64)
         shell: bash

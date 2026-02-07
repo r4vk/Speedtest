@@ -39,8 +39,6 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: r4vk-speedtest:${{ steps.ver.outputs.version }}-amd64
-          build-args: |
-            APP_VERSION=${{ steps.ver.outputs.version }}
 
       - name: Save artifact (linux/amd64)
         shell: bash
@@ -57,8 +55,6 @@ jobs:
           platforms: linux/arm64
           load: true
           tags: r4vk-speedtest:${{ steps.ver.outputs.version }}-arm64
-          build-args: |
-            APP_VERSION=${{ steps.ver.outputs.version }}
 
       - name: Save artifact (linux/arm64)
         shell: bash
@@ -89,4 +85,3 @@ jobs:
         with:
           name: r4vk-speedtest-image-${{ steps.ver.outputs.version }}
           path: artifact/*
-

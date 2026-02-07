@@ -61,8 +61,8 @@ ensure_default_setting(cfg.db_path, "ping_schedules", "[]")
 ensure_default_setting(cfg.db_path, "speed_schedules", "[]")
 
 def _read_version() -> str:
-    """Odczytaj wersję z pliku VERSION (wbudowanego w obraz Docker)."""
-    version_file = Path(__file__).resolve().parent.parent / "VERSION"
+    """Odczytaj wersję z pliku VERSION osadzonego w aplikacji."""
+    version_file = Path(__file__).resolve().parent / "VERSION"
     try:
         return version_file.read_text().strip()
     except FileNotFoundError:
