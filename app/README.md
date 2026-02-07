@@ -104,8 +104,11 @@ Domyślnie aplikacja może wysłać pojedynczy event startu (`app_started`) do z
 Zakres danych: `install_id`, `version`, `started_at`.
 
 - `TELEMETRY_ENDPOINT` - URL endpointu HTTP (POST JSON)
+- `TELEMETRY_AUTH_TOKEN` - opcjonalny token Bearer do endpointu telemetryki
 - `TELEMETRY_DEFAULT_ENABLED` - domyślnie `true` (można wyłączyć w UI)
 - `TELEMETRY_TIMEOUT_SECONDS` - domyślnie `2`
+
+Przykładowy backend telemetryki na Cloudflare: `../telemetry/cloudflare-worker/README.md`
 
 ## Uruchomienie lokalnie
 

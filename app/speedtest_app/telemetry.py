@@ -36,6 +36,7 @@ async def send_startup_event(
     *,
     db_path: str,
     endpoint: str | None,
+    auth_token: str | None,
     app_version: str,
     default_enabled: bool,
     timeout_seconds: float,
@@ -53,10 +54,13 @@ async def send_startup_event(
         "version": app_version,
         "started_at": started_at,
     }
+    headers: dict[str, str] = {}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
 
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            await client.post(endpoint, json=payload)
+            await client.post(endpoint, json=payload, headers=headers)
     except Exception:
         # Telemetry is best-effort and must never impact app startup.
         return

@@ -108,6 +108,7 @@ async def _startup() -> None:
             send_startup_event(
                 db_path=cfg.db_path,
                 endpoint=cfg.telemetry_endpoint,
+                auth_token=cfg.telemetry_auth_token,
                 app_version=APP_VERSION,
                 default_enabled=cfg.telemetry_default_enabled,
                 timeout_seconds=cfg.telemetry_timeout_seconds,

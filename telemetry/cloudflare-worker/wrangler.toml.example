@@ -1,0 +1,8 @@
+name = "speedtest-telemetry"
+main = "src/index.js"
+compatibility_date = "2026-02-07"
+
+[[d1_databases]]
+binding = "TELEMETRY_DB"
+database_name = "speedtest-telemetry"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"

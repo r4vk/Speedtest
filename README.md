@@ -109,8 +109,11 @@ Wysyłane dane: `install_id`, `version`, `event=app_started`, `started_at`.
 | Zmienna | Domyślnie | Opis |
 |---------|-----------|------|
 | `TELEMETRY_ENDPOINT` | - | URL endpointu HTTP do zbierania zdarzeń (POST JSON) |
+| `TELEMETRY_AUTH_TOKEN` | - | Opcjonalny token Bearer wysyłany w `Authorization` |
 | `TELEMETRY_DEFAULT_ENABLED` | `true` | Domyślna wartość przełącznika telemetryki dla nowej instalacji |
 | `TELEMETRY_TIMEOUT_SECONDS` | `2` | Timeout wysyłki telemetryki |
+
+Gotowy Worker i instrukcja: `telemetry/cloudflare-worker/README.md`
 
 Powiadomienia są wysyłane **tylko po przywróceniu** internetu (gdy awaria się skończy i trwała dłużej niż `SMTP_MIN_OUTAGE_SECONDS`).
 

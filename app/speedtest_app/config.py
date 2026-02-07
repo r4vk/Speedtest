@@ -42,6 +42,7 @@ class AppConfig:
 
     # Anonymous telemetry (opt-out): sends only install_id, version and startup event.
     telemetry_endpoint: str | None = (os.getenv("TELEMETRY_ENDPOINT") or "").strip() or None
+    telemetry_auth_token: str | None = (os.getenv("TELEMETRY_AUTH_TOKEN") or "").strip() or None
     telemetry_timeout_seconds: float = float(os.getenv("TELEMETRY_TIMEOUT_SECONDS", "2"))
     telemetry_default_enabled: bool = _env_bool("TELEMETRY_DEFAULT_ENABLED", True)
 

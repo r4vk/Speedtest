@@ -655,6 +655,7 @@ async function loadChart() {
     ...onlineDataPoints.map(p => p.y).filter(v => Number.isFinite(v)),
   );
   const relMax = Math.max(1.2, maxRel * 1.15);
+  const legendTextColor = (getComputedStyle(document.documentElement).getPropertyValue("--text") || "").trim() || "rgba(231,236,255,.9)";
 
   const datasets = [{
     label: "Prędkość (Mbps)",
@@ -765,7 +766,7 @@ async function loadChart() {
       plugins: {
         legend: {
           labels: {
-            color: "rgba(231,236,255,.9)",
+            color: legendTextColor,
             usePointStyle: true,
             pointStyleWidth: 40,
             generateLabels: (chart) => {
@@ -785,6 +786,8 @@ async function loadChart() {
                 return {
                   text: ds.label,
                   pointStyle: cvs,
+                  color: legendTextColor,
+                  fontColor: legendTextColor,
                   fillStyle: "transparent",
                   strokeStyle: "transparent",
                   hidden: !chart.isDatasetVisible(i),
