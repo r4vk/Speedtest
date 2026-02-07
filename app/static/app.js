@@ -510,35 +510,54 @@ function buildOnlineDataPoints(outageIntervals, rangeFromMs, rangeToMs) {
   return points;
 }
 
-function buildBlockedDataPoints(blockedIntervals, rangeFromMs, rangeToMs) {
-  // Generate blocked periods data points as a dashed line at y=0.4
-  // This shows when measurements were disabled/blocked by schedule
+function buildBlockedDataPoints(blockedIntervals, rangeFromMs, rangeToMs, speedDataPoints) {
+  // Generate blocked periods data points as a dashed line connecting
+  // the last speed test before the blocked period to the first speed test after.
+  // speedDataPoints must be sorted by x (timestamp).
   const points = [];
-  const BLOCKED_Y = 0.4;
 
   if (!blockedIntervals || blockedIntervals.length === 0) {
     return points;
   }
 
-  // Sort by start time
   const sorted = [...blockedIntervals].sort((a, b) => a.startMs - b.startMs);
+  const speeds = speedDataPoints || [];
 
   for (const block of sorted) {
     const startMs = Math.max(block.startMs, rangeFromMs);
     const endMs = Math.min(block.endMs, rangeToMs);
 
-    if (startMs < endMs) {
-      // Add null before to create gap
-      if (points.length > 0) {
-        points.push({ x: startMs - 1, y: null });
+    if (startMs >= endMs) continue;
+
+    // Find last speed data point before (or at) the block start
+    let lastBefore = null;
+    for (let i = speeds.length - 1; i >= 0; i--) {
+      if (speeds[i].x <= startMs) {
+        lastBefore = speeds[i];
+        break;
       }
-      // Blocked period start
-      points.push({ x: startMs, y: BLOCKED_Y });
-      // Blocked period end
-      points.push({ x: endMs, y: BLOCKED_Y });
-      // Add null after to create gap
-      points.push({ x: endMs + 1, y: null });
     }
+
+    // Find first speed data point after (or at) the block end
+    let firstAfter = null;
+    for (let i = 0; i < speeds.length; i++) {
+      if (speeds[i].x >= endMs) {
+        firstAfter = speeds[i];
+        break;
+      }
+    }
+
+    // Build segment: from last test before → to first test after
+    const segStart = lastBefore ? { x: lastBefore.x, y: lastBefore.y } : { x: startMs, y: 0.4 };
+    const segEnd = firstAfter ? { x: firstAfter.x, y: firstAfter.y } : { x: endMs, y: 0.4 };
+
+    // Add null gap between segments
+    if (points.length > 0) {
+      points.push({ x: segStart.x - 1, y: null });
+    }
+    points.push(segStart);
+    points.push(segEnd);
+    points.push({ x: segEnd.x + 1, y: null });
   }
 
   return points;
@@ -599,9 +618,9 @@ async function loadChart() {
   // Build online status data points (time-accurate)
   const onlineDataPoints = buildOnlineDataPoints(outageIntervals, rangeFromMs, rangeToMs);
 
-  // Build blocked periods data points
-  const blockedPingPoints = buildBlockedDataPoints(blockedPingIntervals, rangeFromMs, rangeToMs);
-  const blockedSpeedPoints = buildBlockedDataPoints(blockedSpeedIntervals, rangeFromMs, rangeToMs);
+  // Build blocked periods data points (pass speed data so the line connects between tests)
+  const blockedPingPoints = buildBlockedDataPoints(blockedPingIntervals, rangeFromMs, rangeToMs, speedDataPoints);
+  const blockedSpeedPoints = buildBlockedDataPoints(blockedSpeedIntervals, rangeFromMs, rangeToMs, speedDataPoints);
 
   const ctx = qs("speedChart").getContext("2d");
   const maxRel = Math.max(
@@ -654,7 +673,7 @@ async function loadChart() {
   if (blockedSpeedPoints.length > 0) {
     datasets.push({
       label: "Speedtest wył.",
-      yAxisID: "yRel",
+      yAxisID: "yMbps",
       data: blockedSpeedPoints,
       borderColor: "rgba(239, 68, 68, 0.8)",
       backgroundColor: "rgba(239, 68, 68, 0.1)",
@@ -718,7 +737,14 @@ async function loadChart() {
         },
       },
       plugins: {
-        legend: { labels: { color: "rgba(231,236,255,.9)" } },
+        legend: {
+          labels: {
+            color: "rgba(231,236,255,.9)",
+            usePointStyle: true,
+            pointStyle: "line",
+            pointStyleWidth: 40,
+          },
+        },
         tooltip: {
           callbacks: {
             label: (ctx) => {
