@@ -101,6 +101,17 @@ Większość ustawień można zmienić w UI (Ustawienia). Zmienne środowiskowe 
 | `SMTP_USE_TLS` | `true` | Używaj STARTTLS |
 | `SMTP_MIN_OUTAGE_SECONDS` | `60` | Minimalna długość awarii do wysłania maila |
 
+### Anonimowa telemetryka (opt-out)
+
+Telemetryka jest domyślnie włączona, ale można ją wyłączyć w UI (Ustawienia) albo przez zmienną środowiskową.
+Wysyłane dane: `install_id`, `version`, `event=app_started`, `started_at`.
+
+| Zmienna | Domyślnie | Opis |
+|---------|-----------|------|
+| `TELEMETRY_ENDPOINT` | - | URL endpointu HTTP do zbierania zdarzeń (POST JSON) |
+| `TELEMETRY_DEFAULT_ENABLED` | `true` | Domyślna wartość przełącznika telemetryki dla nowej instalacji |
+| `TELEMETRY_TIMEOUT_SECONDS` | `2` | Timeout wysyłki telemetryki |
+
 Powiadomienia są wysyłane **tylko po przywróceniu** internetu (gdy awaria się skończy i trwała dłużej niż `SMTP_MIN_OUTAGE_SECONDS`).
 
 #### Przykład z Gmail

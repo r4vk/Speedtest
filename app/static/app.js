@@ -99,6 +99,7 @@ function currentConfigDraft() {
     speed_enabled: qs("cfg-speed-enabled").checked,
     ping_schedules: JSON.stringify(pingSchedules),
     speed_schedules: JSON.stringify(speedSchedules),
+    telemetry_enabled: qs("cfg-telemetry-enabled").checked,
   };
 }
 
@@ -116,6 +117,7 @@ function isDraftDifferent(draft, cfg) {
   if (Boolean(cfg.speed_enabled) !== Boolean(draft.speed_enabled)) return true;
   if ((cfg.ping_schedules ?? "[]") !== (draft.ping_schedules ?? "[]")) return true;
   if ((cfg.speed_schedules ?? "[]") !== (draft.speed_schedules ?? "[]")) return true;
+  if (Boolean(cfg.telemetry_enabled) !== Boolean(draft.telemetry_enabled)) return true;
   return false;
 }
 
@@ -142,6 +144,7 @@ async function loadConfig() {
   // Enable/disable toggles
   qs("cfg-ping-enabled").checked = cfg.ping_enabled !== false;
   qs("cfg-speed-enabled").checked = cfg.speed_enabled !== false;
+  qs("cfg-telemetry-enabled").checked = cfg.telemetry_enabled !== false;
   updateSectionState("ping");
   updateSectionState("speed");
 
@@ -299,6 +302,7 @@ async function saveConfig() {
     speed_enabled: qs("cfg-speed-enabled").checked,
     ping_schedules: JSON.stringify(pingSchedules),
     speed_schedules: JSON.stringify(speedSchedules),
+    telemetry_enabled: qs("cfg-telemetry-enabled").checked,
   };
   const resp = await fetch("/api/config", {
     method: "PUT",
@@ -957,6 +961,7 @@ qs("cfg-speed-enabled")?.addEventListener("change", () => {
   updateSectionState("speed");
   updateCfgDirty();
 });
+qs("cfg-telemetry-enabled")?.addEventListener("change", updateCfgDirty);
 
 // Schedule buttons
 qs("add-ping-schedule")?.addEventListener("click", () => addSchedule("ping"));

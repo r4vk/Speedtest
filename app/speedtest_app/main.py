@@ -4,6 +4,7 @@ import asyncio
 import csv
 import io
 import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from .db import (
 )
 from .runtime import get_runtime, init_runtime
 from .scheduler import RunningState, connectivity_loop, run_speedtest_once, speedtest_loop
+from .telemetry import send_startup_event
 from .time_utils import parse_dt, parse_range, to_iso_z, to_local_display, to_local_iso, utc_now
 
 
@@ -59,6 +61,10 @@ ensure_default_setting(cfg.db_path, "ping_enabled", "true")
 ensure_default_setting(cfg.db_path, "speed_enabled", "true")
 ensure_default_setting(cfg.db_path, "ping_schedules", "[]")
 ensure_default_setting(cfg.db_path, "speed_schedules", "[]")
+ensure_default_setting(cfg.db_path, "telemetry_enabled", "true" if cfg.telemetry_default_enabled else "false")
+_telemetry_install_id = get_settings(cfg.db_path, ["telemetry_install_id"]).get("telemetry_install_id", "").strip()
+if not _telemetry_install_id:
+    set_setting(cfg.db_path, "telemetry_install_id", uuid.uuid4().hex, now_iso=to_iso_z(utc_now()))
 
 def _read_version() -> str:
     """Odczytaj wersję z pliku VERSION osadzonego w aplikacji."""
@@ -98,6 +104,15 @@ async def _startup() -> None:
     app.state.tasks = [
         asyncio.create_task(connectivity_loop(cfg, state)),
         asyncio.create_task(speedtest_loop(cfg, state)),
+        asyncio.create_task(
+            send_startup_event(
+                db_path=cfg.db_path,
+                endpoint=cfg.telemetry_endpoint,
+                app_version=APP_VERSION,
+                default_enabled=cfg.telemetry_default_enabled,
+                timeout_seconds=cfg.telemetry_timeout_seconds,
+            )
+        ),
     ]
 
 
@@ -168,6 +183,8 @@ class ConfigResponse(BaseModel):
     speed_enabled: bool
     ping_schedules: str
     speed_schedules: str
+    telemetry_enabled: bool
+    telemetry_endpoint_configured: bool
 
 
 class ConfigUpdate(BaseModel):
@@ -183,6 +200,7 @@ class ConfigUpdate(BaseModel):
     speed_enabled: bool | None = Field(default=None)
     ping_schedules: str | None = Field(default=None, max_length=8192)
     speed_schedules: str | None = Field(default=None, max_length=8192)
+    telemetry_enabled: bool | None = Field(default=None)
 
 
 def _effective_config() -> ConfigResponse:
@@ -201,6 +219,7 @@ def _effective_config() -> ConfigResponse:
             "speed_enabled",
             "ping_schedules",
             "speed_schedules",
+            "telemetry_enabled",
         ],
     )
     connect_target = values.get("connect_target", cfg.connect_target)
@@ -240,6 +259,10 @@ def _effective_config() -> ConfigResponse:
     speed_enabled = values.get("speed_enabled", "true").lower() == "true"
     ping_schedules = values.get("ping_schedules", "[]")
     speed_schedules = values.get("speed_schedules", "[]")
+    telemetry_enabled = values.get(
+        "telemetry_enabled",
+        "true" if cfg.telemetry_default_enabled else "false",
+    ).lower() == "true"
 
     return ConfigResponse(
         connect_target=connect_target,
@@ -254,6 +277,8 @@ def _effective_config() -> ConfigResponse:
         speed_enabled=speed_enabled,
         ping_schedules=ping_schedules,
         speed_schedules=speed_schedules,
+        telemetry_enabled=telemetry_enabled,
+        telemetry_endpoint_configured=bool(cfg.telemetry_endpoint),
     )
 
 
@@ -302,6 +327,8 @@ def api_update_config(update: ConfigUpdate):
         set_setting(cfg.db_path, "ping_schedules", update.ping_schedules, now_iso=now_iso)
     if update.speed_schedules is not None:
         set_setting(cfg.db_path, "speed_schedules", update.speed_schedules, now_iso=now_iso)
+    if update.telemetry_enabled is not None:
+        set_setting(cfg.db_path, "telemetry_enabled", "true" if update.telemetry_enabled else "false", now_iso=now_iso)
 
     cfg2 = _effective_config()
     if cfg2.connect_interval_seconds <= 0:

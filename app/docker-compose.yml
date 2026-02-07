@@ -10,6 +10,9 @@ services:
       - /etc/localtime:/etc/localtime:ro
     environment:
       - TZ=Europe/Warsaw
+      # Optional anonymous telemetry endpoint (opt-out in UI):
+      # - TELEMETRY_ENDPOINT=https://your-worker.example.workers.dev/collect
+      # - TELEMETRY_DEFAULT_ENABLED=true
       # - SPEEDTEST_URL=https://example.com/largefile.iso
       # - SPEEDTEST_INTERVAL_SECONDS=900
       # - CONNECT_TARGET=google.com
