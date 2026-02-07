@@ -622,6 +622,28 @@ async function loadChart() {
   const blockedPingPoints = buildBlockedDataPoints(blockedPingIntervals, rangeFromMs, rangeToMs, speedDataPoints);
   const blockedSpeedPoints = buildBlockedDataPoints(blockedSpeedIntervals, rangeFromMs, rangeToMs, speedDataPoints);
 
+  // Insert null gaps into speed data where speedtest was blocked,
+  // so the purple line breaks and doesn't overlap the red dashed line.
+  if (blockedSpeedIntervals.length > 0) {
+    const sortedBlocked = [...blockedSpeedIntervals].sort((a, b) => a.startMs - b.startMs);
+    for (let bi = sortedBlocked.length - 1; bi >= 0; bi--) {
+      const bStart = Math.max(sortedBlocked[bi].startMs, rangeFromMs);
+      const bEnd = Math.min(sortedBlocked[bi].endMs, rangeToMs);
+      if (bStart >= bEnd) continue;
+
+      // Find insert position: after the last point <= bStart
+      let insertIdx = speedDataPoints.length;
+      for (let i = 0; i < speedDataPoints.length; i++) {
+        if (speedDataPoints[i].x > bStart) {
+          insertIdx = i;
+          break;
+        }
+      }
+      // Insert null to break the line
+      speedDataPoints.splice(insertIdx, 0, { x: bStart + 1, y: null });
+    }
+  }
+
   const ctx = qs("speedChart").getContext("2d");
   const maxRel = Math.max(
     1.2,
@@ -639,7 +661,7 @@ async function loadChart() {
     borderWidth: 2,
     pointRadius: 1.5,
     tension: 0.25,
-    spanGaps: true,
+    spanGaps: false,
   }, {
     label: "Online (0/1)",
     yAxisID: "yRel",
@@ -741,8 +763,31 @@ async function loadChart() {
           labels: {
             color: "rgba(231,236,255,.9)",
             usePointStyle: true,
-            pointStyle: "line",
             pointStyleWidth: 40,
+            generateLabels: (chart) => {
+              return chart.data.datasets.map((ds, i) => {
+                // Create a small canvas for each legend icon to draw a line (solid or dashed)
+                const cvs = document.createElement("canvas");
+                cvs.width = 40;
+                cvs.height = 16;
+                const c = cvs.getContext("2d");
+                c.strokeStyle = ds.borderColor;
+                c.lineWidth = ds.borderWidth || 2;
+                c.setLineDash(ds.borderDash || []);
+                c.beginPath();
+                c.moveTo(0, 8);
+                c.lineTo(40, 8);
+                c.stroke();
+                return {
+                  text: ds.label,
+                  pointStyle: cvs,
+                  fillStyle: "transparent",
+                  strokeStyle: "transparent",
+                  hidden: !chart.isDatasetVisible(i),
+                  datasetIndex: i,
+                };
+              });
+            },
           },
         },
         tooltip: {
@@ -916,3 +961,607 @@ qs("cfg-speed-enabled")?.addEventListener("change", () => {
 // Schedule buttons
 qs("add-ping-schedule")?.addEventListener("click", () => addSchedule("ping"));
 qs("add-speed-schedule")?.addEventListener("click", () => addSchedule("speed"));
+
+// ============================================================
+// Network Tools Section
+// ============================================================
+
+const TOOL_GROUPS = [
+  {
+    id: "dns", label: "DNS",
+    tools: [
+      {
+        name: "dns_resolve_time",
+        label: "DNS Resolve Time",
+        desc: "Zmierz czas rozwiazywania nazwy domeny przez konkretny serwer DNS",
+        params: [
+          { name: "domain", label: "Domena", type: "text", default: "google.com" },
+          { name: "dns_server", label: "Serwer DNS", type: "text", default: "8.8.8.8" },
+          { name: "record_type", label: "Typ rekordu", type: "select", options: ["A","AAAA","MX","CNAME","TXT","NS"], default: "A" },
+        ],
+      },
+      {
+        name: "dns_propagation",
+        label: "DNS Propagation Check",
+        desc: "Sprawdz wynik DNS na wielu publicznych serwerach (Cloudflare, Google, Quad9, OpenDNS...)",
+        params: [
+          { name: "domain", label: "Domena", type: "text", default: "example.com" },
+          { name: "record_type", label: "Typ rekordu", type: "select", options: ["A","AAAA","MX","CNAME","TXT"], default: "A" },
+        ],
+      },
+      {
+        name: "dns_leak_test",
+        label: "DNS Leak Test",
+        desc: "Wykryj, ktore serwery DNS sa faktycznie uzywane przez Twoje polaczenie",
+        params: [],
+      },
+      {
+        name: "dns_doh_dot_status",
+        label: "DNS over HTTPS/TLS",
+        desc: "Sprawdz dostepnosc DoH i DoT na podanym serwerze DNS",
+        params: [
+          { name: "dns_server", label: "Serwer DNS", type: "text", default: "1.1.1.1" },
+        ],
+      },
+      {
+        name: "dns_server_comparison",
+        label: "Porownanie serwerow DNS",
+        desc: "Benchmark wielu serwerow DNS — sredni, min i max czas odpowiedzi",
+        params: [
+          { name: "domain", label: "Domena", type: "text", default: "google.com" },
+          { name: "iterations", label: "Iteracje", type: "number", default: "5", min: 1, max: 20 },
+        ],
+      },
+    ],
+  },
+  {
+    id: "routing", label: "Routing i sciezka sieciowa",
+    tools: [
+      {
+        name: "traceroute",
+        label: "Traceroute",
+        desc: "Pokaz sciezke pakietow do celu z opoznieniem na kazdym hop-ie",
+        params: [
+          { name: "target", label: "Cel", type: "text", default: "google.com" },
+          { name: "max_hops", label: "Max hops", type: "number", default: "30", min: 1, max: 40 },
+        ],
+      },
+      {
+        name: "mtr",
+        label: "MTR (My Traceroute)",
+        desc: "Ciagly traceroute ze statystykami strat pakietow na kazdym hop-ie",
+        params: [
+          { name: "target", label: "Cel", type: "text", default: "google.com" },
+          { name: "count", label: "Liczba prob", type: "number", default: "10", min: 1, max: 100 },
+        ],
+      },
+      {
+        name: "bgp_as_path",
+        label: "BGP/AS Path Lookup",
+        desc: "Sprawdz ASN, nazwe sieci i prefix CIDR dla podanego IP",
+        params: [
+          { name: "target", label: "IP lub host", type: "text", default: "8.8.8.8" },
+        ],
+      },
+      {
+        name: "reverse_dns",
+        label: "Reverse DNS Lookup",
+        desc: "Wyszukaj nazwe hosta (PTR) dla podanego adresu IP",
+        params: [
+          { name: "ip", label: "Adres IP", type: "text", default: "8.8.8.8" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "connection", label: "Info o polaczeniu",
+    tools: [
+      {
+        name: "mtu_discovery",
+        label: "MTU Discovery",
+        desc: "Odkryj maksymalny rozmiar pakietu (MTU) na sciezce do celu",
+        params: [
+          { name: "target", label: "Cel", type: "text", default: "google.com" },
+        ],
+      },
+      {
+        name: "geoip",
+        label: "Geolokalizacja IP",
+        desc: "Pokaz lokalizacje geograficzna, ISP i organizacje dla IP (puste = Twoj IP)",
+        params: [
+          { name: "ip", label: "Adres IP (puste = Twoj)", type: "text", default: "" },
+        ],
+      },
+      {
+        name: "public_ip",
+        label: "Public IP",
+        desc: "Pobierz publiczny adres IP z 3 niezaleznych serwisow i sprawdz spojnosc",
+        params: [],
+      },
+      {
+        name: "nat_type",
+        label: "NAT Type Detection",
+        desc: "Wykryj typ NAT (Full Cone, Symmetric, etc.) przez protokol STUN",
+        params: [],
+      },
+    ],
+  },
+  {
+    id: "local", label: "Siec lokalna",
+    tools: [
+      {
+        name: "port_scan",
+        label: "Skaner portow TCP",
+        desc: "Skanuj otwarte porty TCP na podanym hoscie (max 1000 portow)",
+        params: [
+          { name: "target", label: "Adres IP / host", type: "text", default: "192.168.1.1" },
+          { name: "ports", label: "Porty (np. 22,80,443 lub 1-1024)", type: "text", default: "22,80,443,8080,8443,3389,21,25,53,3306,5432" },
+          { name: "timeout", label: "Timeout (sek)", type: "number", default: "2", min: 1, max: 10 },
+        ],
+      },
+      {
+        name: "lan_discovery",
+        label: "LAN Device Discovery",
+        desc: "Skanuj podsiec w poszukiwaniu urzadzen (nmap -sn). Wymaga min /24",
+        params: [
+          { name: "subnet", label: "Podsiec CIDR", type: "text", default: "192.168.1.0/24" },
+        ],
+      },
+      {
+        name: "iperf_test",
+        label: "Internal Speed Test (iPerf3)",
+        desc: "Zmierz przepustowosc LAN do serwera iperf3. Wymaga uruchomionego serwera iperf3 na celu.",
+        params: [
+          { name: "server", label: "Serwer iperf3", type: "text", default: "" },
+          { name: "port", label: "Port", type: "number", default: "5201", min: 1, max: 65535 },
+          { name: "duration", label: "Czas (sek)", type: "number", default: "5", min: 1, max: 30 },
+          { name: "direction", label: "Kierunek", type: "select", options: ["download","upload"], default: "download" },
+        ],
+      },
+      {
+        name: "dhcp_leases",
+        label: "DHCP / Konfiguracja sieci",
+        desc: "Pokaz dzierzawy DHCP lub aktualny config sieci kontenera (ip addr/route)",
+        params: [],
+      },
+    ],
+  },
+];
+
+// ---- Tool rendering ----
+
+function _escHtml(str) {
+  const d = document.createElement("div");
+  d.textContent = String(str ?? "");
+  return d.innerHTML;
+}
+
+function renderToolsSection() {
+  const body = qs("tools-body");
+  if (!body) return;
+  body.innerHTML = "";
+  for (const group of TOOL_GROUPS) {
+    const gDiv = document.createElement("div");
+    gDiv.className = "tool-group";
+
+    const gH = document.createElement("h3");
+    gH.className = "tool-group-header";
+    gH.textContent = group.label;
+    gDiv.appendChild(gH);
+
+    const cardsDiv = document.createElement("div");
+    cardsDiv.className = "tool-cards";
+    for (const tool of group.tools) {
+      cardsDiv.appendChild(_createToolCard(tool));
+    }
+    gDiv.appendChild(cardsDiv);
+    body.appendChild(gDiv);
+  }
+}
+
+function _createToolCard(tool) {
+  const card = document.createElement("div");
+  card.className = "tool-card";
+  card.dataset.tool = tool.name;
+
+  // Title
+  const title = document.createElement("div");
+  title.className = "tool-card-title";
+  title.textContent = tool.label;
+  card.appendChild(title);
+
+  // Desc
+  const desc = document.createElement("div");
+  desc.className = "tool-card-desc";
+  desc.textContent = tool.desc;
+  card.appendChild(desc);
+
+  // Params
+  if (tool.params && tool.params.length) {
+    const pDiv = document.createElement("div");
+    pDiv.className = "tool-params";
+    for (const p of tool.params) {
+      pDiv.appendChild(_createParamInput(tool.name, p));
+    }
+    card.appendChild(pDiv);
+  }
+
+  // Actions row
+  const actDiv = document.createElement("div");
+  actDiv.className = "tool-actions";
+
+  const runBtn = document.createElement("button");
+  runBtn.type = "button";
+  runBtn.className = "tool-run-btn";
+  runBtn.textContent = "Uruchom";
+  runBtn.addEventListener("click", () => _runTool(tool.name, card));
+  actDiv.appendChild(runBtn);
+
+  const spinner = document.createElement("span");
+  spinner.className = "tool-spinner";
+  spinner.style.display = "none";
+  spinner.textContent = "\u23F3";
+  actDiv.appendChild(spinner);
+
+  const dur = document.createElement("span");
+  dur.className = "tool-duration";
+  actDiv.appendChild(dur);
+
+  card.appendChild(actDiv);
+
+  // Result area
+  const resDiv = document.createElement("div");
+  resDiv.className = "tool-result";
+  resDiv.style.display = "none";
+  card.appendChild(resDiv);
+
+  return card;
+}
+
+function _createParamInput(toolName, param) {
+  const wrap = document.createElement("label");
+  wrap.className = "tool-param";
+
+  const lbl = document.createElement("span");
+  lbl.textContent = param.label;
+  wrap.appendChild(lbl);
+
+  if (param.type === "select") {
+    const sel = document.createElement("select");
+    sel.id = `tp-${toolName}-${param.name}`;
+    for (const opt of (param.options || [])) {
+      const o = document.createElement("option");
+      o.value = opt; o.textContent = opt;
+      if (opt === param.default) o.selected = true;
+      sel.appendChild(o);
+    }
+    wrap.appendChild(sel);
+  } else {
+    const inp = document.createElement("input");
+    inp.type = param.type || "text";
+    inp.id = `tp-${toolName}-${param.name}`;
+    inp.value = param.default || "";
+    inp.placeholder = param.default || "";
+    if (param.min !== undefined) inp.min = param.min;
+    if (param.max !== undefined) inp.max = param.max;
+    wrap.appendChild(inp);
+  }
+  return wrap;
+}
+
+async function _runTool(toolName, card) {
+  const runBtn = card.querySelector(".tool-run-btn");
+  const spinner = card.querySelector(".tool-spinner");
+  const durEl = card.querySelector(".tool-duration");
+  const resDiv = card.querySelector(".tool-result");
+
+  // Gather params
+  const params = {};
+  const inputs = card.querySelectorAll(`[id^="tp-${toolName}-"]`);
+  for (const inp of inputs) {
+    const pName = inp.id.replace(`tp-${toolName}-`, "");
+    const v = inp.value.trim();
+    if (v !== "") params[pName] = inp.type === "number" ? Number(v) : v;
+  }
+
+  // Loading state
+  runBtn.disabled = true;
+  spinner.style.display = "";
+  durEl.textContent = "";
+  resDiv.style.display = "none";
+  resDiv.innerHTML = "";
+
+  try {
+    const resp = await fetch(`/api/tools/${toolName}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    const data = await resp.json();
+
+    durEl.textContent = `${data.duration_ms?.toFixed(0) ?? "?"} ms`;
+
+    if (data.status === "error") {
+      resDiv.innerHTML = `<div class="tool-error">Blad: ${_escHtml(data.error)}</div>`;
+    } else {
+      resDiv.innerHTML = _formatToolResult(toolName, data.result);
+    }
+    resDiv.style.display = "";
+  } catch (e) {
+    resDiv.innerHTML = `<div class="tool-error">Blad sieci: ${_escHtml(e.message)}</div>`;
+    resDiv.style.display = "";
+  } finally {
+    runBtn.disabled = false;
+    spinner.style.display = "none";
+  }
+}
+
+// ---- Result formatters ----
+
+function _formatToolResult(toolName, result) {
+  if (!result) return '<div class="tool-empty">Brak wynikow</div>';
+  switch (toolName) {
+    case "dns_resolve_time": return _fmtDnsResolve(result);
+    case "dns_propagation": return _fmtDnsPropagation(result);
+    case "dns_leak_test": return _fmtDnsLeak(result);
+    case "dns_doh_dot_status": return _fmtDohDot(result);
+    case "dns_server_comparison": return _fmtDnsComparison(result);
+    case "traceroute": return _fmtTraceroute(result);
+    case "mtr": return _fmtMtr(result);
+    case "bgp_as_path": return _fmtBgp(result);
+    case "reverse_dns": return _fmtReverseDns(result);
+    case "mtu_discovery": return _fmtMtu(result);
+    case "geoip": return _fmtGeoip(result);
+    case "public_ip": return _fmtPublicIp(result);
+    case "nat_type": return _fmtNat(result);
+    case "port_scan": return _fmtPortScan(result);
+    case "lan_discovery": return _fmtLanDiscovery(result);
+    case "iperf_test": return _fmtIperf(result);
+    case "dhcp_leases": return _fmtDhcp(result);
+    default: return _fmtGeneric(result);
+  }
+}
+
+function _fmtDnsResolve(r) {
+  return `<table class="tool-table">
+    <tr><td class="tool-key">Domena</td><td>${_escHtml(r.domain)}</td></tr>
+    <tr><td class="tool-key">Serwer DNS</td><td>${_escHtml(r.dns_server)}</td></tr>
+    <tr><td class="tool-key">Typ</td><td>${_escHtml(r.record_type)}</td></tr>
+    <tr><td class="tool-key">Czas</td><td><b>${r.resolve_time_ms} ms</b></td></tr>
+    <tr><td class="tool-key">Odpowiedzi</td><td>${(r.answers||[]).map(a => _escHtml(a)).join("<br>")}</td></tr>
+  </table>`;
+}
+
+function _fmtDnsPropagation(r) {
+  const consistent = r.consistent
+    ? '<span class="tool-ok">Spojne</span>'
+    : '<span class="tool-bad">Niespojne</span>';
+  let html = `<div style="margin-bottom:8px">Domena: <b>${_escHtml(r.domain)}</b> (${_escHtml(r.record_type)}) — ${consistent}</div>`;
+  html += `<table class="tool-table"><tr><th>Serwer</th><th>IP</th><th>Czas</th><th>Odpowiedzi</th><th></th></tr>`;
+  for (const s of (r.servers || [])) {
+    const errTd = s.error ? `<td class="tool-bad">${_escHtml(s.error)}</td>` : "<td></td>";
+    html += `<tr><td>${_escHtml(s.name)}</td><td class="tool-muted">${_escHtml(s.ip)}</td><td>${s.time_ms} ms</td><td>${(s.answers||[]).join(", ")}</td>${errTd}</tr>`;
+  }
+  html += "</table>";
+  return html;
+}
+
+function _fmtDnsLeak(r) {
+  let html = `<div style="margin-bottom:8px">Wykryte serwery DNS: <b>${r.count}</b></div>`;
+  if (r.detected_dns_servers?.length) {
+    html += `<table class="tool-table"><tr><th>IP</th><th>Hostname</th></tr>`;
+    for (const s of r.detected_dns_servers) {
+      html += `<tr><td>${_escHtml(s.ip)}</td><td class="tool-muted">${_escHtml(s.hostname)}</td></tr>`;
+    }
+    html += "</table>";
+  }
+  html += `<div class="tool-muted" style="margin-top:6px;font-size:11px">Metoda: ${_escHtml(r.method)}</div>`;
+  return html;
+}
+
+function _fmtDohDot(r) {
+  const _status = (obj) => obj?.available
+    ? `<span class="tool-ok">Dostepny</span> (${obj.time_ms} ms)`
+    : `<span class="tool-bad">Niedostepny</span>` + (obj?.error ? ` — ${_escHtml(obj.error)}` : "");
+  return `<table class="tool-table">
+    <tr><td class="tool-key">Serwer</td><td>${_escHtml(r.dns_server)}</td></tr>
+    <tr><td class="tool-key">Plain DNS</td><td>${_status(r.plain_dns)}</td></tr>
+    <tr><td class="tool-key">DNS over TLS (853)</td><td>${_status(r.dot)}</td></tr>
+    <tr><td class="tool-key">DNS over HTTPS</td><td>${_status(r.doh)}</td></tr>
+  </table>`;
+}
+
+function _fmtDnsComparison(r) {
+  let html = `<div style="margin-bottom:8px">Domena: <b>${_escHtml(r.domain)}</b>, iteracje: ${r.iterations}</div>`;
+  html += `<table class="tool-table"><tr><th>Serwer</th><th>IP</th><th>Avg</th><th>Min</th><th>Max</th></tr>`;
+  for (const s of (r.servers || [])) {
+    html += `<tr><td>${_escHtml(s.name)}</td><td class="tool-muted">${_escHtml(s.ip)}</td>
+      <td><b>${s.avg_ms ?? "-"} ms</b></td><td>${s.min_ms ?? "-"} ms</td><td>${s.max_ms ?? "-"} ms</td></tr>`;
+  }
+  html += "</table>";
+  return html;
+}
+
+function _fmtTraceroute(r) {
+  let html = `<div style="margin-bottom:8px">Cel: <b>${_escHtml(r.target)}</b>`;
+  if (r.resolved_ip) html += ` (${_escHtml(r.resolved_ip)})`;
+  html += "</div>";
+  if (r.hops?.length) {
+    html += `<table class="tool-table"><tr><th>#</th><th>IP</th><th>RTT 1</th><th>RTT 2</th><th>RTT 3</th></tr>`;
+    for (const h of r.hops) {
+      const rtt = h.rtt_ms || [];
+      const fmtRtt = (v) => v != null ? `${v} ms` : "*";
+      html += `<tr><td>${h.hop}</td><td>${_escHtml(h.ip || "*")}</td>
+        <td>${fmtRtt(rtt[0])}</td><td>${fmtRtt(rtt[1])}</td><td>${fmtRtt(rtt[2])}</td></tr>`;
+    }
+    html += "</table>";
+  } else if (r.raw) {
+    html += `<pre style="white-space:pre-wrap;font-size:11px">${_escHtml(r.raw)}</pre>`;
+  }
+  return html;
+}
+
+function _fmtMtr(r) {
+  let html = `<div style="margin-bottom:8px">Cel: <b>${_escHtml(r.target)}</b>, proby: ${r.count}</div>`;
+  if (r.report?.length) {
+    html += `<table class="tool-table"><tr><th>#</th><th>Host</th><th>Loss%</th><th>Sent</th><th>Avg</th><th>Best</th><th>Worst</th><th>StDev</th></tr>`;
+    for (let i = 0; i < r.report.length; i++) {
+      const h = r.report[i];
+      const lossClass = h.loss_pct > 0 ? "tool-bad" : "";
+      html += `<tr><td>${i+1}</td><td>${_escHtml(h.host)}</td>
+        <td class="${lossClass}">${h.loss_pct}%</td><td>${h.sent}</td>
+        <td><b>${h.avg_ms} ms</b></td><td>${h.best_ms} ms</td><td>${h.worst_ms} ms</td><td>${h.stdev_ms}</td></tr>`;
+    }
+    html += "</table>";
+  }
+  return html;
+}
+
+function _fmtBgp(r) {
+  return `<table class="tool-table">
+    <tr><td class="tool-key">Cel</td><td>${_escHtml(r.target)}</td></tr>
+    <tr><td class="tool-key">IP</td><td>${_escHtml(r.ip)}</td></tr>
+    <tr><td class="tool-key">ASN</td><td><b>${_escHtml(r.asn)}</b></td></tr>
+    <tr><td class="tool-key">Nazwa AS</td><td>${_escHtml(r.as_name)}</td></tr>
+    <tr><td class="tool-key">Kraj AS</td><td>${_escHtml(r.as_country)}</td></tr>
+    <tr><td class="tool-key">Prefix</td><td>${_escHtml(r.prefix)}</td></tr>
+    <tr><td class="tool-key">Siec</td><td>${_escHtml(r.network_name)}</td></tr>
+  </table>`;
+}
+
+function _fmtReverseDns(r) {
+  let html = `<table class="tool-table">
+    <tr><td class="tool-key">IP</td><td>${_escHtml(r.ip)}</td></tr>
+    <tr><td class="tool-key">Czas</td><td>${r.time_ms} ms</td></tr>`;
+  if (r.hostnames?.length) {
+    html += `<tr><td class="tool-key">Hostname(s)</td><td><b>${r.hostnames.map(h => _escHtml(h)).join("<br>")}</b></td></tr>`;
+  }
+  if (r.error) {
+    html += `<tr><td class="tool-key">Blad</td><td class="tool-bad">${_escHtml(r.error)}</td></tr>`;
+  }
+  html += "</table>";
+  return html;
+}
+
+function _fmtMtu(r) {
+  return `<table class="tool-table">
+    <tr><td class="tool-key">Cel</td><td>${_escHtml(r.target)}</td></tr>
+    <tr><td class="tool-key">MTU</td><td><b>${r.mtu} bajtow</b></td></tr>
+    <tr><td class="tool-key">Payload MTU</td><td>${r.path_mtu_payload} bajtow</td></tr>
+  </table>`;
+}
+
+function _fmtGeoip(r) {
+  return `<table class="tool-table">
+    <tr><td class="tool-key">IP</td><td><b>${_escHtml(r.ip)}</b></td></tr>
+    <tr><td class="tool-key">Kraj</td><td>${_escHtml(r.country)} (${_escHtml(r.country_code)})</td></tr>
+    <tr><td class="tool-key">Region</td><td>${_escHtml(r.region)}</td></tr>
+    <tr><td class="tool-key">Miasto</td><td>${_escHtml(r.city)}</td></tr>
+    <tr><td class="tool-key">ISP</td><td>${_escHtml(r.isp)}</td></tr>
+    <tr><td class="tool-key">Organizacja</td><td>${_escHtml(r.org)}</td></tr>
+    <tr><td class="tool-key">AS</td><td>${_escHtml(r.as)}</td></tr>
+    <tr><td class="tool-key">Wspolrzedne</td><td>${r.lat}, ${r.lon}</td></tr>
+    <tr><td class="tool-key">Strefa czasowa</td><td>${_escHtml(r.timezone)}</td></tr>
+  </table>`;
+}
+
+function _fmtPublicIp(r) {
+  const icon = r.consistent ? '<span class="tool-ok">Spojne</span>' : '<span class="tool-bad">Niespojne</span>';
+  let html = `<div style="margin-bottom:8px">Publiczny IP: <b>${_escHtml(r.ip)}</b> — ${icon}</div>`;
+  html += `<table class="tool-table"><tr><th>Serwis</th><th>Wynik</th></tr>`;
+  for (const [svc, ip] of Object.entries(r.sources || {})) {
+    html += `<tr><td>${_escHtml(svc)}</td><td>${_escHtml(ip)}</td></tr>`;
+  }
+  html += "</table>";
+  return html;
+}
+
+function _fmtNat(r) {
+  return `<table class="tool-table">
+    <tr><td class="tool-key">Typ NAT</td><td><b>${_escHtml(r.nat_type)}</b></td></tr>
+    <tr><td class="tool-key">Zewnetrzny IP</td><td>${_escHtml(r.external_ip)}</td></tr>
+    <tr><td class="tool-key">Zewnetrzny port</td><td>${r.external_port}</td></tr>
+  </table>`;
+}
+
+function _fmtPortScan(r) {
+  const open = (r.open_ports || []).length;
+  let html = `<div style="margin-bottom:8px">Cel: <b>${_escHtml(r.target)}</b> — skanowano ${r.scanned_ports} portow, otwartych: <b>${open}</b></div>`;
+  const ports = r.all_ports || r.open_ports || [];
+  if (ports.length) {
+    html += `<table class="tool-table"><tr><th>Port</th><th>Stan</th><th>Usluga</th></tr>`;
+    for (const p of ports) {
+      const cls = p.state === "open" ? "tool-ok" : "tool-muted";
+      html += `<tr><td>${p.port}</td><td class="${cls}">${p.state}</td><td class="tool-muted">${_escHtml(p.service)}</td></tr>`;
+    }
+    html += "</table>";
+  }
+  return html;
+}
+
+function _fmtLanDiscovery(r) {
+  let html = `<div style="margin-bottom:8px">Podsiec: <b>${_escHtml(r.subnet)}</b> — znalezione urzadzenia: <b>${r.total}</b></div>`;
+  if (r.devices?.length) {
+    html += `<table class="tool-table"><tr><th>IP</th><th>MAC</th><th>Vendor</th><th>Hostname</th></tr>`;
+    for (const d of r.devices) {
+      html += `<tr><td>${_escHtml(d.ip)}</td><td class="tool-muted">${_escHtml(d.mac)}</td><td class="tool-muted">${_escHtml(d.vendor)}</td><td>${_escHtml(d.hostname)}</td></tr>`;
+    }
+    html += "</table>";
+  }
+  if (r.raw) {
+    html += `<pre style="white-space:pre-wrap;font-size:11px;margin-top:8px">${_escHtml(r.raw)}</pre>`;
+  }
+  return html;
+}
+
+function _fmtIperf(r) {
+  return `<table class="tool-table">
+    <tr><td class="tool-key">Serwer</td><td>${_escHtml(r.server)}:${r.port}</td></tr>
+    <tr><td class="tool-key">Kierunek</td><td>${_escHtml(r.direction)}</td></tr>
+    <tr><td class="tool-key">Czas</td><td>${r.duration_s} s</td></tr>
+    <tr><td class="tool-key">Transfer</td><td>${(r.transfer_bytes / 1048576).toFixed(2)} MB</td></tr>
+    <tr><td class="tool-key">Przepustowosc</td><td><b>${r.bandwidth_mbps} Mbps</b></td></tr>
+  </table>`;
+}
+
+function _fmtDhcp(r) {
+  let html = `<div style="margin-bottom:8px">Zrodlo: <b>${_escHtml(r.source)}</b> — wpisow: ${r.count}</div>`;
+  if (r.leases?.length) {
+    html += `<table class="tool-table">`;
+    for (const lease of r.leases) {
+      for (const [k, v] of Object.entries(lease)) {
+        html += `<tr><td class="tool-key">${_escHtml(k)}</td><td>${_escHtml(v)}</td></tr>`;
+      }
+      html += `<tr><td colspan="2" style="border-bottom:2px solid var(--border)"></td></tr>`;
+    }
+    html += "</table>";
+  }
+  return html;
+}
+
+function _fmtGeneric(r) {
+  let html = '<table class="tool-table">';
+  for (const [k, v] of Object.entries(r)) {
+    const display = typeof v === "object" ? JSON.stringify(v, null, 2) : String(v);
+    html += `<tr><td class="tool-key">${_escHtml(k)}</td><td>${_escHtml(display)}</td></tr>`;
+  }
+  html += "</table>";
+  return html;
+}
+
+// ---- Tools toggle ----
+qs("tools-header")?.addEventListener("click", () => {
+  const body = qs("tools-body");
+  const btn = qs("tools-toggle");
+  if (!body || !btn) return;
+  if (body.style.display === "none") {
+    body.style.display = "";
+    btn.innerHTML = "&#9650;";
+  } else {
+    body.style.display = "none";
+    btn.innerHTML = "&#9660;";
+  }
+});
+
+// Initialize tools section
+renderToolsSection();

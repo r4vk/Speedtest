@@ -11,7 +11,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
+    traceroute \
+    mtr-tiny \
+    nmap \
+    iproute2 \
+    dnsutils \
+    whois \
+    iputils-ping \
+    iperf3 \
+    net-tools \
   && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r /app/requirements.txt
 

@@ -528,3 +528,23 @@ def export_pings_csv(
         checked_local = to_local_display(parse_dt(it["checked_at"]))
         rows.append([checked_local, it["is_up"], it.get("latency_ms") or ""])
     return _csv_response("pings.csv", rows)
+
+
+# ---------------------------------------------------------------------------
+# Network diagnostic tools (on-demand, no persistence)
+# ---------------------------------------------------------------------------
+
+from .network_tools import run_tool as _run_network_tool, TOOL_DEFINITIONS as _TOOL_DEFS
+
+
+@app.get("/api/tools")
+def api_tools_list():
+    return {"tools": _TOOL_DEFS}
+
+
+@app.post("/api/tools/{tool_name}")
+async def api_run_tool(tool_name: str, params: dict = {}):
+    try:
+        return await _run_network_tool(tool_name, params)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
