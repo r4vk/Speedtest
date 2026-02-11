@@ -40,9 +40,7 @@ class AppConfig:
     smtp_use_tls: bool = _env_bool("SMTP_USE_TLS", True)
     smtp_min_outage_seconds: int = int(os.getenv("SMTP_MIN_OUTAGE_SECONDS", "60"))
 
-    # Anonymous telemetry (opt-out): sends only install_id, version and startup event.
-    telemetry_endpoint: str | None = (os.getenv("TELEMETRY_ENDPOINT") or "").strip() or None
-    telemetry_auth_token: str | None = (os.getenv("TELEMETRY_AUTH_TOKEN") or "").strip() or None
+    # Anonymous telemetry (opt-out): sends only install_id, version and minimal events.
     telemetry_timeout_seconds: float = float(os.getenv("TELEMETRY_TIMEOUT_SECONDS", "2"))
     telemetry_default_enabled: bool = _env_bool("TELEMETRY_DEFAULT_ENABLED", True)
 

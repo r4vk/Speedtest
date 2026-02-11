@@ -19,10 +19,6 @@ function checkBearerToken(request, expectedToken) {
 }
 
 async function collect(request, env) {
-  if (!checkBearerToken(request, env.INGEST_TOKEN)) {
-    return json({ ok: false, error: "Unauthorized" }, 401);
-  }
-
   const payload = await request.json().catch(() => null);
   if (!payload || typeof payload !== "object") {
     return json({ ok: false, error: "Invalid JSON payload" }, 400);
@@ -31,9 +27,8 @@ async function collect(request, env) {
   const event = String(payload.event || "").trim();
   const installId = String(payload.install_id || "").trim();
   const version = String(payload.version || "").trim();
-  const startedAt = String(payload.started_at || "").trim();
 
-  if (event !== "app_started") {
+  if (event !== "app_started" && event !== "app_active") {
     return json({ ok: false, error: "Unsupported event type" }, 400);
   }
   if (!isValidInstallId(installId)) {
@@ -42,26 +37,30 @@ async function collect(request, env) {
   if (!isValidVersion(version)) {
     return json({ ok: false, error: "Invalid version" }, 400);
   }
-  if (Number.isNaN(Date.parse(startedAt))) {
-    return json({ ok: false, error: "Invalid started_at" }, 400);
-  }
 
   const receivedAtDate = new Date();
   const receivedAtIso = receivedAtDate.toISOString();
   const receivedAtEpoch = Math.floor(receivedAtDate.getTime() / 1000);
+  const day = receivedAtIso.slice(0, 10);
 
   await env.TELEMETRY_DB.prepare(
     `
-      INSERT INTO startup_events (
-        install_id, version, event, started_at, received_at, received_at_epoch
+      INSERT INTO daily_events (
+        day, install_id, event, version,
+        first_seen_at, last_seen_at, first_seen_epoch, last_seen_epoch, count
       )
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)
+      ON CONFLICT(day, install_id, event) DO UPDATE SET
+        last_seen_at = excluded.last_seen_at,
+        last_seen_epoch = excluded.last_seen_epoch,
+        count = daily_events.count + 1,
+        version = excluded.version
     `
   )
-    .bind(installId, version, event, startedAt, receivedAtIso, receivedAtEpoch)
+    .bind(day, installId, event, version, receivedAtIso, receivedAtIso, receivedAtEpoch, receivedAtEpoch)
     .run();
 
-  return json({ ok: true });
+  return new Response(null, { status: 204 });
 }
 
 async function stats(request, env) {
@@ -72,33 +71,43 @@ async function stats(request, env) {
   const nowEpoch = Math.floor(Date.now() / 1000);
   const last24hEpoch = nowEpoch - 24 * 3600;
   const last30dEpoch = nowEpoch - 30 * 24 * 3600;
+  const today = new Date().toISOString().slice(0, 10);
 
-  const [totalRes, uniqueRes, last24hRes, versionsRes, dailyRes] = await Promise.all([
-    env.TELEMETRY_DB.prepare("SELECT COUNT(*) AS n FROM startup_events").first(),
-    env.TELEMETRY_DB.prepare("SELECT COUNT(DISTINCT install_id) AS n FROM startup_events").first(),
-    env.TELEMETRY_DB.prepare("SELECT COUNT(*) AS n FROM startup_events WHERE received_at_epoch >= ?1")
+  const [active24hRes, activeTodayRes, totalActiveRes, versionsRes, dailyRes] = await Promise.all([
+    env.TELEMETRY_DB.prepare(
+      "SELECT COUNT(DISTINCT install_id) AS n FROM daily_events WHERE event = 'app_active' AND last_seen_epoch >= ?1"
+    )
       .bind(last24hEpoch)
       .first(),
+    env.TELEMETRY_DB.prepare(
+      "SELECT COUNT(DISTINCT install_id) AS n FROM daily_events WHERE event = 'app_active' AND day = ?1"
+    )
+      .bind(today)
+      .first(),
+    env.TELEMETRY_DB.prepare(
+      "SELECT COUNT(DISTINCT install_id) AS n FROM daily_events WHERE event = 'app_active'"
+    ).first(),
     env.TELEMETRY_DB.prepare(
       `
         SELECT
           version,
-          COUNT(*) AS starts,
           COUNT(DISTINCT install_id) AS installs
-        FROM startup_events
+        FROM daily_events
+        WHERE event = 'app_active' AND last_seen_epoch >= ?1
         GROUP BY version
-        ORDER BY starts DESC
+        ORDER BY installs DESC
         LIMIT 20
       `
-    ).all(),
+    )
+      .bind(last30dEpoch)
+      .all(),
     env.TELEMETRY_DB.prepare(
       `
         SELECT
-          strftime('%Y-%m-%d', received_at) AS day,
-          COUNT(*) AS starts,
+          day,
           COUNT(DISTINCT install_id) AS installs
-        FROM startup_events
-        WHERE received_at_epoch >= ?1
+        FROM daily_events
+        WHERE event = 'app_active' AND last_seen_epoch >= ?1
         GROUP BY day
         ORDER BY day DESC
       `
@@ -110,9 +119,9 @@ async function stats(request, env) {
   return json({
     ok: true,
     totals: {
-      starts: Number(totalRes?.n || 0),
-      unique_installs: Number(uniqueRes?.n || 0),
-      starts_last_24h: Number(last24hRes?.n || 0),
+      active_installs_total: Number(totalActiveRes?.n || 0),
+      active_installs_today: Number(activeTodayRes?.n || 0),
+      active_installs_last_24h: Number(active24hRes?.n || 0),
     },
     versions: versionsRes.results || [],
     daily_last_30d: dailyRes.results || [],

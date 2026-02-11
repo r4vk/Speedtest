@@ -100,11 +100,9 @@ Powiadomienia są wysyłane **tylko po przywróceniu** internetu (gdy awaria si�
 
 ### Anonimowa telemetryka (opt-out)
 
-Domyślnie aplikacja może wysłać pojedynczy event startu (`app_started`) do zewnętrznego endpointu HTTP.
-Zakres danych: `install_id`, `version`, `started_at`.
+Telemetryka jest domyślnie włączona (opt-out) i można ją wyłączyć w UI.
+Zakres danych: `install_id`, `version`, `event` (`app_started` oraz `app_active` wysyłany nie częściej niż raz na ~dobę).
 
-- `TELEMETRY_ENDPOINT` - URL endpointu HTTP (POST JSON)
-- `TELEMETRY_AUTH_TOKEN` - opcjonalny token Bearer do endpointu telemetryki
 - `TELEMETRY_DEFAULT_ENABLED` - domyślnie `true` (można wyłączyć w UI)
 - `TELEMETRY_TIMEOUT_SECONDS` - domyślnie `2`
 

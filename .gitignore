@@ -16,3 +16,6 @@ app.db
 
 # SPK build output
 spk/dist/
+
+# Cloudflare Worker local config
+telemetry/cloudflare-worker/wrangler.toml

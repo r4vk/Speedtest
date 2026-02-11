@@ -103,14 +103,12 @@ Większość ustawień można zmienić w UI (Ustawienia). Zmienne środowiskowe 
 
 ### Anonimowa telemetryka (opt-out)
 
-Telemetryka jest domyślnie włączona, ale można ją wyłączyć w UI (Ustawienia) albo przez zmienną środowiskową.
-Wysyłane dane: `install_id`, `version`, `event=app_started`, `started_at`.
+Telemetryka jest domyślnie włączona, ale można ją wyłączyć w UI (Ustawienia) albo ustawić domyślnie wyłączoną przez zmienną środowiskową.
+Wysyłane dane: `install_id`, `version`, `event` (`app_started` oraz `app_active` wysyłany nie częściej niż raz na ~dobę).
 
 | Zmienna | Domyślnie | Opis |
 |---------|-----------|------|
-| `TELEMETRY_ENDPOINT` | - | URL endpointu HTTP do zbierania zdarzeń (POST JSON) |
-| `TELEMETRY_AUTH_TOKEN` | - | Opcjonalny token Bearer wysyłany w `Authorization` |
-| `TELEMETRY_DEFAULT_ENABLED` | `true` | Domyślna wartość przełącznika telemetryki dla nowej instalacji |
+| `TELEMETRY_DEFAULT_ENABLED` | `true` | Domyślna wartość przełącznika telemetryki dla nowej instalacji (zapisywane w `/data`) |
 | `TELEMETRY_TIMEOUT_SECONDS` | `2` | Timeout wysyłki telemetryki |
 
 Gotowy Worker i instrukcja: `telemetry/cloudflare-worker/README.md`

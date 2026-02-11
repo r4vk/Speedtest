@@ -30,7 +30,7 @@ from .db import (
 )
 from .runtime import get_runtime, init_runtime
 from .scheduler import RunningState, connectivity_loop, run_speedtest_once, speedtest_loop
-from .telemetry import send_startup_event
+from .telemetry import active_heartbeat_loop, send_startup_event
 from .time_utils import parse_dt, parse_range, to_iso_z, to_local_display, to_local_iso, utc_now
 
 
@@ -107,8 +107,14 @@ async def _startup() -> None:
         asyncio.create_task(
             send_startup_event(
                 db_path=cfg.db_path,
-                endpoint=cfg.telemetry_endpoint,
-                auth_token=cfg.telemetry_auth_token,
+                app_version=APP_VERSION,
+                default_enabled=cfg.telemetry_default_enabled,
+                timeout_seconds=cfg.telemetry_timeout_seconds,
+            )
+        ),
+        asyncio.create_task(
+            active_heartbeat_loop(
+                db_path=cfg.db_path,
                 app_version=APP_VERSION,
                 default_enabled=cfg.telemetry_default_enabled,
                 timeout_seconds=cfg.telemetry_timeout_seconds,
@@ -279,7 +285,7 @@ def _effective_config() -> ConfigResponse:
         ping_schedules=ping_schedules,
         speed_schedules=speed_schedules,
         telemetry_enabled=telemetry_enabled,
-        telemetry_endpoint_configured=bool(cfg.telemetry_endpoint),
+        telemetry_endpoint_configured=True,
     )
 
 
