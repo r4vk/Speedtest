@@ -66,6 +66,7 @@ let lastSpeedtestRunning = null;
 let timeSeriesRefreshInFlight = null;
 let lastTimeSeriesRefreshAtMs = 0;
 const AUTO_SERIES_REFRESH_MS = 30_000;
+const ONLINE_Y = 0.8; // Scale online status to avoid overlapping with speed line
 let cfgDirty = false;
 
 // Schedule data
@@ -466,7 +467,6 @@ function buildOnlineDataPoints(outageIntervals, rangeFromMs, rangeToMs) {
   // at-end (offline), after-end (online).
   // This ensures the offline period is accurately represented in time.
   const points = [];
-  const ONLINE_Y = 0.8; // Scale to not overlap with speed average line
 
   // Sort outages by start time
   const sorted = [...outageIntervals].sort((a, b) => a.startMs - b.startMs);
@@ -552,8 +552,11 @@ function buildBlockedDataPoints(blockedIntervals, rangeFromMs, rangeToMs, speedD
     }
 
     // Build segment: from last test before → to first test after
-    const segStart = lastBefore ? { x: lastBefore.x, y: lastBefore.y } : { x: startMs, y: 0.4 };
-    const segEnd = firstAfter ? { x: firstAfter.x, y: firstAfter.y } : { x: endMs, y: 0.4 };
+    // If there is no data point after the block (e.g. block extends to "now"),
+    // keep the dashed line horizontal using the last known speed.
+    const fallbackY = (lastBefore?.y ?? firstAfter?.y ?? 0.4);
+    const segStart = lastBefore ? { x: lastBefore.x, y: lastBefore.y } : { x: startMs, y: fallbackY };
+    const segEnd = firstAfter ? { x: firstAfter.x, y: firstAfter.y } : { x: endMs, y: fallbackY };
 
     // Add null gap between segments
     if (points.length > 0) {
@@ -741,9 +744,23 @@ async function loadChart() {
           position: "left",
           min: 0,
           max: relMax,
+          afterBuildTicks: (scale) => {
+            // Ensure there is a tick exactly at ONLINE_Y so the "1" label matches the plotted online level.
+            const eps = 1e-6;
+            const hasOnlineTick = (scale.ticks || []).some(t => Math.abs(Number(t.value) - ONLINE_Y) < eps);
+            if (!hasOnlineTick) {
+              scale.ticks.push({ value: ONLINE_Y });
+              scale.ticks.sort((a, b) => Number(a.value) - Number(b.value));
+            }
+          },
           ticks: {
             color: "rgba(169,180,221,.8)",
-            callback: (v) => (v === 0 || v === 1 ? String(v) : ""),
+            callback: (v) => {
+              const n = Number(v);
+              if (n === 0) return "0";
+              if (Math.abs(n - ONLINE_Y) < 1e-6) return "1";
+              return "";
+            },
           },
           grid: { color: "rgba(231,236,255,.06)" },
           title: { display: true, text: "Online (0/1)", color: "rgba(169,180,221,.9)" },

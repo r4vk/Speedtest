@@ -34,20 +34,10 @@ from .telemetry import active_heartbeat_loop, send_startup_event
 from .time_utils import parse_dt, parse_range, to_iso_z, to_local_display, to_local_iso, utc_now
 
 
-LEGACY_DEFAULT_SPEEDTEST_URL = "https://webmail.psm.pulawy.pl/debian-12.9.0-amd64-DVD-1.iso"
 DEFAULT_SPEEDTEST_MODE = "speedtest.net"
 
 cfg = AppConfig()
 ensure_db(cfg.db_path)
-
-# Migracja: starsze wersje miały domyślnie ustawiony URL (PSM Puławy) i tryb "url".
-# Jeżeli użytkownik nie zmienił tych wartości (nadal identyczne), przełącz na nowe domyślne,
-# żeby nie obciążać z góry serwera ISP.
-_existing = get_settings(cfg.db_path, ["speedtest_mode", "speedtest_url"])
-if (_existing.get("speedtest_mode") or "").strip() == "url" and (_existing.get("speedtest_url") or "").strip() == LEGACY_DEFAULT_SPEEDTEST_URL:
-    _now_iso = to_iso_z(utc_now())
-    set_setting(cfg.db_path, "speedtest_mode", DEFAULT_SPEEDTEST_MODE, now_iso=_now_iso)
-    set_setting(cfg.db_path, "speedtest_url", "", now_iso=_now_iso)
 
 ensure_default_setting(cfg.db_path, "connect_target", cfg.connect_target)
 ensure_default_setting(cfg.db_path, "connect_interval_seconds", str(cfg.connect_interval_seconds))

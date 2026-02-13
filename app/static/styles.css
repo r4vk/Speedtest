@@ -457,8 +457,6 @@ code { color: #c7d2fe; }
   .radio-group { grid-template-columns: 1fr; align-items: start; }
   .schedule-item { grid-template-columns: 1fr 1fr; }
   .schedule-item .days-select { grid-column: 1 / -1; }
-  .tool-cards { grid-template-columns: 1fr; }
-  .tool-params { grid-template-columns: 1fr; }
 }
 
 /* ========================================================================
@@ -637,3 +635,9 @@ code { color: #c7d2fe; }
 .tool-ok { color: var(--ok); }
 .tool-bad { color: var(--bad); }
 .tool-muted { color: var(--muted); }
+
+@media (max-width: 900px) {
+  .tool-cards { grid-template-columns: 1fr; }
+  .tool-params { grid-template-columns: 1fr; }
+  .tool-result { -webkit-overflow-scrolling: touch; }
+}
