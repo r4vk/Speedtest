@@ -330,6 +330,19 @@ async function saveConfig() {
   await refreshAll();
 }
 
+function formatLastTestTime(isoStr) {
+  if (!isoStr) return null;
+  const s = String(isoStr).replace("T", " ");
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2}:\d{2})/.exec(s);
+  if (!m) return s;
+  const [, yy, mo, dd, time] = m;
+  const now = new Date();
+  const isToday = now.getFullYear() === Number(yy) &&
+                  (now.getMonth() + 1) === Number(mo) &&
+                  now.getDate() === Number(dd);
+  return isToday ? time : `${mo}-${dd} ${time}`;
+}
+
 function parseIsoToMs(iso) {
   if (!iso) return null;
   const s = String(iso).trim();
@@ -399,6 +412,39 @@ async function loadStatus() {
   badgeOnline.textContent = isUp ? "Online" : "Offline";
   badgeOnline.className = `badge ${isUp ? "badge-ok" : "badge-bad"}`;
 
+  // Last successful test time (top-right field) — always update regardless of badge logic
+  const lastOkTimeEl = qs("last-ok-time");
+  if (lastOkTimeEl) {
+    const okAt = data.last_speed_test_ok?.started_at;
+    if (okAt) {
+      lastOkTimeEl.textContent = `Ostatni udany test: ${formatLastTestTime(okAt)}`;
+      lastOkTimeEl.style.display = "";
+    } else {
+      lastOkTimeEl.textContent = "";
+      lastOkTimeEl.style.display = "none";
+    }
+  }
+
+  // Manual run button state — respects configured interval as cooldown
+  const runBtn = qs("run-speedtest");
+  if (runBtn) {
+    const interval = data.config?.speedtest_interval_seconds || 900;
+    const lastMs = parseIsoToMs(data.last_speed_test?.started_at);
+    const elapsedSeconds = lastMs ? (Date.now() - lastMs) / 1000 : Infinity;
+    const remainingSeconds = Math.ceil(interval - elapsedSeconds);
+
+    if (data.speedtest_running) {
+      runBtn.disabled = true;
+      runBtn.textContent = "Trwa pomiar…";
+    } else if (remainingSeconds > 0 && lastMs != null) {
+      runBtn.disabled = true;
+      runBtn.textContent = `Uruchom test (za ${formatSeconds(remainingSeconds)})`;
+    } else {
+      runBtn.disabled = false;
+      runBtn.textContent = "Uruchom test";
+    }
+  }
+
   if (data.speedtest_running) {
     badgeLast.style.display = "";
     badgeLast.textContent = "Trwa pomiar prędkości…";
@@ -432,18 +478,14 @@ async function loadStatus() {
       }
       badgeLast.className = "badge badge-gray";
       badgeLast.style.display = "";
-      return;
-    }
-
-    if (ok?.started_at) {
+    } else if (ok?.started_at) {
       badgeLast.textContent = `Ostatni udany test: ${formatOk(ok)}`;
       badgeLast.className = "badge badge-ok";
       badgeLast.style.display = "";
-      return;
+    } else {
+      badgeLast.textContent = "";
+      badgeLast.style.display = "none";
     }
-
-    badgeLast.textContent = "";
-    badgeLast.style.display = "none";
   }
 
   const speedtestRunning = Boolean(data.speedtest_running);
@@ -914,6 +956,20 @@ async function refreshAll() {
 }
 
 qs("refresh").addEventListener("click", refreshAll);
+qs("run-speedtest")?.addEventListener("click", async () => {
+  const btn = qs("run-speedtest");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = "Uruchamianie…";
+  try {
+    await fetch("/api/speedtest/run", { method: "POST" });
+    await loadStatus();
+  } catch (e) {
+    console.error(e);
+    btn.disabled = false;
+    btn.textContent = "Uruchom test";
+  }
+});
 qs("cfg-save").addEventListener("click", saveConfig);
 for (const r of document.querySelectorAll("input[name='speedtest-mode']")) {
   r.addEventListener("change", () => {

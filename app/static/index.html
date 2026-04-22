@@ -14,9 +14,12 @@
     <main class="container">
       <header class="header">
         <h1>Speedtest Monitor</h1>
-        <div class="badges">
-          <span id="badge-online" class="badge badge-gray">...</span>
-          <span id="badge-last" class="badge badge-gray">...</span>
+        <div class="header-right">
+          <div class="badges">
+            <span id="badge-online" class="badge badge-gray">...</span>
+            <span id="badge-last" class="badge badge-gray">...</span>
+          </div>
+          <span id="last-ok-time" class="last-ok-time" style="display:none;"></span>
         </div>
       </header>
 
@@ -37,6 +40,7 @@
           <a id="export-speed" class="linkbtn" href="#">CSV: prędkość</a>
           <a id="export-outages" class="linkbtn" href="#">CSV: awarie</a>
           <a id="export-pings" class="linkbtn" href="#">CSV: pingi</a>
+          <button id="run-speedtest" class="btn-run-speedtest" type="button">Uruchom test</button>
           <button id="open-settings" class="btn-secondary" type="button">Ustawienia</button>
         </div>
         <p class="hint">Puste pola = ostatnie 24h.</p>

@@ -53,7 +53,19 @@ h2 { margin: 0 0 10px 0; font-size: 16px; color: var(--text); }
   gap: 14px;
   margin-top: 14px;
 }
-.badges { display: flex; gap: 8px; flex-wrap: wrap; }
+.header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.last-ok-time {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  letter-spacing: .1px;
+}
 .badge {
   display: inline-flex;
   align-items: center;
@@ -227,6 +239,19 @@ code { color: #c7d2fe; }
   height: 24px;
   width: auto;
   border-radius: 4px;
+}
+
+.btn-run-speedtest {
+  background: rgba(99, 102, 241, .18);
+  border-color: rgba(99, 102, 241, .45);
+}
+.btn-run-speedtest:hover:not(:disabled) {
+  background: rgba(99, 102, 241, .32);
+  border-color: rgba(99, 102, 241, .65);
+}
+.btn-run-speedtest:disabled {
+  opacity: .55;
+  cursor: not-allowed;
 }
 
 .btn-dirty {
