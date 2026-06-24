@@ -73,6 +73,11 @@
                   Interwał testu (sek)
                   <input id="cfg-connect-interval" type="number" min="0.2" step="0.1" />
                 </label>
+                <label>
+                  Próg timeoutu pingu (ms)
+                  <input id="cfg-ping-timeout-ms" type="number" min="50" max="60000" step="50" />
+                  <span class="hint-inline">ping wolniejszy niż próg = awaria (domyślnie 1000 ms)</span>
+                </label>
                 <div class="schedule-section">
                   <div class="schedule-header">
                     <span class="schedule-label">Harmonogram blokad</span>

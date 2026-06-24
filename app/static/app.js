@@ -96,6 +96,7 @@ function currentConfigDraft() {
     speedtest_duration_seconds: normalizeNum(qs("cfg-speed-duration").value),
     connectivity_check_buffer_seconds: normalizeNum(qs("cfg-ping-buffer-seconds").value),
     connectivity_check_buffer_max: normalizeNum(qs("cfg-ping-buffer-max").value),
+    ping_timeout_ms: normalizeNum(qs("cfg-ping-timeout-ms").value),
     ping_enabled: qs("cfg-ping-enabled").checked,
     speed_enabled: qs("cfg-speed-enabled").checked,
     ping_schedules: JSON.stringify(pingSchedules),
@@ -114,6 +115,7 @@ function isDraftDifferent(draft, cfg) {
   if (normalizeNum(cfg.speedtest_duration_seconds) !== normalizeNum(draft.speedtest_duration_seconds)) return true;
   if (normalizeNum(cfg.connectivity_check_buffer_seconds) !== normalizeNum(draft.connectivity_check_buffer_seconds)) return true;
   if (normalizeNum(cfg.connectivity_check_buffer_max) !== normalizeNum(draft.connectivity_check_buffer_max)) return true;
+  if (normalizeNum(cfg.ping_timeout_ms) !== normalizeNum(draft.ping_timeout_ms)) return true;
   if (Boolean(cfg.ping_enabled) !== Boolean(draft.ping_enabled)) return true;
   if (Boolean(cfg.speed_enabled) !== Boolean(draft.speed_enabled)) return true;
   if ((cfg.ping_schedules ?? "[]") !== (draft.ping_schedules ?? "[]")) return true;
@@ -141,6 +143,7 @@ async function loadConfig() {
   qs("cfg-speed-duration").value = cfg.speedtest_duration_seconds ?? 10;
   qs("cfg-ping-buffer-seconds").value = cfg.connectivity_check_buffer_seconds ?? 600;
   qs("cfg-ping-buffer-max").value = cfg.connectivity_check_buffer_max ?? 300;
+  qs("cfg-ping-timeout-ms").value = cfg.ping_timeout_ms ?? 1000;
 
   // Enable/disable toggles
   qs("cfg-ping-enabled").checked = cfg.ping_enabled !== false;
@@ -299,6 +302,7 @@ async function saveConfig() {
     speedtest_duration_seconds: Number(qs("cfg-speed-duration").value),
     connectivity_check_buffer_seconds: Number(qs("cfg-ping-buffer-seconds").value),
     connectivity_check_buffer_max: Number(qs("cfg-ping-buffer-max").value),
+    ping_timeout_ms: Number(qs("cfg-ping-timeout-ms").value),
     ping_enabled: qs("cfg-ping-enabled").checked,
     speed_enabled: qs("cfg-speed-enabled").checked,
     ping_schedules: JSON.stringify(pingSchedules),
@@ -1024,6 +1028,7 @@ for (const el of [
   qs("cfg-speed-duration"),
   qs("cfg-ping-buffer-seconds"),
   qs("cfg-ping-buffer-max"),
+  qs("cfg-ping-timeout-ms"),
 ]) {
   el?.addEventListener("input", updateCfgDirty);
 }

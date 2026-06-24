@@ -19,6 +19,12 @@ class AppConfig:
     connect_target: str = os.getenv("CONNECT_TARGET", "google.com")
     connect_default_port: int = int(os.getenv("CONNECT_DEFAULT_PORT", "443"))
     connect_timeout_seconds: float = float(os.getenv("CONNECT_TIMEOUT_SECONDS", "1"))
+    # Próg (ms), po przekroczeniu którego ping uznajemy za timeout/awarię.
+    # Steruje też twardym timeoutem połączenia TCP. Użytkownik może nadpisać przez UI.
+    # Domyślnie pochodna od CONNECT_TIMEOUT_SECONDS (kompatybilność wsteczna).
+    ping_timeout_ms: int = int(
+        os.getenv("PING_TIMEOUT_MS", str(int(float(os.getenv("CONNECT_TIMEOUT_SECONDS", "1")) * 1000)))
+    )
     connect_interval_seconds: float = float(os.getenv("CONNECT_INTERVAL_SECONDS", "5"))
     connectivity_check_buffer_seconds: float = float(os.getenv("CONNECTIVITY_CHECK_BUFFER_SECONDS", "600"))
     connectivity_check_buffer_max: int = int(os.getenv("CONNECTIVITY_CHECK_BUFFER_MAX", "300"))

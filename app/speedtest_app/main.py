@@ -47,6 +47,7 @@ ensure_default_setting(cfg.db_path, "speedtest_interval_seconds", str(cfg.speedt
 ensure_default_setting(cfg.db_path, "speedtest_duration_seconds", str(cfg.speedtest_duration_seconds))
 ensure_default_setting(cfg.db_path, "connectivity_check_buffer_seconds", str(cfg.connectivity_check_buffer_seconds))
 ensure_default_setting(cfg.db_path, "connectivity_check_buffer_max", str(cfg.connectivity_check_buffer_max))
+ensure_default_setting(cfg.db_path, "ping_timeout_ms", str(cfg.ping_timeout_ms))
 ensure_default_setting(cfg.db_path, "ping_enabled", "true")
 ensure_default_setting(cfg.db_path, "speed_enabled", "true")
 ensure_default_setting(cfg.db_path, "ping_schedules", "[]")
@@ -163,6 +164,7 @@ def api_status() -> dict[str, Any]:
             "speedtest_url_configured": bool(eff.speedtest_url.strip()),
             "connectivity_check_buffer_seconds": eff.connectivity_check_buffer_seconds,
             "connectivity_check_buffer_max": eff.connectivity_check_buffer_max,
+            "ping_timeout_ms": eff.ping_timeout_ms,
         },
     }
 
@@ -176,6 +178,7 @@ class ConfigResponse(BaseModel):
     speedtest_duration_seconds: float
     connectivity_check_buffer_seconds: float
     connectivity_check_buffer_max: int
+    ping_timeout_ms: int
     ping_enabled: bool
     speed_enabled: bool
     ping_schedules: str
@@ -193,6 +196,7 @@ class ConfigUpdate(BaseModel):
     speedtest_duration_seconds: float | None = Field(default=None, ge=5, le=120)
     connectivity_check_buffer_seconds: float | None = Field(default=None, ge=0, le=24 * 3600)
     connectivity_check_buffer_max: int | None = Field(default=None, ge=1, le=100000)
+    ping_timeout_ms: int | None = Field(default=None, ge=50, le=60000)
     ping_enabled: bool | None = Field(default=None)
     speed_enabled: bool | None = Field(default=None)
     ping_schedules: str | None = Field(default=None, max_length=8192)
@@ -212,6 +216,7 @@ def _effective_config() -> ConfigResponse:
             "speedtest_duration_seconds",
             "connectivity_check_buffer_seconds",
             "connectivity_check_buffer_max",
+            "ping_timeout_ms",
             "ping_enabled",
             "speed_enabled",
             "ping_schedules",
@@ -252,6 +257,11 @@ def _effective_config() -> ConfigResponse:
     except ValueError:
         buffer_max = cfg.connectivity_check_buffer_max
 
+    try:
+        ping_timeout_ms = int(values.get("ping_timeout_ms", str(cfg.ping_timeout_ms)))
+    except ValueError:
+        ping_timeout_ms = cfg.ping_timeout_ms
+
     ping_enabled = values.get("ping_enabled", "true").lower() == "true"
     speed_enabled = values.get("speed_enabled", "true").lower() == "true"
     ping_schedules = values.get("ping_schedules", "[]")
@@ -270,6 +280,7 @@ def _effective_config() -> ConfigResponse:
         speedtest_duration_seconds=speedtest_duration,
         connectivity_check_buffer_seconds=buffer_seconds,
         connectivity_check_buffer_max=buffer_max,
+        ping_timeout_ms=ping_timeout_ms,
         ping_enabled=ping_enabled,
         speed_enabled=speed_enabled,
         ping_schedules=ping_schedules,
@@ -316,6 +327,8 @@ def api_update_config(update: ConfigUpdate):
             str(update.connectivity_check_buffer_max),
             now_iso=now_iso,
         )
+    if update.ping_timeout_ms is not None:
+        set_setting(cfg.db_path, "ping_timeout_ms", str(update.ping_timeout_ms), now_iso=now_iso)
     if update.ping_enabled is not None:
         set_setting(cfg.db_path, "ping_enabled", "true" if update.ping_enabled else "false", now_iso=now_iso)
     if update.speed_enabled is not None:
@@ -550,7 +563,9 @@ def export_pings_csv(
     rows: list[list[Any]] = [["checked_at", "is_up", "latency_ms"]]
     for it in items:
         checked_local = to_local_display(parse_dt(it["checked_at"]))
-        rows.append([checked_local, it["is_up"], it.get("latency_ms") or ""])
+        latency = it.get("latency_ms")
+        latency_ms = round(latency) if latency is not None else ""
+        rows.append([checked_local, it["is_up"], latency_ms])
     return _csv_response("pings.csv", rows)
 
 

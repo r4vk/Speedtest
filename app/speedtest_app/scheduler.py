@@ -202,6 +202,7 @@ async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
                     "connect_interval_seconds",
                     "connectivity_check_buffer_seconds",
                     "connectivity_check_buffer_max",
+                    "ping_timeout_ms",
                     "ping_enabled",
                     "ping_schedules",
                 ],
@@ -246,13 +247,19 @@ async def connectivity_loop(cfg: AppConfig, state: RunningState) -> None:
                 buffer_max = cfg.connectivity_check_buffer_max
             buffer_seconds = max(0.0, buffer_seconds)
             buffer_max = max(1, buffer_max)
+            try:
+                ping_timeout_ms = int(values.get("ping_timeout_ms", str(cfg.ping_timeout_ms)))
+            except ValueError:
+                ping_timeout_ms = cfg.ping_timeout_ms
+            # Próg w ms decyduje o awarii: dłuższe połączenie = timeout = down.
+            timeout_seconds = max(0.05, ping_timeout_ms / 1000.0)
 
             t0 = time.perf_counter()
             is_up = await asyncio.to_thread(
                 check_target,
                 connect_target,
                 cfg.connect_default_port,
-                cfg.connect_timeout_seconds,
+                timeout_seconds,
             )
             dt_ms = (time.perf_counter() - t0) * 1000.0
             now_iso = to_iso_z(utc_now())
