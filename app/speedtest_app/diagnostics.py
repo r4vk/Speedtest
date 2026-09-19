@@ -240,7 +240,7 @@ def hypotheses(
                     f"Możliwa przyczyna: problem po stronie dostawcy lub dalej w trasie — "
                     f"straty ({loss_text}) zaczynają się od przeskoku {hop_number}."
                 )
-                if gateway_hops is None:
+                if gateway_final_loss is None:
                     lines.append(
                         "Uwaga: bez pomiaru do routera nie można wykluczyć sieci lokalnej."
                     )
@@ -276,13 +276,14 @@ def hypotheses(
     ]
     if silent:
         numbers = ", ".join(str(number) for number in silent)
+        label = "przeskok" if len(silent) == 1 else "przeskoki"
         tail = (
             "ostatni przeskok odpowiada bez strat"
             if final_loss is not None and final_loss < LOSS_HYPOTHESIS_PCT
             else "routery tranzytowe często ograniczają ICMP"
         )
         lines.append(
-            f"Uwaga: brak odpowiedzi węzła pośredniego (przeskok {numbers}) nie dowodzi "
+            f"Uwaga: brak odpowiedzi węzła pośredniego ({label} {numbers}) nie dowodzi "
             f"utraty ruchu — {tail}."
         )
     return lines
