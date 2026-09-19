@@ -1,25 +1,24 @@
 from __future__ import annotations
 
 import asyncio
-import csv
-import io
 import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import quality_db, retention
+from . import api_quality, api_quality_exports, quality_db, retention
 from .api_retention import router as retention_router
 from .config import AppConfig
 from .coverage import SessionTracker, clip_to_observed, coverage, observed_intervals
+from .csv_utils import csv_response as _csv_response
 from .db import (
     TimeRange,
     ensure_db,
@@ -36,6 +35,12 @@ from .db import (
 )
 from .probe_types import ProbeTarget
 from .quality_engine import QualityEngine
+from .quality_settings import (
+    QUALITY_SETTING_SPECS,
+    ensure_quality_defaults,
+    read_quality_settings,
+    serialize_setting,
+)
 from .runtime import get_runtime, init_runtime
 from .scheduler import RunningState, run_speedtest_once, speedtest_loop
 from .telemetry import active_heartbeat_loop, send_startup_event
@@ -66,6 +71,9 @@ ensure_default_setting(cfg.db_path, "speed_enabled", "true")
 ensure_default_setting(cfg.db_path, "ping_schedules", "[]")
 ensure_default_setting(cfg.db_path, "speed_schedules", "[]")
 ensure_default_setting(cfg.db_path, "telemetry_enabled", "true" if cfg.telemetry_default_enabled else "false")
+# Quality settings (spec §7, §8, §10, §11, §14) come from one table, so every
+# reader of a key sees the same default.
+ensure_quality_defaults(cfg.db_path, {"gateway_host": cfg.gateway_host})
 _telemetry_install_id = get_settings(cfg.db_path, ["telemetry_install_id"]).get("telemetry_install_id", "").strip()
 if not _telemetry_install_id:
     set_setting(cfg.db_path, "telemetry_install_id", uuid.uuid4().hex, now_iso=to_iso_z(utc_now()))
@@ -173,6 +181,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Speedtest Monitor", version=APP_VERSION, lifespan=lifespan)
 app.include_router(retention_router)
+#: The quality router resolves the database through the app, not through a
+#: module-level import, so tests can point a fresh app at a temporary file.
+app.state.db_path = cfg.db_path
+app.include_router(api_quality.router)
+app.include_router(api_quality_exports.router)
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _STATIC_DIR = _BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
@@ -262,6 +275,36 @@ class ConfigResponse(BaseModel):
     telemetry_enabled: bool
     telemetry_endpoint_configured: bool
 
+    # Quality monitoring (spec §7, §8, §10, §11, §14); defaults and types live
+    # in `quality_settings.QUALITY_SETTING_SPECS`.
+    incident_window_seconds: int
+    incident_min_samples: int
+    incident_loss_pct_threshold: float
+    incident_outage_loss_pct: float
+    incident_rtt_p95_ms_threshold: float
+    incident_fail_streak_threshold: int
+    incident_open_windows: int
+    incident_stabilization_seconds: int
+    incident_no_data_close_seconds: int
+    availability_eval_seconds: int
+    availability_window_seconds: int
+    load_test_enabled: bool
+    load_test_interval_seconds: int
+    load_test_server: str
+    load_test_port: int
+    load_test_udp_bitrate: str
+    load_test_duration_seconds: int
+    load_test_datagram_len: int
+    load_test_directions: str
+    diagnostics_enabled: bool
+    diagnostics_min_interval_seconds: int
+    diagnostics_max_per_incident: int
+    retention_raw_days: int
+    retention_aggregate_days: int
+    retention_incident_days: int
+    diagnostic_mode: bool
+    gateway_host: str
+
 
 class ConfigUpdate(BaseModel):
     connect_target: str | None = Field(default=None, min_length=1, max_length=1024)
@@ -278,6 +321,36 @@ class ConfigUpdate(BaseModel):
     ping_schedules: str | None = Field(default=None, max_length=8192)
     speed_schedules: str | None = Field(default=None, max_length=8192)
     telemetry_enabled: bool | None = Field(default=None)
+
+    # Quality monitoring. Every bound is a guard against a setting that would
+    # silently disable the measurement or flood the link.
+    incident_window_seconds: int | None = Field(default=None, ge=5, le=300)
+    incident_min_samples: int | None = Field(default=None, ge=1, le=1000)
+    incident_loss_pct_threshold: float | None = Field(default=None, ge=0, le=100)
+    incident_outage_loss_pct: float | None = Field(default=None, ge=0, le=100)
+    incident_rtt_p95_ms_threshold: float | None = Field(default=None, ge=1, le=10000)
+    incident_fail_streak_threshold: int | None = Field(default=None, ge=1, le=1000)
+    incident_open_windows: int | None = Field(default=None, ge=1, le=100)
+    incident_stabilization_seconds: int | None = Field(default=None, ge=0, le=86400)
+    incident_no_data_close_seconds: int | None = Field(default=None, ge=0, le=86400)
+    availability_eval_seconds: int | None = Field(default=None, ge=1, le=60)
+    availability_window_seconds: int | None = Field(default=None, ge=5, le=300)
+    load_test_enabled: bool | None = Field(default=None)
+    load_test_interval_seconds: int | None = Field(default=None, ge=60, le=604800)
+    load_test_server: str | None = Field(default=None, max_length=253)
+    load_test_port: int | None = Field(default=None, ge=1, le=65535)
+    load_test_udp_bitrate: str | None = Field(default=None, pattern=r"^\d+(\.\d+)?[KMG]?$")
+    load_test_duration_seconds: int | None = Field(default=None, ge=1, le=60)
+    load_test_datagram_len: int | None = Field(default=None, ge=64, le=65507)
+    load_test_directions: Literal["upload", "download", "both"] | None = Field(default=None)
+    diagnostics_enabled: bool | None = Field(default=None)
+    diagnostics_min_interval_seconds: int | None = Field(default=None, ge=30, le=86400)
+    diagnostics_max_per_incident: int | None = Field(default=None, ge=1, le=20)
+    retention_raw_days: int | None = Field(default=None, ge=1, le=3650)
+    retention_aggregate_days: int | None = Field(default=None, ge=1, le=3650)
+    retention_incident_days: int | None = Field(default=None, ge=1, le=3650)
+    diagnostic_mode: bool | None = Field(default=None)
+    gateway_host: str | None = Field(default=None, max_length=253)
 
 
 def _effective_config() -> ConfigResponse:
@@ -347,7 +420,9 @@ def _effective_config() -> ConfigResponse:
         "true" if cfg.telemetry_default_enabled else "false",
     ).lower() == "true"
 
+    quality = read_quality_settings(cfg.db_path)
     return ConfigResponse(
+        **{key: value for key, value in quality.items() if key in ConfigResponse.model_fields},
         connect_target=connect_target,
         connect_interval_seconds=connect_interval,
         speedtest_mode=speedtest_mode,
@@ -366,6 +441,23 @@ def _effective_config() -> ConfigResponse:
     )
 
 
+def _apply_gateway_host(host: str, now_iso: str) -> None:
+    """Keep the `gateway` target and the `gateway_host` setting in step (§3.1).
+
+    An empty host disables the target instead of guessing the container's
+    default route, which is not the home router.
+    """
+    if host:
+        host = api_quality.validate_host("icmp", host)
+    for target in quality_db.list_targets(cfg.db_path):
+        if target.name == "gateway":
+            quality_db.update_target(
+                cfg.db_path, target.id, now_iso=now_iso, host=host, enabled=bool(host)
+            )
+            break
+    set_setting(cfg.db_path, "gateway_host", host, now_iso=now_iso)
+
+
 @app.get("/api/config", response_model=ConfigResponse)
 def api_get_config():
     return _effective_config()
@@ -373,6 +465,12 @@ def api_get_config():
 
 @app.put("/api/config", response_model=ConfigResponse)
 def api_update_config(update: ConfigUpdate):
+    # Validate before writing anything: a bad `gateway_host` used to be
+    # checked last (it is the last key of `QUALITY_SETTING_SPECS`), so a 422
+    # on it still left every other field of the same request written.
+    if update.gateway_host is not None and update.gateway_host.strip():
+        api_quality.validate_host("icmp", update.gateway_host.strip())
+
     now_iso = to_iso_z(utc_now())
     if update.connect_target is not None:
         set_setting(cfg.db_path, "connect_target", update.connect_target.strip(), now_iso=now_iso)
@@ -415,6 +513,17 @@ def api_update_config(update: ConfigUpdate):
         set_setting(cfg.db_path, "speed_schedules", update.speed_schedules, now_iso=now_iso)
     if update.telemetry_enabled is not None:
         set_setting(cfg.db_path, "telemetry_enabled", "true" if update.telemetry_enabled else "false", now_iso=now_iso)
+
+    for key in QUALITY_SETTING_SPECS:
+        if key not in ConfigUpdate.model_fields:
+            continue
+        value = getattr(update, key)
+        if value is None:
+            continue
+        if key == "gateway_host":
+            _apply_gateway_host(str(value).strip(), now_iso)
+            continue
+        set_setting(cfg.db_path, key, serialize_setting(key, value), now_iso=now_iso)
 
     cfg2 = _effective_config()
     if cfg2.connect_interval_seconds <= 0:
@@ -584,23 +693,6 @@ def api_report_quality(
             for gap in cov["gaps"]
         ],
     }
-
-
-def _csv_response(filename: str, rows: list[list[Any]]) -> StreamingResponse:
-    def iter_csv():
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        for row in rows:
-            writer.writerow(row)
-            yield buf.getvalue()
-            buf.seek(0)
-            buf.truncate(0)
-
-    return StreamingResponse(
-        iter_csv(),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
 
 
 @app.get("/api/export/speed.csv")

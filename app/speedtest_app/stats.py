@@ -259,28 +259,57 @@ def tumbling_windows(
     return result
 
 
+def _bucket_point(window_start: datetime, bucket: ProbeStats, *, partial: bool) -> dict[str, Any]:
+    return {
+        "t": to_iso_z(window_start),
+        "attempts": bucket.attempts,
+        "ok": bucket.ok,
+        "timeouts": bucket.timeouts,
+        "errors": bucket.errors,
+        "loss_pct": bucket.loss_pct,
+        "p50": bucket.rtt_p50_ms,
+        "p95": bucket.rtt_p95_ms,
+        "max": bucket.rtt_max_ms,
+        "partial": partial,
+    }
+
+
 def bucket_rows(
     rows: Iterable[Any],
     bucket_seconds: float,
     start_at: datetime,
     end_at: datetime,
+    *,
+    include_partial: bool = False,
 ) -> list[dict[str, Any]]:
     """Timeline points for the API and the report (spec §12).
 
     One dict per bucket, empty buckets included, so the caller can draw gaps
     instead of interpolating over them.
+
+    The complete buckets are the half-open :func:`tumbling_windows` of
+    ``[start_at, end_at)``, which leaves out the tail that does not fill a
+    whole bucket. ``include_partial=True`` appends that tail as one more point
+    covering ``[last_start, end_at]`` — closed at ``end_at``, like
+    ``quality_db.query_probe_results`` — and marks it ``"partial": True``.
+    Views that have to account for every attempt in the range (timeline,
+    report charts) use it, so their buckets sum to exactly what the statistics
+    and the CSV exports report; incident evaluation keeps the plain tumbling
+    windows, where a half-filled window must not be judged.
     """
-    return [
-        {
-            "t": to_iso_z(window_start),
-            "attempts": bucket.attempts,
-            "ok": bucket.ok,
-            "timeouts": bucket.timeouts,
-            "errors": bucket.errors,
-            "loss_pct": bucket.loss_pct,
-            "p50": bucket.rtt_p50_ms,
-            "p95": bucket.rtt_p95_ms,
-            "max": bucket.rtt_max_ms,
-        }
-        for window_start, _window_end, bucket in tumbling_windows(rows, bucket_seconds, start_at, end_at)
+    windows = tumbling_windows(rows, bucket_seconds, start_at, end_at)
+    points = [
+        _bucket_point(window_start, bucket, partial=False)
+        for window_start, _window_end, bucket in windows
     ]
+    if not include_partial:
+        return points
+
+    start = _as_utc(start_at)
+    end = _as_utc(end_at)
+    tail_start = start + timedelta(seconds=bucket_seconds) * len(windows)
+    if tail_start > end:
+        return points
+    tail = [row for ts, row in _timed(rows) if ts is not None and tail_start <= ts <= end]
+    points.append(_bucket_point(tail_start, compute_stats(tail), partial=True))
+    return points

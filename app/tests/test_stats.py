@@ -334,7 +334,7 @@ def test_bucket_rows_shape_and_alignment():
 
     assert [b["t"] for b in buckets] == [_at(0), _at(60), _at(120)]
     assert set(buckets[0]) == {
-        "t", "attempts", "ok", "timeouts", "errors", "loss_pct", "p50", "p95", "max",
+        "t", "attempts", "ok", "timeouts", "errors", "loss_pct", "p50", "p95", "max", "partial",
     }
     first = buckets[0]
     assert (first["attempts"], first["ok"], first["timeouts"], first["errors"]) == (4, 2, 1, 1)
@@ -345,5 +345,48 @@ def test_bucket_rows_shape_and_alignment():
     assert buckets[1]["attempts"] == 1
     assert buckets[2] == {
         "t": _at(120), "attempts": 0, "ok": 0, "timeouts": 0, "errors": 0,
-        "loss_pct": None, "p50": None, "p95": None, "max": None,
+        "loss_pct": None, "p50": None, "p95": None, "max": None, "partial": False,
     }
+
+
+def test_bucket_rows_partial_tail_closes_the_range():
+    """`include_partial` accounts for the tail, so buckets sum to the range."""
+    rows = [_ok(0, 10.0), _ok(59, 20.0), _ok(60, 30.0), _ok(150, 40.0), _ok(180, 50.0)]
+    start, end = BASE, BASE + timedelta(seconds=180)
+
+    complete = stats.bucket_rows(rows, 60.0, start, end)
+    assert [b["t"] for b in complete] == [_at(0), _at(60), _at(120)]
+    assert [b["partial"] for b in complete] == [False, False, False]
+    # the row exactly at `end` falls outside the half-open windows
+    assert sum(b["attempts"] for b in complete) == 4
+
+    with_tail = stats.bucket_rows(rows, 60.0, start, end, include_partial=True)
+    assert [b["t"] for b in with_tail] == [_at(0), _at(60), _at(120), _at(180)]
+    assert [b["partial"] for b in with_tail] == [False, False, False, True]
+    # every attempt of the closed range `[start, end]` is counted exactly once
+    assert sum(b["attempts"] for b in with_tail) == len(rows)
+    assert with_tail[-1]["attempts"] == 1
+    assert with_tail[-1]["p50"] == 50.0
+    assert with_tail[:3] == complete
+
+
+def test_bucket_rows_partial_tail_holds_an_unfinished_bucket():
+    rows = [_ok(0, 10.0), _ok(70, 20.0), _ok(95, 30.0)]
+    start, end = BASE, BASE + timedelta(seconds=100)
+
+    buckets = stats.bucket_rows(rows, 60.0, start, end, include_partial=True)
+
+    assert [b["t"] for b in buckets] == [_at(0), _at(60)]
+    assert [b["partial"] for b in buckets] == [False, True]
+    assert buckets[1]["attempts"] == 2  # 70 s and 95 s, both inside [60, 100]
+    assert sum(b["attempts"] for b in buckets) == 3
+
+
+def test_bucket_rows_without_a_range_has_no_partial_tail():
+    rows = [_ok(0, 10.0)]
+    assert stats.bucket_rows(rows, 60.0, BASE, BASE, include_partial=True) == [
+        {
+            "t": _at(0), "attempts": 1, "ok": 1, "timeouts": 0, "errors": 0,
+            "loss_pct": 0.0, "p50": 10.0, "p95": 10.0, "max": 10.0, "partial": True,
+        }
+    ]

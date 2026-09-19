@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Raport jakości łącza — {{ range["from"] }} … {{ range["to"] }}</title>
+<style>
+  :root { --line: #cfd6dd; --muted: #5b6875; --bad: #b3261e; }
+  * { box-sizing: border-box; }
+  body { font-family: "DejaVu Sans", Arial, Helvetica, sans-serif; font-size: 11px;
+         color: #17222e; margin: 18px; line-height: 1.45; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 18px 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+  h3 { font-size: 12px; margin: 12px 0 4px; }
+  p { margin: 4px 0; }
+  .muted { color: var(--muted); }
+  .meta { margin: 0 0 10px; }
+  .meta span { margin-right: 14px; white-space: nowrap; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 10px; }
+  th, td { border: 1px solid var(--line); padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #eef2f6; font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .note { background: #fff8e1; border: 1px solid #e6d5a8; padding: 5px 7px; margin: 6px 0; }
+  .empty { color: var(--muted); font-style: italic; }
+  .tag { background: #eef2f6; border: 1px solid var(--line); padding: 0 4px; white-space: nowrap; }
+  .bad { color: var(--bad); }
+  ul { margin: 4px 0 4px 16px; padding: 0; }
+  .chart { display: block; margin: 8px 0 14px; }
+  .chart-plot { fill: #fbfcfd; stroke: #cfd6dd; }
+  .chart-grid { stroke: #e3e9ee; }
+  .chart-tick, .chart-legend, .chart-axis, .chart-empty { font-size: 9px; fill: #5b6875; }
+  .chart-empty { font-size: 11px; font-style: italic; }
+  section { page-break-inside: auto; }
+  @page { size: A4 portrait; margin: 12mm; }
+  @media print {
+    body { margin: 0; font-size: 10px; }
+    h2 { page-break-after: avoid; }
+    table { page-break-inside: auto; }
+    tr { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Raport jakości łącza</h1>
+<p class="meta">
+  <span><strong>Zakres:</strong> {{ range["from"] }} … {{ range["to"] }} ({{ tz }})</span>
+  <span><strong>Wygenerowano:</strong> {{ generated_at }} ({{ tz }})</span>
+  <span><strong>Urządzenie:</strong> {{ device }}</span>
+  <span><strong>Pomiar z:</strong> {{ measured_from }}</span>
+  <span><strong>Wersja aplikacji:</strong> {{ app_version }}</span>
+</p>
+<p class="muted">{{ probe_method }}</p>
+{% if not has_data %}
+<p class="note">W wybranym zakresie brak danych pomiarowych.</p>
+{% endif %}
+
+<h3>Konfiguracja celów</h3>
+<table>
+  <tr><th>Cel</th><th>Rodzaj</th><th>Protokół</th><th>Host</th><th class="num">Port</th>
+      <th class="num">Interwał [s]</th><th class="num">Timeout [ms]</th><th>Aktywny</th></tr>
+  {% for target in config["targets"] %}
+  <tr>
+    <td>{{ target["name"] }}</td>
+    <td>{{ target["kind"] }}</td>
+    <td>{{ target["protocol"] }}</td>
+    <td>{{ target["host"] }}</td>
+    <td class="num">{{ target["port"] if target["port"] is not none else "—" }}</td>
+    <td class="num">{{ target["interval_seconds"] }}</td>
+    <td class="num">{{ target["timeout_ms"] }}</td>
+    <td>{{ "tak" if target["enabled"] else "nie" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="empty">brak danych</td></tr>
+  {% endfor %}
+</table>
+
+<h3>Progi wykrywania incydentów</h3>
+<table>
+  <tr><th>Parametr</th><th class="num">Wartość</th></tr>
+  {% for key, value in config["incident_thresholds"].items() %}
+  <tr><td>{{ key }}</td><td class="num">{{ value }}</td></tr>
+  {% endfor %}
+</table>
+
+<section>
+<h2>Pokrycie danych</h2>
+{% if retention_note %}
+<p class="note">{{ retention_note }}</p>
+{% endif %}
+{% if coverage["coverage_known"] %}
+<p>
+  Czas obserwowany: <strong>{{ coverage["observed_seconds"] | seconds }}</strong>
+  z {{ coverage["total_seconds"] | seconds }}
+  ({{ coverage["coverage_pct"] | number }} %).
+</p>
+{% else %}
+<p class="empty">Pokrycie nieznane — baza nie zawiera sesji monitora dla tego zakresu (brak danych).</p>
+{% endif %}
+<table>
+  <tr><th>Przerwa od</th><th>do</th><th>Powód</th></tr>
+  {% for gap in coverage["gaps"] %}
+  <tr><td>{{ gap["from"] }}</td><td>{{ gap["to"] }}</td><td>{{ gap["reason"] }}</td></tr>
+  {% else %}
+  <tr><td colspan="3" class="empty">brak przerw w obserwacji</td></tr>
+  {% endfor %}
+</table>
+</section>
+
+<section>
+<h2>Dostępność</h2>
+<p>
+  Czas bez łączności (w czasie obserwowanym):
+  <strong>{{ availability["downtime_seconds"] | seconds }}</strong>
+  {% if availability["downtime_pct"] is not none %}
+  ({{ availability["downtime_pct"] | number(2) }} % czasu obserwowanego)
+  {% else %}
+  <span class="empty">(brak danych o czasie obserwowanym)</span>
+  {% endif %}
+  — liczba przerw: {{ availability["incident_count"] }}.
+</p>
+<table>
+  <tr><th>Początek</th><th>Koniec</th><th class="num">Czas w obserwacji</th></tr>
+  {% for period in availability["periods"] %}
+  <tr>
+    <td>{{ period["started_at"] }}</td>
+    <td>{{ period["ended_at"] or "trwa" }}</td>
+    <td class="num">{{ period["observed_seconds"] | seconds }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="3" class="empty">brak zarejestrowanych przerw</td></tr>
+  {% endfor %}
+</table>
+</section>
+
+<section>
+<h2>Statystyki sond</h2>
+<table>
+  <tr>
+    <th>Cel</th><th>Protokół</th><th class="num">Próby</th><th class="num">OK</th>
+    <th class="num">Timeouty</th><th class="num">Błędy</th><th class="num">Strata [%]</th>
+    <th class="num">p50 [ms]</th><th class="num">p95 [ms]</th><th class="num">max [ms]</th>
+    <th class="num">Zmienność RTT [ms]</th><th>Znaczenie straty</th><th>Źródło</th>
+  </tr>
+  {% for entry in targets %}
+  <tr>
+    <td>{{ entry["target"]["name"] }}</td>
+    <td>{{ entry["target"]["protocol"] }}</td>
+    <td class="num">{{ entry["stats"]["attempts"] }}</td>
+    <td class="num">{{ entry["stats"]["ok"] }}</td>
+    <td class="num">{{ entry["stats"]["timeouts"] }}</td>
+    <td class="num">{{ entry["stats"]["errors"] }}</td>
+    <td class="num">{{ entry["stats"]["loss_pct"] | number(2) }}</td>
+    <td class="num">{{ entry["stats"]["rtt_p50_ms"] | number }}</td>
+    <td class="num">{{ entry["stats"]["rtt_p95_ms"] | number }}</td>
+    <td class="num">{{ entry["stats"]["rtt_max_ms"] | number }}</td>
+    <td class="num">{{ entry["stats"]["rtt_variation_ms"] | number }}</td>
+    <td>{{ entry["note"] }}</td>
+    <td>{{ entry["data_source_label"] }}</td>
+  </tr>
+  {% if entry["error_kinds"] %}
+  <tr>
+    <td colspan="13" class="muted">
+      Błędy (bez wpływu na procent strat):
+      {% for kind, count in entry["error_kinds"].items() %}<span class="tag">{{ kind }}: {{ count }}</span> {% endfor %}
+    </td>
+  </tr>
+  {% endif %}
+  {% else %}
+  <tr><td colspan="13" class="empty">brak danych</td></tr>
+  {% endfor %}
+</table>
+
+<h3>Dotychczasowe pomiary TCP (bez procentu strat)</h3>
+{% if legacy_tcp %}
+<table>
+  <tr><th class="num">Próby</th><th class="num">Nieudane</th></tr>
+  <tr><td class="num">{{ legacy_tcp["attempts"] }}</td><td class="num">{{ legacy_tcp["failures"] }}</td></tr>
+</table>
+<p class="muted">Historia sprzed wdrożenia sond. Z tych danych nie wylicza się procentu utraty pakietów.</p>
+{% else %}
+<p class="empty">brak danych</p>
+{% endif %}
+</section>
+
+<section>
+<h2>Incydenty</h2>
+<table>
+  <tr>
+    <th>Cel</th><th>Rodzaj</th><th>Początek</th><th>Koniec</th><th>Zamknięcie</th>
+    <th class="num">Szczyt straty [%]</th><th class="num">Szczyt p95 [ms]</th>
+    <th class="num">Najdłuższa seria</th><th class="num">Okna</th>
+  </tr>
+  {% for incident in incidents %}
+  <tr>
+    <td>{{ incident["target_name"] }} ({{ incident["protocol"] }})</td>
+    <td>{{ incident["kind"] }}</td>
+    <td>{{ incident["started_at"] }}</td>
+    <td>{{ incident["ended_at"] or "trwa" }}</td>
+    <td>{{ incident["closed_at"] or "—" }}{% if incident["close_reason"] %} ({{ incident["close_reason"] }}){% endif %}</td>
+    <td class="num">{{ incident["peak_loss_pct"] | number(2) }}</td>
+    <td class="num">{{ incident["peak_p95_rtt_ms"] | number }}</td>
+    <td class="num">{{ incident["longest_fail_streak"] if incident["longest_fail_streak"] is not none else "—" }}</td>
+    <td class="num">{{ incident["windows_degraded"] }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="9" class="empty">brak danych</td></tr>
+  {% endfor %}
+</table>
+
+{% for incident in incidents %}
+<h3>Incydent #{{ incident["id"] }} — {{ incident["target_name"] }} ({{ incident["kind"] }})</h3>
+<table>
+  <tr><th>Okno</th><th>Werdykt</th><th class="num">Strata [%]</th><th class="num">p95 [ms]</th></tr>
+  {% for window in incident["windows"] %}
+  <tr>
+    <td>{{ window["window_start"] }}</td>
+    <td>{{ window["verdict"] }}</td>
+    <td class="num">{{ window["loss_pct"] | number(2) }}</td>
+    <td class="num">{{ window["p95"] | number }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="empty">brak zapisanego przebiegu</td></tr>
+  {% endfor %}
+</table>
+{% if incident["diagnostics"] %}
+<table>
+  <tr><th>Diagnostyka</th><th>Start</th><th>Status</th><th>Błąd</th></tr>
+  {% for diag in incident["diagnostics"] %}
+  <tr><td>{{ diag["tool"] }}</td><td>{{ diag["started_at"] }}</td><td>{{ diag["status"] }}</td><td>{{ diag["error"] or "—" }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% if incident["annotations"] %}
+<table>
+  <tr><th>Czas</th><th>Objaw</th><th>Notatka</th><th>Źródło</th></tr>
+  {% for annotation in incident["annotations"] %}
+  <tr>
+    <td>{{ annotation["at"] }}</td>
+    <td>{{ annotation["label"] }}</td>
+    <td>{{ annotation["note"] or "—" }}</td>
+    <td>zgłoszenie użytkownika</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endfor %}
+
+<h3>Oznaczenia użytkownika</h3>
+<table>
+  <tr><th>Czas</th><th>Objaw</th><th>Notatka</th><th>Źródło</th></tr>
+  {% for annotation in annotations %}
+  <tr>
+    <td>{{ annotation["at"] }}</td>
+    <td>{{ annotation["label"] }}</td>
+    <td>{{ annotation["note"] or "—" }}</td>
+    <td>zgłoszenie użytkownika</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="empty">brak oznaczeń</td></tr>
+  {% endfor %}
+</table>
+<p class="muted">Oznaczenia pochodzą od użytkownika i nie są pomiarem.</p>
+</section>
+
+<section>
+<h2>Testy obciążeniowe</h2>
+<table>
+  <tr>
+    <th>Start</th><th>Koniec</th><th>Rodzaj</th><th>Kierunek</th><th>Serwer</th><th>Status</th>
+    <th class="num">Strata UDP [%]</th><th class="num">Pakiety</th><th class="num">Jitter [ms]</th>
+    <th class="num">Przepływność [Mb/s]</th>
+  </tr>
+  {% for test in load_tests %}
+  {% for summary in test["summaries"] %}
+  <tr>
+    <td>{{ test["started_at"] }}</td>
+    <td>{{ test["ended_at"] or "trwa" }}</td>
+    <td>{{ summary["kind"] or test["kind"] }}</td>
+    <td>{{ summary["direction"] }}</td>
+    <td>{{ test["server"] or "—" }}</td>
+    <td>{{ test["status"] }}{% if test["error"] %} <span class="bad">({{ test["error"] }})</span>{% endif %}</td>
+    <td class="num">{{ summary["loss_pct"] | number(2) }}</td>
+    <td class="num">{{ summary["packets"] if summary["packets"] is not none else "—" }}</td>
+    <td class="num">{{ summary["jitter_ms"] | number(2) }}</td>
+    <td class="num">{{ summary["mbps"] | number(2) }}</td>
+  </tr>
+  {% endfor %}
+  {% else %}
+  <tr><td colspan="10" class="empty">brak danych</td></tr>
+  {% endfor %}
+</table>
+{% for test in load_tests %}
+{% if test["latency_under_load"] %}
+<h3>Opóźnienie pod obciążeniem — test #{{ test["id"] }}</h3>
+<table>
+  <tr><th>Cel</th><th class="num">p95 w trakcie [ms]</th><th class="num">p95 przed [ms]</th>
+      <th class="num">Strata w trakcie [%]</th><th class="num">Strata przed [%]</th></tr>
+  {% for row in test["latency_under_load"] %}
+  <tr>
+    <td>{{ row["target_name"] }}</td>
+    <td class="num">{{ row["p95_during_ms"] | number }}</td>
+    <td class="num">{{ row["p95_baseline_ms"] | number }}</td>
+    <td class="num">{{ row["loss_during_pct"] | number(2) }}</td>
+    <td class="num">{{ row["loss_baseline_pct"] | number(2) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endfor %}
+</section>
+
+<section>
+<h2>Wykresy</h2>
+<p class="muted">Rozdzielczość wykresów: {{ charts["bucket_seconds"] | number(0) }} s na punkt.
+Przerwa w danych przerywa linię i nigdy nie jest interpolowana.</p>
+<h3>Strata pakietów / nieudane próby [%]</h3>
+{{ charts["loss"] | safe }}
+<h3>p95 RTT [ms]</h3>
+{{ charts["p95"] | safe }}
+</section>
+
+<section>
+<h2>Ograniczenia pomiaru</h2>
+<ul>
+  {% for limitation in limitations %}
+  <li>{{ limitation }}</li>
+  {% endfor %}
+</ul>
+</section>
+
+</body>
+</html>
