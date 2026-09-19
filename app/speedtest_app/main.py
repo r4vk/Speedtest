@@ -6,9 +6,10 @@ import io
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
@@ -30,8 +31,9 @@ from .db import (
     set_setting,
     get_settings,
 )
+from .quality_engine import QualityEngine
 from .runtime import get_runtime, init_runtime
-from .scheduler import RunningState, connectivity_loop, run_speedtest_once, speedtest_loop
+from .scheduler import RunningState, run_speedtest_once, speedtest_loop
 from .telemetry import active_heartbeat_loop, send_startup_event
 from .time_utils import parse_dt, parse_range, to_iso_z, to_local_display, to_local_iso, utc_now
 
@@ -39,11 +41,11 @@ from .time_utils import parse_dt, parse_range, to_iso_z, to_local_display, to_lo
 log = logging.getLogger(__name__)
 
 DEFAULT_SPEEDTEST_MODE = "speedtest.net"
-#: Measuring device of this instance (spec §3: `devices` is seeded with 'nas').
-DEVICE_ID = "nas"
 SESSION_HEARTBEAT_SECONDS = 30.0
 
 cfg = AppConfig()
+#: Measuring device of this instance (spec §3: `devices` is seeded with 'nas').
+DEVICE_ID = cfg.device_id
 ensure_db(cfg.db_path)
 
 ensure_default_setting(cfg.db_path, "connect_target", cfg.connect_target)
@@ -73,25 +75,6 @@ def _read_version() -> str:
         return "dev"
 
 APP_VERSION = _read_version()
-app = FastAPI(title="Speedtest Monitor", version=APP_VERSION)
-_BASE_DIR = Path(__file__).resolve().parent.parent
-_STATIC_DIR = _BASE_DIR / "static"
-app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
-
-
-@app.get("/", include_in_schema=False)
-def index():
-    return FileResponse(str(_STATIC_DIR / "index.html"))
-
-
-@app.get("/healthz", include_in_schema=False)
-def healthz():
-    return {"ok": True}
-
-
-@app.get("/api/version")
-def api_version():
-    return {"version": APP_VERSION}
 
 
 def _heartbeat_once(tracker: SessionTracker) -> bool:
@@ -119,50 +102,79 @@ async def _session_heartbeat_loop(
         _heartbeat_once(tracker)
 
 
-@app.on_event("startup")
-async def _startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Start the monitor with the app and stop it before the app goes away."""
     init_runtime()
     state = RunningState(stop=asyncio.Event())
     app.state.running_state = state
     tracker = SessionTracker()
     tracker.start(cfg.db_path, DEVICE_ID, APP_VERSION, to_iso_z(utc_now()))
     app.state.session_tracker = tracker
-    app.state.tasks = [
-        asyncio.create_task(_session_heartbeat_loop(tracker, state)),
-        asyncio.create_task(connectivity_loop(cfg, state)),
-        asyncio.create_task(speedtest_loop(cfg, state)),
-        asyncio.create_task(
-            send_startup_event(
-                db_path=cfg.db_path,
-                app_version=APP_VERSION,
-                default_enabled=cfg.telemetry_default_enabled,
-                timeout_seconds=cfg.telemetry_timeout_seconds,
-            )
-        ),
-        asyncio.create_task(
-            active_heartbeat_loop(
-                db_path=cfg.db_path,
-                app_version=APP_VERSION,
-                default_enabled=cfg.telemetry_default_enabled,
-                timeout_seconds=cfg.telemetry_timeout_seconds,
-            )
-        ),
-    ]
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    state: RunningState | None = getattr(app.state, "running_state", None)
-    if state is not None:
+    engine = QualityEngine(cfg, app_version=APP_VERSION, device_id=DEVICE_ID)
+    app.state.quality_engine = engine
+    try:
+        await engine.start()
+        app.state.tasks = [
+            asyncio.create_task(_session_heartbeat_loop(tracker, state)),
+            asyncio.create_task(speedtest_loop(cfg, state)),
+            asyncio.create_task(
+                send_startup_event(
+                    db_path=cfg.db_path,
+                    app_version=APP_VERSION,
+                    default_enabled=cfg.telemetry_default_enabled,
+                    timeout_seconds=cfg.telemetry_timeout_seconds,
+                )
+            ),
+            asyncio.create_task(
+                active_heartbeat_loop(
+                    db_path=cfg.db_path,
+                    app_version=APP_VERSION,
+                    default_enabled=cfg.telemetry_default_enabled,
+                    timeout_seconds=cfg.telemetry_timeout_seconds,
+                )
+            ),
+        ]
+        yield
+    finally:
         state.stop.set()
+        await engine.stop()
         tasks = getattr(app.state, "tasks", [])
-        for t in tasks:
-            t.cancel()
+        for task in tasks:
+            task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-    tracker: SessionTracker | None = getattr(app.state, "session_tracker", None)
-    if tracker is not None:
         tracker.stop(to_iso_z(utc_now()))
+
+
+app = FastAPI(title="Speedtest Monitor", version=APP_VERSION, lifespan=lifespan)
+_BASE_DIR = Path(__file__).resolve().parent.parent
+_STATIC_DIR = _BASE_DIR / "static"
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(str(_STATIC_DIR / "index.html"))
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    return {"ok": True}
+
+
+@app.get("/api/version")
+def api_version():
+    return {"version": APP_VERSION}
+
+
+def _quality_status() -> dict[str, Any]:
+    """Minimal quality block for `/api/status`; the full one is `/api/quality/status`."""
+    engine: QualityEngine | None = getattr(app.state, "quality_engine", None)
+    if engine is None:
+        return {"availability": "no_data", "quality": "unknown", "icmp_method": "unknown"}
+    status = engine.status()
+    return {key: status[key] for key in ("availability", "quality", "icmp_method")}
 
 
 @app.get("/api/status")
@@ -192,6 +204,7 @@ def api_status() -> dict[str, Any]:
         "last_speed_test_ok": last_speed_ok,
         "speedtest_running": bool(rt.running),
         "speedtest_running_since": to_local_iso(parse_dt(rt.running_since_iso)) if rt.running_since_iso else None,
+        "quality": _quality_status(),
         "config": {
             "connect_target": eff.connect_target,
             "connect_interval_seconds": eff.connect_interval_seconds,
