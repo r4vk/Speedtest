@@ -132,6 +132,21 @@ def _int(value: object, default: int | None = None) -> int | None:
     return int(value) if isinstance(value, (int, float)) else default
 
 
+def _hub_list(stdout: str) -> list[Any] | None:
+    """The `report.hubs` array of an mtr report, or `None` if there is none.
+
+    An empty list and a missing one are different failures: mtr answered with
+    a report that has no hops versus mtr answered with something unreadable.
+    """
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    report = data.get("report") if isinstance(data, dict) else None
+    hubs = report.get("hubs") if isinstance(report, dict) else None
+    return hubs if isinstance(hubs, list) else None
+
+
 def parse_mtr_json(stdout: str) -> list[dict[str, Any]]:
     """Parse `mtr --report --json` output into hop dicts, oldest hop first.
 
@@ -139,13 +154,8 @@ def parse_mtr_json(stdout: str) -> list[dict[str, Any]]:
     into 0 %, and a hop that did not answer has no host instead of `"???"`.
     Unparsable output is no hops at all — the caller records the failure.
     """
-    try:
-        data = json.loads(stdout)
-    except (json.JSONDecodeError, TypeError):
-        return []
-    report = data.get("report") if isinstance(data, dict) else None
-    hubs = report.get("hubs") if isinstance(report, dict) else None
-    if not isinstance(hubs, list):
+    hubs = _hub_list(stdout)
+    if hubs is None:
         return []
 
     hops: list[dict[str, Any]] = []
@@ -258,15 +268,18 @@ def hypotheses(
                 f"Uwaga: 100% strat tylko na ostatnim przeskoku może oznaczać, że "
                 f"{target_host} nie odpowiada na ICMP, a nie utratę ruchu."
             )
-        if gateway_lossy:
-            lines.append(
-                "Możliwa przyczyna: problem w sieci lokalnej — straty widać już w pomiarze "
-                "do routera."
-            )
     else:
         lines.append(
             f"Uwaga: mtr nie pokazał strat na trasie do {target_host} w tym pomiarze — "
             "problem mógł być chwilowy lub leżeć poza zasięgiem tego testu."
+        )
+
+    # Independent of what the path to the target shows: loss that is already
+    # visible on the way to the router points at the local side.
+    if gateway_lossy:
+        lines.append(
+            "Możliwa przyczyna: problem w sieci lokalnej lub na routerze — straty widać "
+            "już w pomiarze do routera."
         )
 
     silent = [
@@ -299,11 +312,16 @@ async def _run_mtr(argv: list[str], timeout: float) -> tuple[int, str, str]:
     return await _run_subprocess(argv, timeout=timeout)
 
 
-def _failure_reason(returncode: int, stderr: str) -> str:
+def _failure_reason(returncode: int, stderr: str, *, reported: bool = False) -> str:
+    """Why a run produced no hops: the tool failed, or it reported nothing."""
     detail = next((line.strip() for line in stderr.splitlines() if line.strip()), "")
-    if returncode == 0:
-        return f"unreadable mtr report: {detail}" if detail else "unreadable mtr report"
-    return f"mtr exited with {returncode}: {detail}" if detail else f"mtr exited with {returncode}"
+    if returncode != 0:
+        return (
+            f"mtr exited with {returncode}: {detail}" if detail else f"mtr exited with {returncode}"
+        )
+    if reported:
+        return "no hops reported"
+    return f"unreadable mtr report: {detail}" if detail else "unreadable mtr report"
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -337,6 +355,7 @@ class DiagnosticsRunner:
         self._tasks: set[asyncio.Task[None]] = set()
         self._running = 0
         self._last_run_at: dict[int, float] = {}
+        self._last_refusal_at: dict[int, float] = {}
         self._last_settings = DiagnosticsSettings()
 
     @property
@@ -375,11 +394,20 @@ class DiagnosticsRunner:
         if event.type == "updated" and not self._updated_is_due(event, incident_id):
             return
 
+        if self._refused_recently(event.target_id, settings):
+            # The refusal is already written down; repeating the row every
+            # window would bury the incident under its own bookkeeping.
+            log.debug(
+                "diagnostics for incident %s still in the refusal cooldown", incident_id
+            )
+            return
+
         limit = self._limit_hit(event.target_id, incident_id, settings)
         if limit is not None:
             log.info(
                 "diagnostics for incident %s skipped (%s)", incident_id, limit
             )
+            self._last_refusal_at[event.target_id] = self._clock()
             self._record(
                 incident_id=incident_id,
                 target_id=event.target_id,
@@ -417,11 +445,13 @@ class DiagnosticsRunner:
         return target.host.strip() or None
 
     def _updated_is_due(self, event: IncidentEvent, incident_id: int) -> bool:
-        """An open incident is re-diagnosed only once, and only after a while.
+        """An open incident is diagnosed once, and only after a while.
 
-        Rows written for refused triggers count here too: having already
-        decided about this incident is exactly what must not be repeated every
-        window.
+        Only rows of diagnostics that actually ran count: a refusal is not a
+        decision, so an incident that lost a concurrency slot when it opened —
+        the normal shape of a multi-target outage — must still get its mtr
+        later. `min_interval_seconds` (see `_refused_recently`) is what keeps
+        that retry from turning into one refusal row per window.
         """
         started_at = event.state.started_at
         if not started_at:
@@ -433,7 +463,12 @@ class DiagnosticsRunner:
             return False
         if open_for < UPDATED_TRIGGER_AFTER_SECONDS:
             return False
-        return not self._rows_for(incident_id)
+        return not self._executed_rows(incident_id)
+
+    def _refused_recently(self, target_id: int, settings: DiagnosticsSettings) -> bool:
+        """True while a refusal for this target is still inside the interval."""
+        last = self._last_refusal_at.get(target_id)
+        return last is not None and (self._clock() - last) < settings.min_interval_seconds
 
     def _limit_hit(
         self, target_id: int, incident_id: int, settings: DiagnosticsSettings
@@ -441,12 +476,15 @@ class DiagnosticsRunner:
         last = self._last_run_at.get(target_id)
         if last is not None and (self._clock() - last) < settings.min_interval_seconds:
             return "min_interval"
-        executed = [row for row in self._rows_for(incident_id) if row.get("error") != "rate_limited"]
-        if len(executed) >= settings.max_per_incident:
+        if len(self._executed_rows(incident_id)) >= settings.max_per_incident:
             return "max_per_incident"
         if self._running >= settings.max_concurrent:
             return "max_concurrent"
         return None
+
+    def _executed_rows(self, incident_id: int) -> list[dict[str, Any]]:
+        """The diagnostics of an incident that ran; refusals are not runs."""
+        return [row for row in self._rows_for(incident_id) if row.get("error") != "rate_limited"]
 
     def _rows_for(self, incident_id: int) -> list[dict[str, Any]]:
         try:
@@ -538,7 +576,7 @@ class DiagnosticsRunner:
                 incident_id=incident_id,
                 target_id=target_id,
                 status="error",
-                error=_failure_reason(returncode, stderr),
+                error=_failure_reason(returncode, stderr, reported=_hub_list(stdout) is not None),
                 started_at=started_at,
                 duration_ms=duration_ms,
                 raw_output=stdout,

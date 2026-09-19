@@ -153,7 +153,10 @@ class QualityEngine:
         self.load_tests = LoadTestRunner(
             self._db_path,
             scheduler=self.scheduler,
-            # the speed test lock: a load test and a speed test never overlap
+            # The speed test lock, so a load test and a speed test never
+            # overlap. It is resolved once, here: `main.lifespan` calls
+            # `init_runtime()` before it builds the engine, and a later
+            # `init_runtime()` would leave this holding the previous lock.
             runtime_lock=get_runtime().lock,
             settings_getter=self._read_load_test_settings,
             clock=clock,

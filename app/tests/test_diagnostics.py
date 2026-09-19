@@ -248,6 +248,15 @@ class TestHypotheses:
         assert _phrasing_is_hypothetical(lines)
         assert any("nie odpowiada na ICMP" in line for line in lines)
 
+    def test_a_lossy_gateway_is_read_even_when_the_target_path_is_clean(self) -> None:
+        hops = parse_mtr_json(mtr_report(hop(1, GATEWAY_HOST, 0.0), hop(2, TARGET_HOST, 0.0)))
+        lossy_gateway = parse_mtr_json(mtr_report(hop(1, GATEWAY_HOST, 25.0)))
+
+        lines = hypotheses(hops, TARGET_HOST, lossy_gateway)
+
+        assert _phrasing_is_hypothetical(lines)
+        assert any("w sieci lokalnej lub na routerze" in line for line in lines)
+
     def test_no_loss_at_all_states_only_what_was_measured(self) -> None:
         hops = parse_mtr_json(mtr_report(hop(1, GATEWAY_HOST, 0.0), hop(2, TARGET_HOST, 0.0)))
         lines = hypotheses(hops, TARGET_HOST, None)
@@ -531,6 +540,86 @@ async def test_an_unparsable_report_is_an_error_row(db_path: str) -> None:
     assert stored[0]["status"] == "error"
     assert stored[0]["error"]
     assert stored[0]["raw_output"] == "mtr: no such host"
+
+
+async def test_a_report_without_hops_says_so(db_path: str) -> None:
+    target_id, incident_id = seed(db_path)
+    mtr = FakeMtr({TARGET_HOST: (0, mtr_report(), "")})
+    runner = make_runner(db_path, mtr=mtr)
+
+    await runner.on_incident_event(make_event("opened", target_id=target_id, incident_id=incident_id), None)
+    await drain()
+
+    stored = rows(db_path, incident_id)
+    assert stored[0]["status"] == "error"
+    assert stored[0]["error"] == "no hops reported"
+
+
+async def test_an_incident_refused_a_slot_is_still_diagnosed_later(db_path: str) -> None:
+    """A refusal is not a decision: the second incident of an outage gets its mtr."""
+    target_id, incident_id = seed(db_path)
+    other = quality_db.insert_target(
+        db_path,
+        name="dns",
+        kind="dns",
+        protocol=Protocol.ICMP,
+        host="198.51.100.20",
+        interval_seconds=1.0,
+        timeout_ms=1000,
+        enabled=True,
+    )
+    other_incident = quality_db.insert_incident(
+        db_path,
+        target_id=other.id,
+        protocol="icmp",
+        kind="degraded",
+        started_at=to_iso_z(NOW),
+        window_seconds=10,
+        probe_interval_seconds=1.0,
+    )
+    gate = asyncio.Event()
+    mtr = FakeMtr(
+        {TARGET_HOST: (0, LOSS_FROM_HOP_3, ""), "198.51.100.20": (0, LOSS_FROM_HOP_3, "")},
+        gate=gate,
+    )
+    clock = FakeClock()
+    runner = make_runner(db_path, mtr=mtr, clock=clock, max_concurrent=1, min_interval_seconds=300)
+
+    # both incidents open in the same window; the second loses the only slot
+    await runner.on_incident_event(make_event("opened", target_id=target_id, incident_id=incident_id), None)
+    await drain()
+    await runner.on_incident_event(
+        make_event("opened", target_id=other.id, incident_id=other_incident), None
+    )
+    await drain()
+    gate.set()
+    await drain()
+
+    refused = rows(db_path, other_incident)
+    assert [row["error"] for row in refused] == ["rate_limited"]
+    assert mtr.hosts == [TARGET_HOST]
+
+    # an `updated` window inside the interval adds no second refusal row
+    clock.now += 100.0
+    await runner.on_incident_event(
+        make_event("updated", target_id=other.id, incident_id=other_incident, at=NOW + timedelta(seconds=600)),
+        None,
+    )
+    await drain()
+    assert len(rows(db_path, other_incident)) == 1
+    assert mtr.hosts == [TARGET_HOST]
+
+    # once the interval has passed, the incident is diagnosed after all
+    clock.now += 300.0
+    await runner.on_incident_event(
+        make_event("updated", target_id=other.id, incident_id=other_incident, at=NOW + timedelta(seconds=900)),
+        None,
+    )
+    await drain()
+
+    assert mtr.hosts == [TARGET_HOST, "198.51.100.20"]
+    stored = rows(db_path, other_incident)
+    assert [row["status"] for row in stored] == ["error", "ok"]
 
 
 async def test_close_cancels_a_running_diagnostic(db_path: str) -> None:
