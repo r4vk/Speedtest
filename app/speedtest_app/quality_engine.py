@@ -295,8 +295,9 @@ class QualityEngine:
         # blocked) are still fed, with empty windows: the engine then closes
         # them with `no_data` instead of leaving a row open forever.
         keys = list(targets) + [key for key in sorted(self._open_keys) if key not in targets]
+        live = set(keys)
         self._last_window_end = {
-            key: value for key, value in self._last_window_end.items() if key in set(keys)
+            key: value for key, value in self._last_window_end.items() if key in live
         }
 
         for key in keys:
