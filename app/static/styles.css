@@ -764,7 +764,7 @@ code { color: #c7d2fe; }
 }
 .q-annotation-form label { min-width: 160px; }
 
-.q-annotations-list, .q-annotations-list + .q-annotations-list {
+.q-annotations-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
