@@ -666,3 +666,143 @@ code { color: #c7d2fe; }
   .tool-params { grid-template-columns: 1fr; }
   .tool-result { -webkit-overflow-scrolling: touch; }
 }
+
+/* ========================================================================
+   Panel "Jakość łącza" (network quality monitoring)
+   ======================================================================== */
+
+.q-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: center;
+}
+.q-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.q-hint-warn { color: var(--bad); }
+
+.q-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.q-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.q-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  border-radius: 2px;
+  font-style: normal;
+}
+.q-swatch-incident { background: rgba(239,68,68,.45); }
+.q-swatch-gap { background: repeating-linear-gradient(45deg, rgba(148,163,184,.55) 0 2px, transparent 2px 5px); }
+.q-swatch-loadtest { background: rgba(59,130,246,.45); }
+.q-swatch-annotation { background: none; border-left: 2px dashed rgba(234,179,8,.9); width: 2px; }
+
+.q-target-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.q-target-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+.q-target-toggle input { width: auto; }
+
+.q-table-wrap {
+  overflow-x: auto;
+  margin: 8px 0 14px;
+}
+
+.q-tag {
+  font-size: 10px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.q-window-strip { display: flex; flex-wrap: wrap; gap: 2px; }
+.q-window-chip {
+  display: inline-block;
+  width: 10px;
+  height: 16px;
+  border-radius: 2px;
+}
+
+.q-diag-entry {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.q-diag-entry:last-child { border-bottom: none; }
+.q-diag-head {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.q-hypotheses {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.q-annotation-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  margin: 8px 0;
+}
+.q-annotation-form label { min-width: 160px; }
+
+.q-annotations-list, .q-annotations-list + .q-annotations-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.q-annotation-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.q-annotation-text { font-style: italic; }
+
+.q-target-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.q-target-add-row input,
+.q-target-add-row select {
+  width: auto;
+  min-width: 90px;
+}
+
+.q-incident-row:focus-visible {
+  outline: 2px solid rgba(99,102,241,.7);
+  outline-offset: -2px;
+}
+
+#qualityChart { margin-top: 4px; }
+
+@media (max-width: 900px) {
+  .q-status-strip { justify-content: flex-start; }
+}
