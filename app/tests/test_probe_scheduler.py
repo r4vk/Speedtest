@@ -600,3 +600,26 @@ async def test_stats_defaults_and_targets_view() -> None:
     async with running(scheduler):
         await fake.advance(0)
         assert [t.id for t in scheduler.targets()] == [1]
+
+
+async def test_reload_supervises_a_stopped_loop() -> None:
+    fake = FakeTime()
+
+    async def probe(target: ProbeTarget) -> ProbeResult:
+        return make_result(target, fake)
+
+    scheduler = build_scheduler(fake, [make_target(1, interval=1.0)], {Protocol.ICMP: probe})
+
+    async with running(scheduler):
+        await fake.advance(0)
+        dead = scheduler._tasks[1]
+        dead.cancel()
+        await drain()
+        assert dead.done()
+
+        await scheduler.reload_targets()
+        await drain()
+        assert scheduler._tasks[1] is not dead
+
+        await fake.advance(1.0)
+        assert len(scheduler.recent(1, 60.0)) >= 2

@@ -205,7 +205,9 @@ class ProbeScheduler:
                     stale.append(self._tasks.pop(target_id))
                     logger.info("target %s disabled, loop stopped", target_id)
                 continue
-            if running is None:
+            if running is None or running.done():
+                # A loop that stopped on its own (a crash, a cancellation) is
+                # supervised here: the next reload brings it back.
                 self._start_target(target)
                 continue
             if previous is not None and _loop_relevant_change(previous, target):
@@ -325,6 +327,7 @@ class ProbeScheduler:
             result, device_id=self._device_id, load_test_id=self._load_test_id
         )
         self._ensure_ring(target)
+        # The epoch is kept next to the row so recent() never re-parses ISO strings.
         self._recent[target.id].append((started_wall.timestamp(), stamped))
         self._buffer.append(stamped)
         self._enforce_hard_max()
