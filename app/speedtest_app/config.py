@@ -29,6 +29,15 @@ class AppConfig:
     connectivity_check_buffer_seconds: float = float(os.getenv("CONNECTIVITY_CHECK_BUFFER_SECONDS", "600"))
     connectivity_check_buffer_max: int = int(os.getenv("CONNECTIVITY_CHECK_BUFFER_MAX", "300"))
 
+    # Monitoring jakości sieci (spec §5): sondy, bufor zapisu, tożsamość urządzenia.
+    device_id: str = (os.getenv("DEVICE_ID") or "nas").strip() or "nas"
+    # Pusty = brama wyłączona; nie zgadujemy domyślnej trasy kontenera.
+    gateway_host: str = (os.getenv("GATEWAY_HOST") or "").strip()
+    probe_max_concurrency: int = int(os.getenv("PROBE_MAX_CONCURRENCY", "16"))
+    probe_flush_seconds: float = float(os.getenv("PROBE_FLUSH_SECONDS", "5"))
+    probe_flush_max: int = int(os.getenv("PROBE_FLUSH_MAX", "500"))
+    probe_buffer_hard_max: int = int(os.getenv("PROBE_BUFFER_HARD_MAX", "20000"))
+
     # Domyślnie brak URL (user może zmienić przez UI).
     speedtest_url: str | None = (os.getenv("SPEEDTEST_URL") or "").strip() or None
     speedtest_duration_seconds: float = float(os.getenv("SPEEDTEST_DURATION_SECONDS", "10"))
