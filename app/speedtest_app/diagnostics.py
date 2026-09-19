@@ -27,7 +27,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from . import quality_db
 from .incidents import IncidentEvent
-from .network_tools import _run_subprocess
+from .network_tools import _run_subprocess, _validate_hostname
 from .probe_types import ProbeTarget
 from .time_utils import parse_dt, to_iso_z, utc_now
 
@@ -552,9 +552,29 @@ class DiagnosticsRunner:
         settings: DiagnosticsSettings,
         gateway_hops: list[dict[str, Any]] | None,
     ) -> list[dict[str, Any]] | None:
-        argv = ["mtr", "--report", "--json", "-c", str(settings.mtr_count), "-n", host]
         started_at = to_iso_z(self._wall_clock())
         began = self._clock()
+
+        # The last gate before the host becomes an argv element. Targets made
+        # through the API are validated there, but a seeded or hand-edited row
+        # is not, and a host beginning with `-` would be read by mtr as a flag
+        # rather than a destination (review finding I7). A refusal is written
+        # down: a target nobody can trace is a fact about the measurement.
+        try:
+            host = _validate_hostname(host)
+        except ValueError:
+            log.warning("Refusing to run mtr for the unusable host %r (%s)", host, role)
+            self._record(
+                incident_id=incident_id,
+                target_id=target_id,
+                status="error",
+                error="invalid host",
+                started_at=started_at,
+                duration_ms=0.0,
+            )
+            return None
+
+        argv = ["mtr", "--report", "--json", "-c", str(settings.mtr_count), "-n", host]
 
         try:
             returncode, stdout, stderr = await self._subprocess_runner(

@@ -7,6 +7,7 @@ the v1 tables and then migrates forward idempotently.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -17,6 +18,8 @@ from typing import Any, Iterator
 from . import connectivity
 from .config import AppConfig
 from .time_utils import to_iso_z
+
+log = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = 2
@@ -404,6 +407,28 @@ def _int_or(raw: str | None, fallback: int) -> int:
         return fallback
 
 
+def _seed_gateway_host() -> str:
+    """`GATEWAY_HOST` for the seeded `gateway` target, validated (finding I7).
+
+    The seeded host used to be taken verbatim from the environment, which is
+    the one path into `probe_targets.host` that skips the API's validation —
+    and that host is later spawned as an mtr argument. An unusable value seeds
+    an empty, disabled target with a warning instead of a silently broken one.
+    """
+    raw = (os.getenv("GATEWAY_HOST") or "").strip()
+    if not raw:
+        return ""
+    # Deferred: `network_tools` pulls in httpx/dnspython, and `db` is imported
+    # by everything, including the tests that never touch the network.
+    from .network_tools import _validate_hostname
+
+    try:
+        return _validate_hostname(raw)
+    except ValueError as exc:
+        log.warning("GATEWAY_HOST=%r is unusable (%s); seeding the gateway target disabled", raw, exc)
+        return ""
+
+
 def _seed_probe_targets(conn: sqlite3.Connection, now_iso: str) -> None:
     """Seed the default targets of spec §3.1 — only when the table is empty."""
     if conn.execute("SELECT 1 FROM probe_targets LIMIT 1").fetchone() is not None:
@@ -411,7 +436,7 @@ def _seed_probe_targets(conn: sqlite3.Connection, now_iso: str) -> None:
 
     cfg = AppConfig()
     settings = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings").fetchall()}
-    gateway_host = (os.getenv("GATEWAY_HOST") or "").strip()
+    gateway_host = _seed_gateway_host()
     legacy_host, legacy_port = connectivity.resolve_target(
         settings.get("connect_target", cfg.connect_target), cfg.connect_default_port
     )

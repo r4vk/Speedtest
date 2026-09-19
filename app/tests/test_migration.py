@@ -136,6 +136,18 @@ def test_gateway_seed_enabled_with_env(tmp_path, monkeypatch):
     assert gateway["enabled"] == 1
 
 
+def test_gateway_seed_refuses_an_unusable_env_host(tmp_path, monkeypatch):
+    """finding I7: the seed is the one path into `host` that skips the API."""
+    monkeypatch.setenv("GATEWAY_HOST", "-oN /tmp/pwn")
+    path = str(tmp_path / "data" / "app.db")
+
+    ensure_db(path)
+
+    gateway = _targets(path)["gateway"]
+    assert gateway["host"] == ""
+    assert gateway["enabled"] == 0
+
+
 def test_legacy_tcp_seed_derived_from_settings(tmp_path, monkeypatch):
     monkeypatch.delenv("GATEWAY_HOST", raising=False)
     path = str(tmp_path / "data" / "app.db")

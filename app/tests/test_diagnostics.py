@@ -723,3 +723,38 @@ async def test_the_target_is_looked_up_when_the_event_has_none(db_path: str) -> 
     await drain()
 
     assert mtr.hosts == [TARGET_HOST]
+
+
+async def test_an_unusable_target_host_is_refused_instead_of_spawned(db_path: str) -> None:
+    """finding I7: a host that is not a host never becomes an mtr argument."""
+    target_id, incident_id = seed(db_path)
+    quality_db.update_target(db_path, target_id, host="-sS 10.0.0.0/8")
+    target = quality_db.get_target(db_path, target_id)
+    mtr = FakeMtr({})
+    runner = make_runner(db_path, mtr=mtr)
+
+    await runner.on_incident_event(
+        make_event("opened", target_id=target_id, incident_id=incident_id), target
+    )
+    await drain()
+
+    assert mtr.calls == []  # nothing was spawned
+    written = rows(db_path, incident_id)
+    assert [(row["status"], row["error"]) for row in written] == [("error", "invalid host")]
+
+
+async def test_an_unusable_gateway_host_does_not_stop_the_target_trace(db_path: str) -> None:
+    target_id, incident_id = seed(db_path)
+    target = quality_db.get_target(db_path, target_id)
+    mtr = FakeMtr({TARGET_HOST: (0, LOSS_FROM_HOP_3, "")})
+    runner = make_runner(db_path, mtr=mtr, gateway="--report")
+
+    await runner.on_incident_event(
+        make_event("opened", target_id=target_id, incident_id=incident_id), target
+    )
+    await drain()
+
+    assert mtr.hosts == [TARGET_HOST]
+    statuses = [(row["status"], row["error"]) for row in rows(db_path, incident_id)]
+    assert ("error", "invalid host") in statuses
+    assert any(status == "ok" for status, _error in statuses)
