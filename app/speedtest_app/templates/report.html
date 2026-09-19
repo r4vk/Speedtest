@@ -87,6 +87,9 @@
 {% if retention_note %}
 <p class="note">{{ retention_note }}</p>
 {% endif %}
+{% if dropped_rows_note %}
+<p class="note">{{ dropped_rows_note }}</p>
+{% endif %}
 {% if coverage["coverage_known"] %}
 <p>
   Czas obserwowany: <strong>{{ coverage["observed_seconds"] | seconds }}</strong>

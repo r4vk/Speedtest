@@ -405,6 +405,29 @@ def _latency_under_load(db_path: str, row: Mapping[str, Any], targets: Sequence[
     return comparison
 
 
+def dropped_rows_note(scheduler: Mapping[str, Any] | None) -> str | None:
+    """One line about measurements this session took but could not store.
+
+    Coverage is session-and-block based, so it happily reports ~100 % for
+    time whose results were dropped on a sustained write failure — the one
+    place a report could claim "measured" for a measurement nobody has
+    (review finding I5). Nothing new is stored for this: the counters are
+    the running engine's, so a report rendered without one simply omits the
+    line rather than inventing a zero.
+    """
+    if not scheduler:
+        return None
+    dropped = int(scheduler.get("dropped_rows") or 0)
+    if dropped <= 0:
+        return None
+    errors = int(scheduler.get("flush_errors") or 0)
+    return (
+        f"Bieżąca sesja monitora odrzuciła {dropped} pomiar(ów) przy zapisie "
+        f"(błędy zapisu: {errors}) — tych prób nie ma w danych poniżej, "
+        "mimo że czas był obserwowany."
+    )
+
+
 def build_report_model(
     db_path: str,
     start: datetime,
@@ -413,8 +436,14 @@ def build_report_model(
     app_version: str,
     now: datetime,
     settings: Mapping[str, Any] | None = None,
+    scheduler: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble every number of the report from the API's own functions (§13)."""
+    """Assemble every number of the report from the API's own functions (§13).
+
+    ``scheduler`` is the live `engine.status()["scheduler"]` block when a
+    monitor is running; it is the only part of the page that does not come
+    from the database, and it is omitted entirely when there is no engine.
+    """
     # A caller may pass a partial mapping; the spec's defaults fill the rest,
     # so a missing key cannot turn into a KeyError halfway through a report.
     values = read_quality_settings(db_path) if settings is None else {**parse_settings({}), **settings}
@@ -475,6 +504,7 @@ def build_report_model(
         },
         "coverage": coverage_result,
         "retention_note": retention_note,
+        "dropped_rows_note": dropped_rows_note(scheduler),
         "availability": _availability(db_path, start, end, now),
         "targets": entries,
         "legacy_tcp": legacy_tcp_counters(db_path, start, end),

@@ -396,3 +396,41 @@ def test_report_of_a_range_wider_than_the_raw_limit_uses_aggregates(client, monk
     assert calls == []  # nothing read a raw row for a 60 day range
     entry = next(t for t in model["targets"] if t["target"]["id"] == target.id)
     assert entry["data_source"] in {"aggregates", "none"}
+
+
+# ---------------------------------------------------------------------------
+# lost measurements are stated, never silently covered (review finding I5)
+# ---------------------------------------------------------------------------
+
+def test_report_states_dropped_rows_of_the_running_session(client) -> None:
+    db_path = client.app_db_path
+    now = utc_now()
+    model = report.build_report_model(
+        db_path,
+        now - timedelta(minutes=10),
+        now,
+        app_version="1.0.0",
+        now=now,
+        scheduler={"dropped_rows": 12, "flush_errors": 3},
+    )
+    assert "12" in model["dropped_rows_note"]
+    assert "3" in model["dropped_rows_note"]
+    assert "12" in report.render_report(model)
+
+
+def test_report_without_an_engine_says_nothing_about_dropped_rows(client) -> None:
+    db_path = client.app_db_path
+    now = utc_now()
+    healthy = report.build_report_model(
+        db_path,
+        now - timedelta(minutes=10),
+        now,
+        app_version="1.0.0",
+        now=now,
+        scheduler={"dropped_rows": 0, "flush_errors": 0},
+    )
+    without = report.build_report_model(
+        db_path, now - timedelta(minutes=10), now, app_version="1.0.0", now=now
+    )
+    assert healthy["dropped_rows_note"] is None
+    assert without["dropped_rows_note"] is None

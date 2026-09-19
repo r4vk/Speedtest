@@ -113,6 +113,41 @@ const Quality = (() => {
     return typeof point.loss_pct === "number" ? point.loss_pct : null;
   }
 
+  /**
+   * Suma liczników per cel (`skipped_ticks`, `restarts` to mapy id -> licznik).
+   */
+  function sumCounters(map) {
+    if (!map || typeof map !== "object") return 0;
+    let total = 0;
+    for (const value of Object.values(map)) {
+      const n = Number(value);
+      if (Number.isFinite(n)) total += n;
+    }
+    return total;
+  }
+
+  /**
+   * Teksty ostrzeżeń o utraconych pomiarach (spec §12, finding I5): pokrycie
+   * jest liczone z sesji i bloków, więc nie wie nic o wierszach odrzuconych
+   * przy zapisie — bez tego panel pokazywałby ~100 % pokrycia dla czasu,
+   * którego pomiary przepadły. `null` = nie ma czego pokazywać.
+   */
+  function schedulerWarnings(status) {
+    const s = (status && status.scheduler) || {};
+    const dropped = Number(s.dropped_rows) || 0;
+    const flushErrors = Number(s.flush_errors) || 0;
+    const skipped = sumCounters(s.skipped_ticks);
+    const restarts = sumCounters(s.restarts);
+    return {
+      lost: dropped > 0 || flushErrors > 0
+        ? `utracone pomiary: ${dropped} (błędy zapisu: ${flushErrors})`
+        : null,
+      loops: skipped > 0 || restarts > 0
+        ? `pominięte ticki: ${skipped} · restarty pętli: ${restarts}`
+        : null,
+    };
+  }
+
   function fmtNum(value, digits) {
     const d = digits == null ? 1 : digits;
     return typeof value === "number" && Number.isFinite(value) ? value.toFixed(d) : "–";
@@ -250,6 +285,21 @@ const Quality = (() => {
     if (coverageEl) {
       const pct = status.coverage_24h_pct;
       coverageEl.textContent = `pokrycie danych 24h: ${typeof pct === "number" ? pct.toFixed(1) : "–"} %`;
+    }
+
+    // Pokrycie nie wie o wierszach odrzuconych przy zapisie — to jedyne
+    // miejsce, w którym panel mógłby uznać za "zmierzony" czas, którego
+    // pomiary przepadły (finding I5).
+    const warnings = schedulerWarnings(status);
+    const lostEl = qs("q-lost-rows");
+    if (lostEl) {
+      lostEl.textContent = warnings.lost || "";
+      lostEl.style.display = warnings.lost ? "" : "none";
+    }
+    const loopsEl = qs("q-loop-hint");
+    if (loopsEl) {
+      loopsEl.textContent = warnings.loops || "";
+      loopsEl.style.display = warnings.loops ? "" : "none";
     }
 
     const runBtn = qs("q-run-loadtest");
@@ -1220,5 +1270,6 @@ const Quality = (() => {
     pickBucketSeconds,
     buildSumRow,
     lossValueForPoint,
+    schedulerWarnings,
   };
 })();

@@ -569,11 +569,14 @@ def api_diagnostics(
 @router.get("/quality/report.html", response_class=HTMLResponse)
 def api_report_html(request: Request, pr: ParsedRange = Depends(get_range)) -> HTMLResponse:
     db_path = db_path_of(request)
+    engine = getattr(request.app.state, "quality_engine", None)
+    scheduler = _engine_status(request, db_path).get("scheduler") if engine is not None else None
     model = report.build_report_model(
         db_path,
         pr.start,
         pr.end,
         app_version=str(getattr(request.app, "version", "dev")),
         now=utc_now(),
+        scheduler=scheduler,
     )
     return HTMLResponse(report.render_report(model))

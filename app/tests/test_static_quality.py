@@ -191,3 +191,48 @@ def test_loss_value_for_point_treats_zero_attempts_as_a_gap():
     result = _run_node(program)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.strip()) == [None, 25, None]
+
+
+# ---------------------------------------------------------------------------
+# lost measurements are visible in the panel (review finding I5)
+# ---------------------------------------------------------------------------
+
+
+@requires_node
+def test_scheduler_warnings_report_dropped_rows_and_loop_restarts():
+    status = {
+        "scheduler": {
+            "dropped_rows": 7,
+            "flush_errors": 2,
+            "skipped_ticks": {"1": 3, "2": 4},
+            "restarts": {"1": 1},
+        }
+    }
+    program = f"{QUALITY_JS}\nconsole.log(JSON.stringify(Quality.schedulerWarnings({json.dumps(status)})));"
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    warnings = json.loads(result.stdout.strip())
+    assert warnings["lost"] == "utracone pomiary: 7 (błędy zapisu: 2)"
+    assert warnings["loops"] == "pominięte ticki: 7 · restarty pętli: 1"
+
+
+@requires_node
+def test_scheduler_warnings_stay_silent_when_nothing_was_lost():
+    cases = [
+        {"scheduler": {"dropped_rows": 0, "flush_errors": 0, "skipped_ticks": {}, "restarts": {}}},
+        {"scheduler": {}},
+        {},
+    ]
+    program = f"{QUALITY_JS}\nconsole.log(JSON.stringify({json.dumps(cases)}.map(Quality.schedulerWarnings)));"
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip()) == [{"lost": None, "loops": None}] * 3
+
+
+@requires_node
+def test_a_write_failure_alone_is_enough_to_warn():
+    status = {"scheduler": {"dropped_rows": 0, "flush_errors": 3}}
+    program = f"{QUALITY_JS}\nconsole.log(JSON.stringify(Quality.schedulerWarnings({json.dumps(status)})));"
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip())["lost"] == "utracone pomiary: 0 (błędy zapisu: 3)"
