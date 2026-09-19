@@ -6,6 +6,9 @@ test that touches the loopback interface is marked ``network``.
 """
 from __future__ import annotations
 
+import asyncio
+import errno
+import os
 import socket
 import struct
 from typing import Any, Iterator
@@ -85,7 +88,11 @@ def make_target(**overrides: Any) -> ProbeTarget:
 
 
 def install_socket_layer(
-    monkeypatch: pytest.MonkeyPatch, replies: Any, *, step: float = 0.001
+    monkeypatch: pytest.MonkeyPatch,
+    replies: Any,
+    *,
+    step: float = 0.001,
+    clock: FakeClock | None = None,
 ) -> tuple[FakeSocket, list[bytes]]:
     """Patch the module's socket seams; ``replies`` yields the bytes recv returns."""
     sock = FakeSocket()
@@ -103,7 +110,7 @@ def install_socket_layer(
     monkeypatch.setattr(icmp_probe, "_open_socket", open_socket)
     monkeypatch.setattr(icmp_probe, "_sock_sendto", sendto)
     monkeypatch.setattr(icmp_probe, "_sock_recv", recv)
-    monkeypatch.setattr(icmp_probe, "perf_counter", FakeClock(step))
+    monkeypatch.setattr(icmp_probe, "perf_counter", clock or FakeClock(step))
     return sock, sent
 
 
@@ -275,11 +282,31 @@ async def test_permission_error_on_socket_creation(monkeypatch: pytest.MonkeyPat
 
 async def test_other_socket_errors_are_exec(monkeypatch: pytest.MonkeyPatch) -> None:
     def open_socket(family: int, sock_type: int, proto: int) -> Any:
-        raise OSError(51, "Network is unreachable")
+        raise OSError(errno.EMFILE, "Too many open files")
 
     monkeypatch.setattr(icmp_probe, "_open_socket", open_socket)
     result = await icmp_probe.probe(make_target(), method="dgram")
     assert (result.outcome, result.error_kind) == (Outcome.ERROR, "exec")
+
+
+@pytest.mark.parametrize(
+    "number", sorted(icmp_probe.UNREACHABLE_ERRNOS)
+)
+async def test_pending_socket_error_is_icmp_unreachable(
+    monkeypatch: pytest.MonkeyPatch, number: int
+) -> None:
+    """Linux datagram sockets report the ICMP error through the next syscall."""
+
+    def replies(sent: list[bytes]) -> bytes:
+        raise OSError(number, os.strerror(number))
+
+    install_socket_layer(monkeypatch, replies)
+    result = await icmp_probe.probe(make_target(), method="dgram")
+
+    assert result.outcome is Outcome.ERROR
+    assert result.error_kind == "icmp_unreachable"
+    assert result.error_detail is not None and os.strerror(number) in result.error_detail
+    assert result.rtt_ms is None
 
 
 async def test_unavailable_method_is_reported_as_permission() -> None:
@@ -311,6 +338,191 @@ async def test_sequence_numbers_increase_per_target(monkeypatch: pytest.MonkeyPa
 
     first, second = (sent_ident_seq(packet)[1] for packet in sent)
     assert second == (first + 1) & 0xFFFF
+
+
+# ---------------------------------------------------------------------------
+# budget and hard guard
+# ---------------------------------------------------------------------------
+
+
+async def test_slow_resolution_eats_into_the_timeout_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The budget covers the whole attempt, so loss stays `timeout` (§4.2)."""
+    clock = FakeClock(0.001)
+
+    def slow_getaddrinfo(host: str, port: Any, family: int = 0, *args: Any, **kw: Any) -> list:
+        clock.now += 0.6  # resolution burns 600 ms of a 1000 ms budget
+        return [(socket.AF_INET, socket.SOCK_DGRAM, 0, "", (RESOLVED, 0))]
+
+    def replies(sent: list[bytes]) -> bytes:
+        clock.now += 0.2  # every foreign reply burns another 200 ms
+        ident, seq = sent_ident_seq(sent[-1])
+        return echo_reply(ident, (seq + 1) & 0xFFFF, sent[-1][8:])
+
+    monkeypatch.setattr(icmp_probe.socket, "getaddrinfo", slow_getaddrinfo)
+    install_socket_layer(monkeypatch, replies, clock=clock)
+    result = await icmp_probe.probe(make_target(timeout_ms=1000), method="dgram")
+
+    assert result.outcome is Outcome.TIMEOUT
+    assert result.duration_ms <= 1000 + 100  # never past the hard guard
+
+
+async def test_hard_guard_reports_exec_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An attempt stuck below the probe's own timeouts still cannot run away."""
+    sock = FakeSocket()
+
+    async def stuck(*args: Any) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(icmp_probe, "_open_socket", lambda *args: sock)
+    monkeypatch.setattr(icmp_probe, "_sock_sendto", stuck)
+    result = await icmp_probe.probe(make_target(timeout_ms=20), method="dgram")
+
+    assert result.outcome is Outcome.ERROR
+    assert result.error_kind == "exec_timeout"
+    assert result.duration_ms >= 20
+    assert sock.closed
+
+
+# ---------------------------------------------------------------------------
+# the ping fallback
+# ---------------------------------------------------------------------------
+
+
+class FakeProcess:
+    def __init__(
+        self, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0, hang: bool = False
+    ) -> None:
+        self.stdout_data = stdout
+        self.stderr_data = stderr
+        self.returncode = returncode
+        self.hang = hang
+        self.killed = False
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        if self.hang:
+            await asyncio.Event().wait()
+        return self.stdout_data, self.stderr_data
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        return self.returncode
+
+
+def install_ping(monkeypatch: pytest.MonkeyPatch, process: Any) -> list[list[str]]:
+    captured: list[list[str]] = []
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> Any:
+        captured.append(list(args))
+        if isinstance(process, BaseException):
+            raise process
+        return process
+
+    monkeypatch.setattr(icmp_probe.asyncio, "create_subprocess_exec", fake_exec)
+    return captured
+
+
+@pytest.mark.parametrize(
+    "platform,family,expected",
+    [
+        ("linux", socket.AF_INET, ["ping", "-c", "1", "-W", "1.5", "-n", "1.1.1.1"]),
+        ("linux", socket.AF_INET6, ["ping", "-c", "1", "-W", "1.5", "-n", "1.1.1.1"]),
+        (
+            "darwin",
+            socket.AF_INET,
+            ["ping", "-c", "1", "-W", "1500", "-t", "2", "-n", "1.1.1.1"],
+        ),
+        (
+            "darwin",
+            socket.AF_INET6,
+            ["ping6", "-c", "1", "-W", "1500", "-t", "2", "-n", "1.1.1.1"],
+        ),
+    ],
+)
+def test_ping_argv_per_platform(
+    monkeypatch: pytest.MonkeyPatch, platform: str, family: int, expected: list[str]
+) -> None:
+    monkeypatch.setattr(icmp_probe.sys, "platform", platform)
+    assert icmp_probe.ping_argv(1500, family, "1.1.1.1") == expected
+
+
+@pytest.mark.parametrize(
+    "platform,expected_flags",
+    [("linux", ["-W", "0.3"]), ("darwin", ["-W", "300", "-t", "1"])],
+)
+def test_ping_argv_for_a_sub_second_timeout(
+    monkeypatch: pytest.MonkeyPatch, platform: str, expected_flags: list[str]
+) -> None:
+    monkeypatch.setattr(icmp_probe.sys, "platform", platform)
+    argv = icmp_probe.ping_argv(300, socket.AF_INET, "1.1.1.1")
+    assert argv[3 : 3 + len(expected_flags)] == expected_flags
+
+
+async def test_ping_reply_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout = b"64 bytes from 1.1.1.1: icmp_seq=0 ttl=57 time=12.3 ms\n"
+    captured = install_ping(monkeypatch, FakeProcess(stdout=stdout, returncode=0))
+    result = await icmp_probe.probe(make_target(), method="ping")
+
+    assert result.outcome is Outcome.OK
+    assert result.rtt_ms == pytest.approx(12.3)
+    assert (result.resolved_ip, result.ip_family) == (RESOLVED, 4)
+    assert captured[0][0] in {"ping", "ping6"}
+    assert captured[0][-1] == RESOLVED
+
+
+@pytest.mark.parametrize("returncode", [1, 2])
+async def test_ping_without_a_reply_is_a_timeout(
+    monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    """iputils exits 1 when nothing came back, BSD/macOS exits 2."""
+    stdout = b"--- 1.1.1.1 ping statistics ---\n1 packets transmitted, 0 received\n"
+    install_ping(monkeypatch, FakeProcess(stdout=stdout, returncode=returncode))
+    result = await icmp_probe.probe(make_target(), method="ping")
+
+    assert result.outcome is Outcome.TIMEOUT
+    assert result.error_kind is None
+    assert result.rtt_ms is None
+
+
+async def test_ping_unreachable_text_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout = b"From 10.0.0.1 icmp_seq=1 Destination Host Unreachable\n"
+    install_ping(monkeypatch, FakeProcess(stdout=stdout, returncode=1))
+    result = await icmp_probe.probe(make_target(), method="ping")
+
+    assert result.outcome is Outcome.ERROR
+    assert result.error_kind == "icmp_unreachable"
+    assert result.error_detail is not None and "Unreachable" in result.error_detail
+
+
+async def test_ping_other_exit_code_is_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_ping(monkeypatch, FakeProcess(stderr=b"ping: invalid option\n", returncode=64))
+    result = await icmp_probe.probe(make_target(), method="ping")
+
+    assert result.outcome is Outcome.ERROR
+    assert result.error_kind == "exec"
+    assert result.error_detail is not None and "exit 64" in result.error_detail
+
+
+async def test_ping_that_hangs_is_killed_and_reported_as_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = FakeProcess(hang=True)
+    install_ping(monkeypatch, process)
+    result = await icmp_probe.probe(make_target(timeout_ms=20), method="ping")
+
+    assert result.outcome is Outcome.TIMEOUT  # loss, never exec_timeout
+    assert result.error_kind is None
+    assert result.duration_ms >= 20
+    assert process.killed
+
+
+async def test_ping_binary_missing_is_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_ping(monkeypatch, FileNotFoundError(2, "No such file or directory"))
+    result = await icmp_probe.probe(make_target(), method="ping")
+    assert (result.outcome, result.error_kind) == (Outcome.ERROR, "exec")
 
 
 @pytest.mark.network

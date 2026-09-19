@@ -49,6 +49,16 @@ _MAX_ERROR_DETAIL = 200
 _MIN_IPV4_DATAGRAM = 28  # 20 B IPv4 header + 8 B ICMP header
 _IPV6_HEADER_SIZE = 40
 _PING_TIME_RE = re.compile(r"time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE)
+#: Pending socket errors that mean "the peer answered with an ICMP error".
+UNREACHABLE_ERRNOS = frozenset(
+    {
+        errno.EHOSTUNREACH,
+        errno.ENETUNREACH,
+        errno.EHOSTDOWN,
+        errno.ENETDOWN,
+        errno.ECONNREFUSED,
+    }
+)
 
 _icmp_method: str | None = None
 _sequences: dict[int, int] = {}
@@ -331,7 +341,9 @@ async def _attempt_socket(
         sock.setblocking(False)
         sent = perf_counter()
         await _sock_sendto(sock, packet, _destination(sockaddr, family, ip))
-        deadline = sent + timeout_ms / 1000.0
+        # The budget covers the whole attempt, resolution included, so a slow
+        # resolver can never push us past the hard guard (same rule as TCP).
+        deadline = started + timeout_ms / 1000.0
         while True:
             remaining = deadline - perf_counter()
             if remaining <= 0:
@@ -394,17 +406,14 @@ async def _attempt_ping(
     ip: str,
     ip_family: int,
 ) -> ProbeResult:
-    seconds = max(1, ceil(timeout_ms / 1000.0))
-    if sys.platform == "darwin":
-        # macOS: -W is milliseconds, -t is the deadline in seconds.
-        binary = "ping6" if family == socket.AF_INET6 else "ping"
-        args = [binary, "-c", "1", "-W", str(timeout_ms), "-t", str(seconds), "-n", ip]
-    else:
-        args = ["ping", "-c", "1", "-W", str(seconds), "-n", ip]
-
+    # Our own deadline is the attempt budget, never the child's idea of it: it
+    # has to expire before the hard guard so that loss stays `timeout`.
+    deadline = started + timeout_ms / 1000.0
     try:
         proc = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *ping_argv(timeout_ms, family, ip),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
     except OSError as exc:
         return _result(
@@ -419,8 +428,20 @@ async def _attempt_ping(
             error_detail=_detail(exc),
         )
 
+    remaining = deadline - perf_counter()
+    if remaining <= 0:
+        await _kill(proc)
+        return _result(
+            target,
+            started_wall,
+            started,
+            timeout_ms,
+            Outcome.TIMEOUT,
+            resolved_ip=ip,
+            ip_family=ip_family,
+        )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), seconds + 0.2)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), remaining)
     except (asyncio.TimeoutError, TimeoutError):
         await _kill(proc)
         return _result(
@@ -461,7 +482,8 @@ async def _attempt_ping(
             error_kind="icmp_unreachable",
             error_detail=_first_line(text) or f"unreachable: {ip}",
         )
-    if proc.returncode == 1:
+    if proc.returncode in (1, 2):
+        # iputils exits 1 when nothing came back, BSD/macOS exits 2.
         return _result(
             target,
             started_wall,
@@ -494,6 +516,27 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def ping_argv(timeout_ms: int, family: int, ip: str) -> list[str]:
+    """Argument vector for the `ping` fallback, per platform."""
+    seconds = max(1, timeout_ms) / 1000.0
+    if sys.platform == "darwin":
+        # macOS/BSD: -W is milliseconds, -t is a whole-second deadline.
+        binary = "ping6" if family == socket.AF_INET6 else "ping"
+        return [
+            binary,
+            "-c",
+            "1",
+            "-W",
+            str(max(1, int(timeout_ms))),
+            "-t",
+            str(max(1, ceil(seconds))),
+            "-n",
+            ip,
+        ]
+    # iputils: -W takes seconds and accepts a fractional value.
+    return ["ping", "-c", "1", "-W", f"{seconds:g}", "-n", ip]
 
 
 def _family_of(family_pref: str) -> int:
@@ -539,6 +582,13 @@ def _socket_error(
     exc: OSError,
 ) -> ProbeResult:
     denied = isinstance(exc, PermissionError) or exc.errno in (errno.EPERM, errno.EACCES)
+    if not denied and exc.errno in UNREACHABLE_ERRNOS:
+        # Linux datagram ICMP does not hand the error message to recv(): the
+        # kernel keeps the pending error and fails the next call instead. It is
+        # still a reply, not a loss (§4.2).
+        error_kind = "icmp_unreachable"
+    else:
+        error_kind = "permission" if denied else "exec"
     return _result(
         target,
         started_wall,
@@ -547,7 +597,7 @@ def _socket_error(
         Outcome.ERROR,
         resolved_ip=ip,
         ip_family=ip_family,
-        error_kind="permission" if denied else "exec",
+        error_kind=error_kind,
         error_detail=_detail(exc),
     )
 
