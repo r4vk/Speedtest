@@ -519,6 +519,10 @@ Settings: `retention_raw_days` (default 14), `retention_aggregate_days` (365),
 `retention_diagnostics_days` (365). Job runs hourly: ensures aggregates exist for every bucket
 about to lose raw rows (calls `aggregates.aggregate_range` first), then deletes in batches of
 5000 with short transactions; marks `percentiles_from_raw = 0` on affected buckets.
+The raw-delete cutoff is `now - retention_raw_days` floored to the start of its UTC day, so no
+bucket is ever half-deleted before it has been aggregated (a bucket straddling a literal cutoff
+would otherwise be re-aggregated later from surviving rows only). Raw rows therefore survive up
+to 24 h longer than configured, never less.
 `estimate_growth(db)` reports rows/day and bytes/day from the last 24 h.
 Exports and report state "surowe dane niedostępne (retencja)" for ranges before
 `now - retention_raw_days`; the probes CSV for such a range is empty with a header comment line.

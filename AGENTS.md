@@ -6,6 +6,12 @@ Przed realizacją funkcjonalności monitoringu przeczytaj [NETWORK_QUALITY_PLAN.
 Dokument określa kolejność etapów, kryteria ukończenia i zasady wiarygodności pomiarów.
 Priorytetem jest NAS po kablu; agent macOS jest ostatnim etapem. Aktualizuj checklisty i dziennik realizacji po wykonaniu oraz zweryfikowaniu prac.
 
+Wiążący projekt techniczny (schemat, formuły statystyk, maszyna stanów incydentów, kontrakt API):
+[docs/network-quality-design.md](docs/network-quality-design.md). Procedury eksploatacyjne (aktualizacja,
+kopia bazy, wycofanie wersji): [docs/operations.md](docs/operations.md).
+Testy: `cd app && ../.venv/bin/python -m pytest -q` (venv z `uv venv --python 3.12`, zależności z
+`app/requirements.txt` + `app/requirements-dev.txt`).
+
 ## Zasoby AI — lokalizacja (niedostępne z tego poziomu)
 
 Skills i pluginy są w folderze WYŻEJ:
