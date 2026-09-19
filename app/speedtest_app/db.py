@@ -41,8 +41,10 @@ def _parse_utc_iso(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+def _connect(db_path: str, *, check_same_thread: bool = True) -> sqlite3.Connection:
+    conn = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None, check_same_thread=check_same_thread
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
@@ -57,6 +59,31 @@ def _connect(db_path: str) -> sqlite3.Connection:
 @contextmanager
 def db_conn(db_path: str) -> Iterator[sqlite3.Connection]:
     conn = _connect(db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def streaming_conn(db_path: str) -> Iterator[sqlite3.Connection]:
+    """A read connection for a cursor a *generator* is walked with.
+
+    Starlette drives the body iterator of a `StreamingResponse` returned from
+    a sync route through `iterate_in_threadpool`, which has no thread
+    affinity: the `fetchmany` after a yield can land on a different worker
+    than the one that opened the connection. With the default
+    ``check_same_thread=True`` that raises `sqlite3.ProgrammingError` in the
+    middle of a 200 response — a silently truncated download — and then again
+    in the `finally` that should have closed the connection, leaking it (and
+    with it the WAL checkpoint).
+
+    The check is safe to drop here because the generator is advanced one
+    `next()` at a time: the access is serialised even when the thread behind
+    it changes. It is *not* a licence to share the connection between
+    concurrent callers.
+    """
+    conn = _connect(db_path, check_same_thread=False)
     try:
         yield conn
     finally:
@@ -505,6 +532,22 @@ def get_settings(db_path: str, keys: list[str]) -> dict[str, str]:
             tuple(keys),
         ).fetchall()
         return {r["key"]: r["value"] for r in rows}
+
+
+def setting_was_set_by_user(db_path: str, key: str) -> bool:
+    """Whether `key` was ever written through the UI or the API.
+
+    `config_changes` is the audit trail of every setting write, including its
+    source, so it answers "did a person ever decide this?" — which is what
+    lets an environment variable fill a value it has never been given without
+    ever overriding a decision somebody made in the panel (spec §3.1).
+    """
+    with db_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM config_changes WHERE key = ? AND source IN ('ui','api') LIMIT 1",
+            (key,),
+        ).fetchone()
+    return row is not None
 
 
 def set_setting(

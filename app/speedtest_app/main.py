@@ -31,6 +31,7 @@ from .db import (
     query_connectivity_checks,
     query_speed_tests,
     set_setting,
+    setting_was_set_by_user,
     get_settings,
 )
 from .network_tools import _validate_hostname
@@ -485,15 +486,20 @@ def _reconcile_gateway_host_from_env() -> None:
     restarted therefore got nothing at all (review finding I3).
 
     A host configured through the UI or the API always wins: the env only
-    fills a host that is still empty, so restarting never undoes a change the
-    operator made in the panel. `_env_gateway_host` validates the value, so an
-    unusable one is logged and leaves the target disabled rather than becoming
-    an mtr/ping argument.
+    fills a value nobody has ever set, so restarting never undoes a change the
+    operator made in the panel — including *clearing* the host, which is a
+    decision as much as setting one and must not be re-applied at the next
+    start. `config_changes` is what remembers that decision.
+    `_env_gateway_host` validates the value, so an unusable one is logged and
+    leaves the target disabled rather than becoming an mtr/ping argument.
     """
     host = _env_gateway_host()
     if not host:
         return
     try:
+        if setting_was_set_by_user(cfg.db_path, "gateway_host"):
+            log.debug("GATEWAY_HOST ignored: the gateway host was configured by hand")
+            return
         targets = quality_db.list_targets(cfg.db_path)
     except Exception:
         log.warning("Could not read the probe targets to apply GATEWAY_HOST", exc_info=True)

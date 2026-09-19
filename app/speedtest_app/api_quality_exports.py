@@ -69,8 +69,18 @@ PROBE_CSV_HEADER: tuple[str, ...] = (
 )
 
 
+#: How many raw rows `probes.csv` pulls off the cursor at a time. Every page
+#: boundary is a point where the server may hand the generator to a different
+#: worker thread, which is why the tests can make it small.
+PROBE_CSV_BATCH_SIZE = 5000
+
+
 def _probe_csv_rows(
-    db_path: str, pr: ParsedRange, target_id: int | None, names: Mapping[int, str]
+    db_path: str,
+    pr: ParsedRange,
+    target_id: int | None,
+    names: Mapping[int, str],
+    batch_size: int = PROBE_CSV_BATCH_SIZE,
 ) -> Iterator[list[Any]]:
     """The header and one list per raw row, straight off the cursor.
 
@@ -81,7 +91,11 @@ def _probe_csv_rows(
     """
     yield list(PROBE_CSV_HEADER)
     for row in quality_db.iter_probe_results(
-        db_path, to_iso_z(pr.start), to_iso_z(pr.end), target_id=target_id
+        db_path,
+        to_iso_z(pr.start),
+        to_iso_z(pr.end),
+        target_id=target_id,
+        batch_size=batch_size,
     ):
         yield [
             to_local_display(parse_dt(row["started_at"])),

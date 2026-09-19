@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import inspect
 import sqlite3
+from typing import Any
 
 import pytest
 
-from speedtest_app import quality_db
+from speedtest_app import db, quality_db
 from speedtest_app.probe_types import Outcome, ProbeResult, ProbeTarget, Protocol
 
 
@@ -305,3 +306,80 @@ def test_iter_probe_results_does_not_materialise_the_whole_range(db_path, utc_is
     assert first["started_at"] == utc_iso(0)
     # closing the abandoned generator must release the connection, not raise
     stream.close()
+
+
+def test_iter_probe_results_survives_being_advanced_from_other_threads(
+    db_path, utc_iso, thread_hopper, db_reader
+):
+    """A streamed body has no thread affinity (review round 2, critical).
+
+    Starlette drives a sync `StreamingResponse` iterator through
+    `iterate_in_threadpool`, so the `fetchmany` after a yield can run on a
+    different worker than the one that opened the connection. With the
+    default `check_same_thread=True` that used to raise `ProgrammingError`
+    inside an already-200 response: a silently truncated CSV.
+    """
+    target = _make_target(db_path)
+    quality_db.insert_probe_results(
+        db_path,
+        [
+            ProbeResult(
+                target_id=target.id,
+                protocol=Protocol.ICMP,
+                started_at=utc_iso(i),
+                duration_ms=1.0,
+                outcome=Outcome.OK,
+                timeout_ms=1000,
+            )
+            for i in range(25)
+        ],
+    )
+    # a second reader hammering the same database throughout the stream
+    db_reader(lambda: quality_db.count_probe_results(db_path, utc_iso(0), utc_iso(100)))
+
+    stream = quality_db.iter_probe_results(db_path, utc_iso(0), utc_iso(100), batch_size=4)
+    collected = thread_hopper.drain(stream)
+
+    assert len(collected) == 25  # every page, across ~7 `fetchmany` boundaries
+    assert [row["started_at"] for row in collected] == [utc_iso(i) for i in range(25)]
+
+
+def test_iter_probe_results_closes_its_connection(db_path, utc_iso, monkeypatch):
+    """Exhausted or abandoned, the read connection must not be left open."""
+    target = _make_target(db_path)
+    quality_db.insert_probe_results(
+        db_path,
+        [
+            ProbeResult(
+                target_id=target.id,
+                protocol=Protocol.ICMP,
+                started_at=utc_iso(i),
+                duration_ms=1.0,
+                outcome=Outcome.OK,
+                timeout_ms=1000,
+            )
+            for i in range(6)
+        ],
+    )
+
+    opened: list[sqlite3.Connection] = []
+    original = db._connect
+
+    def spy(path: str, **kwargs: Any) -> sqlite3.Connection:
+        conn = original(path, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(db, "_connect", spy)
+
+    abandoned = quality_db.iter_probe_results(db_path, utc_iso(0), utc_iso(100), batch_size=2)
+    next(abandoned)
+    assert len(opened) == 1
+    abandoned.close()  # the client hung up after the first page
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[-1].execute("PRAGMA user_version")
+
+    drained = list(quality_db.iter_probe_results(db_path, utc_iso(0), utc_iso(100), batch_size=2))
+    assert len(drained) == 6
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[-1].execute("PRAGMA user_version")

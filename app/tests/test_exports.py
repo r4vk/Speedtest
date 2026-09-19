@@ -9,12 +9,20 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sqlite3
 from datetime import timedelta
+from types import SimpleNamespace
+from typing import Any
 
-from speedtest_app import quality_db
-from speedtest_app.quality_views import RAW_RANGE_MAX_DAYS
+import anyio
+import pytest
+from anyio import to_thread
+
+from speedtest_app import db, quality_db
+from speedtest_app.api_quality_exports import _probe_csv_rows, export_probes_csv
+from speedtest_app.quality_views import RAW_RANGE_MAX_DAYS, target_names
 from speedtest_app.probe_types import Outcome, ProbeResult, Protocol
-from speedtest_app.time_utils import parse_dt, to_iso_z, utc_now
+from speedtest_app.time_utils import ParsedRange, parse_dt, to_iso_z, utc_now
 
 MINUTE = 60.0
 
@@ -336,3 +344,115 @@ def test_probes_csv_streams_from_the_cursor(client, monkeypatch) -> None:
     assert rows[0][0] == "started_at_local"
     assert len(rows) == 7  # header + the six rows inside [from, to]
     assert all(row[3] for row in rows[1:])  # the target name is resolved per row
+
+
+def _seed_many(db_path: str, count: int) -> tuple[int, str, str]:
+    """One target with ``count`` rows a second apart; returns (id, from, to)."""
+    target = _target(db_path, name="streamed")
+    anchor = utc_now().replace(microsecond=0) - timedelta(hours=1)
+    quality_db.insert_probe_results(
+        db_path,
+        [
+            _result(target.id, to_iso_z(anchor + timedelta(seconds=i)), "ok", 10.0 + i)
+            for i in range(count)
+        ],
+    )
+    return target.id, to_iso_z(anchor), to_iso_z(anchor + timedelta(seconds=count))
+
+
+async def test_probes_csv_body_survives_the_threadpool(client) -> None:
+    """finding C1a round 2: the real body iterator, driven off the event loop.
+
+    `StreamingResponse` wraps a sync iterator in `iterate_in_threadpool`, so
+    the export is walked from anyio workers while the rest of the app keeps
+    reading the same database. The whole file has to arrive — a stream that
+    dies mid-way still looks like HTTP 200 to the client.
+    """
+    db_path = client.app_db_path
+    _target_id, start, end = _seed_many(db_path, count=40)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db_path=db_path)))
+
+    response = export_probes_csv(
+        request, ParsedRange(start=parse_dt(start), end=parse_dt(end)), None
+    )
+
+    # keep other workers busy so the body cannot rely on one sticky thread
+    async def noisy_reader() -> None:
+        for _ in range(40):
+            await to_thread.run_sync(quality_db.count_probe_results, db_path, start, end)
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(noisy_reader)
+        group.start_soon(noisy_reader)
+        chunks = [chunk async for chunk in response.body_iterator]
+
+    text = "".join(
+        chunk.decode() if isinstance(chunk, (bytes, bytearray)) else chunk for chunk in chunks
+    )
+    rows = _csv_rows(text)
+    assert rows[0][0] == "started_at_local"
+    assert len(rows) == 41  # header + every seeded row, none dropped
+
+
+async def test_probes_csv_leaves_no_read_connection_behind(client, monkeypatch) -> None:
+    """A client that hangs up mid-download must not pin the WAL."""
+    db_path = client.app_db_path
+    _target_id, start, end = _seed_many(db_path, count=20)
+    opened: list[Any] = []
+    original = db._connect
+
+    def spy(path: str, **kwargs: Any):
+        conn = original(path, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(db, "_connect", spy)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db_path=db_path)))
+    response = export_probes_csv(
+        request, ParsedRange(start=parse_dt(start), end=parse_dt(end)), None
+    )
+
+    iterator = response.body_iterator
+    await iterator.__anext__()  # first chunk only, then hang up
+    await iterator.aclose()
+
+    streamed = [conn for conn in opened if _is_closed(conn)]
+    assert streamed, "the export opened no connection at all"
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("PRAGMA user_version")
+
+
+def _is_closed(conn) -> bool:
+    try:
+        conn.execute("PRAGMA user_version")
+    except sqlite3.ProgrammingError:
+        return True
+    return False
+
+
+def test_probe_csv_rows_survive_hopping_between_worker_threads(
+    client, thread_hopper, db_reader
+) -> None:
+    """The export's own generator, advanced from a different thread every time.
+
+    Four `fetchmany` pages and one `next()` per worker is what a thread pool
+    with no affinity does in the worst case; before the fix the second page
+    raised `ProgrammingError` inside an already-200 response, and the client
+    got a truncated CSV under HTTP 200.
+    """
+    db_path = client.app_db_path
+    _target_id, start, end = _seed_many(db_path, count=25)
+    db_reader(lambda: quality_db.count_probe_results(db_path, start, end))
+
+    generator = _probe_csv_rows(
+        db_path,
+        ParsedRange(start=parse_dt(start), end=parse_dt(end)),
+        None,
+        target_names(db_path),
+        batch_size=7,
+    )
+    rows = thread_hopper.drain(generator)
+
+    assert rows[0][0] == "started_at_local"
+    assert len(rows) == 26  # header + all 25 rows, across four pages

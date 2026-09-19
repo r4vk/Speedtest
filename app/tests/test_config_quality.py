@@ -11,7 +11,7 @@ import importlib
 from fastapi.testclient import TestClient
 
 from speedtest_app import quality_db
-from speedtest_app.db import ensure_db, get_settings, set_setting
+from speedtest_app.db import ensure_db, get_settings, set_setting, setting_was_set_by_user
 from speedtest_app.quality_settings import QUALITY_SETTING_SPECS
 
 
@@ -316,3 +316,41 @@ def test_an_unusable_env_gateway_host_leaves_the_target_disabled(tmp_path, monke
         monkeypatch.undo()
         importlib.reload(config_module)
         importlib.reload(db_module)
+
+
+def test_clearing_the_host_in_the_ui_survives_a_restart_with_the_env(tmp_path, monkeypatch) -> None:
+    """Clearing is a decision too (review round 2, minor).
+
+    The gateway host is empty after the operator clears it, which used to look
+    exactly like "never configured" — so the next start put the env back and
+    re-enabled the target, contradicting the README.
+    """
+    db_path, main_module, config_module, db_module = _start_app(
+        tmp_path, monkeypatch, "10.0.0.1"
+    )
+    try:
+        with TestClient(main_module.app) as client:
+            assert _gateway(db_path).host == "10.0.0.1"  # the env filled it on this start
+            assert client.put("/api/config", json={"gateway_host": ""}).status_code == 200
+            gateway = _gateway(db_path)
+            assert (gateway.host, gateway.enabled) == ("", False)
+
+        with TestClient(main_module.app):
+            gateway = _gateway(db_path)
+            assert (gateway.host, gateway.enabled) == ("", False)
+            assert get_settings(db_path, ["gateway_host"])["gateway_host"] == ""
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)
+        importlib.reload(db_module)
+
+
+def test_setting_was_set_by_user_only_counts_ui_and_api_writes(db_path) -> None:
+    assert setting_was_set_by_user(db_path, "gateway_host") is False
+
+    set_setting(db_path, "gateway_host", "192.168.1.1", source="env")
+    assert setting_was_set_by_user(db_path, "gateway_host") is False
+
+    set_setting(db_path, "gateway_host", "192.168.1.2", source="ui")
+    assert setting_was_set_by_user(db_path, "gateway_host") is True
+    assert setting_was_set_by_user(db_path, "load_test_server") is False

@@ -10,7 +10,7 @@ import json
 import sqlite3
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
-from .db import db_conn
+from .db import db_conn, streaming_conn
 from .probe_types import ProbeResult, ProbeTarget
 from .time_utils import to_iso_z, utc_now
 
@@ -325,12 +325,18 @@ def iter_probe_results(
     The generator holds one connection and one `fetchmany(batch_size)` page in
     memory, never the whole range, which is what lets `probes.csv` export a
     month of probes without the result set ever existing as a Python list
-    (review finding C1a). Closing the generator closes the connection, so a
-    client that abandons the download does not leak one.
+    (review finding C1a).
+
+    It runs on a `streaming_conn`, because the server advances a streamed body
+    from a thread pool with no thread affinity — the page after a yield may be
+    fetched on a different worker than the one that opened the connection. The
+    connection is closed when the rows run out, when the caller closes or
+    abandons the generator (`GeneratorExit` unwinds the `with` below) and when
+    the consumer raises, so no read connection is ever left holding the WAL.
     """
     sql, params = _probe_results_query(start_iso, end_iso, target_id, protocol, device_id)
     page = max(1, int(batch_size))
-    with db_conn(db_path) as conn:
+    with streaming_conn(db_path) as conn:
         cursor = conn.execute(sql, params)
         try:
             while True:
