@@ -138,7 +138,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         state.stop.set()
-        await engine.stop()
+        try:
+            await engine.stop()
+        except Exception:
+            # The session still has to be closed cleanly, or the next start
+            # would report this run as `unclean` and lose its coverage.
+            log.exception("Stopping the quality engine failed")
         tasks = getattr(app.state, "tasks", [])
         for task in tasks:
             task.cancel()
