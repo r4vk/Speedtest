@@ -482,6 +482,16 @@ PING_EXIT_CASES = [
         Outcome.ERROR,
         "permission",
     ),
+    # only a denial is a permission problem; any other socket diagnostic is exec
+    (
+        "linux",
+        2,
+        b"",
+        b"ping: socket: something benign\n",
+        Outcome.ERROR,
+        "exec",
+    ),
+    ("linux", 2, b"", b"ping: Permission denied\n", Outcome.ERROR, "permission"),
     ("darwin", 2, b"", b"", Outcome.TIMEOUT, None),
     ("darwin", 1, b"", b"", Outcome.TIMEOUT, None),
     (
@@ -534,6 +544,45 @@ async def test_ping_exit_codes_are_read_per_platform(
     assert result.rtt_ms is None
     if expected_kind is not None:
         assert result.error_detail  # never a silent failure
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+async def test_a_reply_is_never_overridden_by_stderr_noise(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """A successful reply stays `ok` whatever the child wrote on stderr."""
+    monkeypatch.setattr(icmp_probe.sys, "platform", platform)
+    install_ping(
+        monkeypatch,
+        FakeProcess(
+            stdout=b"64 bytes from 1.1.1.1: icmp_seq=0 ttl=57 time=12.3 ms\n",
+            stderr=b"ping: socket: debug info unrelated\n",
+            returncode=0,
+        ),
+    )
+    result = await icmp_probe.probe(make_target(), method="ping")
+
+    assert result.outcome is Outcome.OK
+    assert result.error_kind is None
+    assert result.rtt_ms == pytest.approx(12.3)
+
+
+def test_classify_ping_rules_are_ordered() -> None:
+    """The reviewer's reproduction, straight against the pure classifier."""
+    noisy_ok = icmp_probe.classify_ping(
+        0,
+        "64 bytes from 1.1.1.1: icmp_seq=0 ttl=57 time=12.3 ms\n",
+        "ping: socket: debug info unrelated\n",
+    )
+    assert noisy_ok == (Outcome.OK, None, 12.3, None)
+
+    clean_ok = icmp_probe.classify_ping(
+        0, "64 bytes from 1.1.1.1: icmp_seq=0 ttl=57 time=12.3 ms\n", ""
+    )
+    assert clean_ok == noisy_ok
+
+    denied = icmp_probe.classify_ping(2, "", "ping: socket: Operation not permitted\n")
+    assert (denied[0], denied[1]) == (Outcome.ERROR, "permission")
 
 
 async def test_ping_unreachable_text_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:

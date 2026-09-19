@@ -49,8 +49,12 @@ _MAX_ERROR_DETAIL = 200
 _MIN_IPV4_DATAGRAM = 28  # 20 B IPv4 header + 8 B ICMP header
 _IPV6_HEADER_SIZE = 40
 _PING_TIME_RE = re.compile(r"time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE)
-#: `ping` could not even open its socket (no privileges, bad arguments).
-_PING_DENIED_RE = re.compile(r"operation not permitted|socket:", re.IGNORECASE)
+#: `ping` was not allowed to open its socket. Kept narrow on purpose: any
+#: other `socket:` diagnostic is an `exec` failure, not a permission one.
+_PING_DENIED_RE = re.compile(
+    r"operation not permitted|permission denied|socket: .*(?:not permitted|denied)",
+    re.IGNORECASE,
+)
 #: The statistics line of a run that sent something and got nothing back.
 _PING_NO_REPLY_RE = re.compile(
     r"0 (?:packets )?received|100(?:\.0)?% packet loss", re.IGNORECASE
@@ -528,14 +532,16 @@ def classify_ping(
     Exit codes differ per implementation: iputils uses 1 for "no reply" and 2
     for "something went wrong" (bad arguments, `socket: Operation not
     permitted`, unknown host), while BSD/macOS uses 2 for "no reply". Only a
-    real loss may become `timeout`; an unusable `ping` has to stay visible.
+    real loss may become `timeout`; an unusable `ping` has to stay visible;
+    and a successful reply is never overridden by anything on stderr.
     """
     text = stdout_text + stderr_text
-    if _PING_DENIED_RE.search(stderr_text):
-        return Outcome.ERROR, "permission", None, _last_line(stderr_text)
     match = _PING_TIME_RE.search(text)
     if returncode == 0 and match:
+        # A reply is a reply: nothing printed on stderr may override it.
         return Outcome.OK, None, float(match.group(1)), None
+    if returncode != 0 and _PING_DENIED_RE.search(stderr_text):
+        return Outcome.ERROR, "permission", None, _last_line(stderr_text)
     if "unreachable" in text.lower():
         return Outcome.ERROR, "icmp_unreachable", None, _first_line(text)
     if _PING_NO_REPLY_RE.search(stdout_text):
