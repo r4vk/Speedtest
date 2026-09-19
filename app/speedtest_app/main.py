@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import AppConfig
+from .coverage import SessionTracker, clip_to_observed, coverage, observed_intervals
 from .db import (
     TimeRange,
     ensure_db,
@@ -35,6 +36,9 @@ from .time_utils import parse_dt, parse_range, to_iso_z, to_local_display, to_lo
 
 
 DEFAULT_SPEEDTEST_MODE = "speedtest.net"
+#: Measuring device of this instance (spec §3: `devices` is seeded with 'nas').
+DEVICE_ID = "nas"
+SESSION_HEARTBEAT_SECONDS = 30.0
 
 cfg = AppConfig()
 ensure_db(cfg.db_path)
@@ -87,12 +91,26 @@ def api_version():
     return {"version": APP_VERSION}
 
 
+async def _session_heartbeat_loop(tracker: SessionTracker, state: RunningState) -> None:
+    """Keep `last_seen_at` fresh so that coverage knows the monitor was alive."""
+    while not state.stop.is_set():
+        try:
+            await asyncio.wait_for(state.stop.wait(), timeout=SESSION_HEARTBEAT_SECONDS)
+            return
+        except asyncio.TimeoutError:
+            tracker.heartbeat(to_iso_z(utc_now()))
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     init_runtime()
     state = RunningState(stop=asyncio.Event())
     app.state.running_state = state
+    tracker = SessionTracker()
+    tracker.start(cfg.db_path, DEVICE_ID, APP_VERSION, to_iso_z(utc_now()))
+    app.state.session_tracker = tracker
     app.state.tasks = [
+        asyncio.create_task(_session_heartbeat_loop(tracker, state)),
         asyncio.create_task(connectivity_loop(cfg, state)),
         asyncio.create_task(speedtest_loop(cfg, state)),
         asyncio.create_task(
@@ -117,14 +135,16 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     state: RunningState | None = getattr(app.state, "running_state", None)
-    if state is None:
-        return
-    state.stop.set()
-    tasks = getattr(app.state, "tasks", [])
-    for t in tasks:
-        t.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    if state is not None:
+        state.stop.set()
+        tasks = getattr(app.state, "tasks", [])
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+    tracker: SessionTracker | None = getattr(app.state, "session_tracker", None)
+    if tracker is not None:
+        tracker.stop(to_iso_z(utc_now()))
 
 
 @app.get("/api/status")
@@ -454,9 +474,14 @@ def api_report_quality(
     tr = TimeRange(start_iso=to_iso_z(pr.start), end_iso=to_iso_z(pr.end))
     down_periods = query_connectivity_periods(cfg.db_path, tr=tr, is_up=False)
 
+    cov = coverage(cfg.db_path, pr.start, pr.end, test_type="ping")
+    coverage_known = bool(cov["coverage_known"])
+    observed = observed_intervals(cfg.db_path, pr.start, pr.end) if coverage_known else []
+
     total_seconds = max(0.0, (pr.end - pr.start).total_seconds())
     now = utc_now()
-    downtime_seconds = 0.0
+    downtime_of_range_seconds = 0.0
+    downtime_observed_seconds = 0.0
     incident_count = 0
 
     for p in down_periods:
@@ -464,9 +489,25 @@ def api_report_quality(
         start_dt = parse_dt(p["started_at"])
         end_iso = p["ended_at"] or to_iso_z(now)
         end_dt = parse_dt(end_iso)
-        downtime_seconds += _overlap_seconds(pr.start, pr.end, start_dt, end_dt)
+        downtime_of_range_seconds += _overlap_seconds(pr.start, pr.end, start_dt, end_dt)
+        for observed_start, observed_end in clip_to_observed([(start_dt, end_dt)], observed):
+            downtime_observed_seconds += (observed_end - observed_start).total_seconds()
 
-    downtime_percent = (downtime_seconds / total_seconds * 100.0) if total_seconds > 0 else 0.0
+    downtime_percent_of_range = (
+        (downtime_of_range_seconds / total_seconds * 100.0) if total_seconds > 0 else 0.0
+    )
+    if coverage_known:
+        observed_seconds = float(cov["observed_seconds"])
+        downtime_seconds = downtime_observed_seconds
+        downtime_percent = (
+            (downtime_seconds / observed_seconds * 100.0) if observed_seconds > 0 else 0.0
+        )
+    else:
+        # Pre-v2 history: no session was ever recorded, so the observed period is
+        # unknown and the legacy numbers are reported as they were.
+        observed_seconds = None
+        downtime_seconds = downtime_of_range_seconds
+        downtime_percent = downtime_percent_of_range
 
     return {
         "range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)},
@@ -474,6 +515,18 @@ def api_report_quality(
         "downtime_seconds": downtime_seconds,
         "total_seconds": total_seconds,
         "downtime_percent": downtime_percent,
+        "downtime_percent_of_range": downtime_percent_of_range,
+        "observed_seconds": observed_seconds,
+        "coverage_pct": cov["coverage_pct"],
+        "coverage_known": coverage_known,
+        "gaps": [
+            {
+                "from": to_local_iso(parse_dt(gap["from"])),
+                "to": to_local_iso(parse_dt(gap["to"])),
+                "reason": gap["reason"],
+            }
+            for gap in cov["gaps"]
+        ],
     }
 
 
