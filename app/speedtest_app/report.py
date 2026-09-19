@@ -217,8 +217,15 @@ def _format_number(value: float | None, digits: int = 1) -> str:
 # ---------------------------------------------------------------------------
 
 def _chart_bucket_seconds(start: datetime, end: datetime) -> float:
+    """Bucket width keeping each chart at `MAX_CHART_POINTS` points at most.
+
+    `bucket_rows(..., include_partial=True)` always appends one closing point
+    on top of the complete windows (finding 1's timeline wiring applies here
+    too, spec §13.6), so the complete-window budget leaves room for it.
+    """
     span = max(0.0, (end - start).total_seconds())
-    needed = span / MAX_CHART_POINTS if span > 0 else 0.0
+    capacity = max(1, MAX_CHART_POINTS - 1)
+    needed = span / capacity if span > 0 else 0.0
     return float(max(MIN_BUCKET_SECONDS, needed))
 
 
