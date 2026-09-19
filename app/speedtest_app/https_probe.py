@@ -16,10 +16,13 @@ import logging
 import socket
 import ssl
 import time
+from typing import Awaitable, TypeVar
 from urllib.parse import urlsplit
 
 from .probe_types import Outcome, ProbeResult, ProbeTarget, Protocol
 from .time_utils import to_iso_z, utc_now
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +59,9 @@ def _truncate(detail: str) -> str:
     return detail[:_ERROR_DETAIL_MAX]
 
 
-async def _run_stage(stage: str, deadline: float, awaitable, stages: dict[str, float]):
+async def _run_stage(
+    stage: str, deadline: float, awaitable: Awaitable[_T], stages: dict[str, float]
+) -> _T:
     """Await ``awaitable`` within what remains of the overall budget.
 
     Records ``stages[f"{stage}_ms"]`` on success; raises ``_StageTimeout``
