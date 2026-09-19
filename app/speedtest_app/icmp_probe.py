@@ -49,6 +49,12 @@ _MAX_ERROR_DETAIL = 200
 _MIN_IPV4_DATAGRAM = 28  # 20 B IPv4 header + 8 B ICMP header
 _IPV6_HEADER_SIZE = 40
 _PING_TIME_RE = re.compile(r"time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE)
+#: `ping` could not even open its socket (no privileges, bad arguments).
+_PING_DENIED_RE = re.compile(r"operation not permitted|socket:", re.IGNORECASE)
+#: The statistics line of a run that sent something and got nothing back.
+_PING_NO_REPLY_RE = re.compile(
+    r"0 (?:packets )?received|100(?:\.0)?% packet loss", re.IGNORECASE
+)
 #: Pending socket errors that mean "the peer answered with an ICMP error".
 UNREACHABLE_ERRNOS = frozenset(
     {
@@ -457,52 +463,24 @@ async def _attempt_ping(
         await _kill(proc)
         raise
 
-    text = stdout.decode("utf-8", "replace") + stderr.decode("utf-8", "replace")
-    match = _PING_TIME_RE.search(text)
-    if proc.returncode == 0 and match:
-        return _result(
-            target,
-            started_wall,
-            started,
-            timeout_ms,
-            Outcome.OK,
-            rtt_ms=float(match.group(1)),
-            resolved_ip=ip,
-            ip_family=ip_family,
-        )
-    if "unreachable" in text.lower():
-        return _result(
-            target,
-            started_wall,
-            started,
-            timeout_ms,
-            Outcome.ERROR,
-            resolved_ip=ip,
-            ip_family=ip_family,
-            error_kind="icmp_unreachable",
-            error_detail=_first_line(text) or f"unreachable: {ip}",
-        )
-    if proc.returncode in (1, 2):
-        # iputils exits 1 when nothing came back, BSD/macOS exits 2.
-        return _result(
-            target,
-            started_wall,
-            started,
-            timeout_ms,
-            Outcome.TIMEOUT,
-            resolved_ip=ip,
-            ip_family=ip_family,
-        )
+    out_text = stdout.decode("utf-8", "replace")
+    err_text = stderr.decode("utf-8", "replace")
+    outcome, error_kind, rtt_ms, detail = classify_ping(
+        proc.returncode, out_text, err_text
+    )
+    if error_kind == "icmp_unreachable" and not detail:
+        detail = f"unreachable: {ip}"
     return _result(
         target,
         started_wall,
         started,
         timeout_ms,
-        Outcome.ERROR,
+        outcome,
+        rtt_ms=rtt_ms,
         resolved_ip=ip,
         ip_family=ip_family,
-        error_kind="exec",
-        error_detail=f"ping exit {proc.returncode}: {_first_line(text)}",
+        error_kind=error_kind,
+        error_detail=detail,
     )
 
 
@@ -522,10 +500,13 @@ def ping_argv(timeout_ms: int, family: int, ip: str) -> list[str]:
     """Argument vector for the `ping` fallback, per platform."""
     seconds = max(1, timeout_ms) / 1000.0
     if sys.platform == "darwin":
-        # macOS/BSD: -W is milliseconds, -t is a whole-second deadline.
-        binary = "ping6" if family == socket.AF_INET6 else "ping"
+        if family == socket.AF_INET6:
+            # macOS ping6 has no timeout flags at all (-W/-t are booleans
+            # there): our own deadline kill is the only limit.
+            return ["ping6", "-c", "1", "-n", ip]
+        # macOS/BSD ping: -W is milliseconds, -t is a whole-second deadline.
         return [
-            binary,
+            "ping",
             "-c",
             "1",
             "-W",
@@ -537,6 +518,38 @@ def ping_argv(timeout_ms: int, family: int, ip: str) -> list[str]:
         ]
     # iputils: -W takes seconds and accepts a fractional value.
     return ["ping", "-c", "1", "-W", f"{seconds:g}", "-n", ip]
+
+
+def classify_ping(
+    returncode: int | None, stdout_text: str, stderr_text: str
+) -> tuple[Outcome, str | None, float | None, str | None]:
+    """``(outcome, error_kind, rtt_ms, error_detail)`` for one `ping` run.
+
+    Exit codes differ per implementation: iputils uses 1 for "no reply" and 2
+    for "something went wrong" (bad arguments, `socket: Operation not
+    permitted`, unknown host), while BSD/macOS uses 2 for "no reply". Only a
+    real loss may become `timeout`; an unusable `ping` has to stay visible.
+    """
+    text = stdout_text + stderr_text
+    if _PING_DENIED_RE.search(stderr_text):
+        return Outcome.ERROR, "permission", None, _last_line(stderr_text)
+    match = _PING_TIME_RE.search(text)
+    if returncode == 0 and match:
+        return Outcome.OK, None, float(match.group(1)), None
+    if "unreachable" in text.lower():
+        return Outcome.ERROR, "icmp_unreachable", None, _first_line(text)
+    if _PING_NO_REPLY_RE.search(stdout_text):
+        # The statistics line is proof of a real attempt with no answer.
+        return Outcome.TIMEOUT, None, None, None
+    no_reply_codes = (1,) if sys.platform == "linux" else (1, 2)
+    if returncode in no_reply_codes:
+        return Outcome.TIMEOUT, None, None, None
+    return (
+        Outcome.ERROR,
+        "exec",
+        None,
+        f"ping exit {returncode}: {_last_line(stderr_text) or _last_line(stdout_text)}",
+    )
 
 
 def _family_of(family_pref: str) -> int:
@@ -563,6 +576,13 @@ def _next_seq(target_id: int) -> int:
 
 def _detail(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_DETAIL]
+
+
+def _last_line(text: str) -> str:
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            return line.strip()[:_MAX_ERROR_DETAIL]
+    return ""
 
 
 def _first_line(text: str) -> str:

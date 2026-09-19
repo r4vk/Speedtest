@@ -435,11 +435,8 @@ def install_ping(monkeypatch: pytest.MonkeyPatch, process: Any) -> list[list[str
             socket.AF_INET,
             ["ping", "-c", "1", "-W", "1500", "-t", "2", "-n", "1.1.1.1"],
         ),
-        (
-            "darwin",
-            socket.AF_INET6,
-            ["ping6", "-c", "1", "-W", "1500", "-t", "2", "-n", "1.1.1.1"],
-        ),
+        # macOS ping6 has no timeout flags: our deadline kill is the limit.
+        ("darwin", socket.AF_INET6, ["ping6", "-c", "1", "-n", "1.1.1.1"]),
     ],
 )
 def test_ping_argv_per_platform(
@@ -473,18 +470,70 @@ async def test_ping_reply_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured[0][-1] == RESOLVED
 
 
-@pytest.mark.parametrize("returncode", [1, 2])
-async def test_ping_without_a_reply_is_a_timeout(
-    monkeypatch: pytest.MonkeyPatch, returncode: int
+#: iputils: 1 = no reply, 2 = the run itself failed. BSD/macOS: 2 = no reply.
+PING_EXIT_CASES = [
+    ("linux", 1, b"", b"", Outcome.TIMEOUT, None),
+    ("linux", 2, b"", b"ping: bad option -- 'Q'\n", Outcome.ERROR, "exec"),
+    (
+        "linux",
+        2,
+        b"",
+        b"ping: socket: Operation not permitted\n",
+        Outcome.ERROR,
+        "permission",
+    ),
+    ("darwin", 2, b"", b"", Outcome.TIMEOUT, None),
+    ("darwin", 1, b"", b"", Outcome.TIMEOUT, None),
+    (
+        "darwin",
+        2,
+        b"",
+        b"ping: socket: Operation not permitted\n",
+        Outcome.ERROR,
+        "permission",
+    ),
+    # the statistics line proves a real attempt, whatever the exit code says
+    (
+        "linux",
+        2,
+        b"1 packets transmitted, 0 received, 100% packet loss\n",
+        b"",
+        Outcome.TIMEOUT,
+        None,
+    ),
+    (
+        "darwin",
+        68,
+        b"1 packets transmitted, 0 packets received, 100.0% packet loss\n",
+        b"",
+        Outcome.TIMEOUT,
+        None,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "platform,returncode,stdout,stderr,expected_outcome,expected_kind", PING_EXIT_CASES
+)
+async def test_ping_exit_codes_are_read_per_platform(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    returncode: int,
+    stdout: bytes,
+    stderr: bytes,
+    expected_outcome: Outcome,
+    expected_kind: str | None,
 ) -> None:
-    """iputils exits 1 when nothing came back, BSD/macOS exits 2."""
-    stdout = b"--- 1.1.1.1 ping statistics ---\n1 packets transmitted, 0 received\n"
-    install_ping(monkeypatch, FakeProcess(stdout=stdout, returncode=returncode))
+    monkeypatch.setattr(icmp_probe.sys, "platform", platform)
+    install_ping(
+        monkeypatch, FakeProcess(stdout=stdout, stderr=stderr, returncode=returncode)
+    )
     result = await icmp_probe.probe(make_target(), method="ping")
 
-    assert result.outcome is Outcome.TIMEOUT
-    assert result.error_kind is None
+    assert (result.outcome, result.error_kind) == (expected_outcome, expected_kind)
     assert result.rtt_ms is None
+    if expected_kind is not None:
+        assert result.error_detail  # never a silent failure
 
 
 async def test_ping_unreachable_text_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
