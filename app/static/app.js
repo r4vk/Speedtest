@@ -1010,6 +1010,9 @@ function getSettingsDialog() {
 function openSettings() {
   const dlg = getSettingsDialog();
   if (!dlg) return;
+  // Gdy /api/config wróciło zanim quality.js się wykonał, sekcje jakości są
+  // jeszcze puste — wypełnij je najpóźniej tutaj, przed pokazaniem okna.
+  if (typeof Quality !== "undefined") Quality.ensureConfigApplied();
   if (typeof dlg.showModal === "function") dlg.showModal();
   else dlg.setAttribute("open", "open");
 }

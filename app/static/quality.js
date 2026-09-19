@@ -20,6 +20,10 @@ const Quality = (() => {
   let targetsCache = [];
   let currentIncidentId = null;
   let lastQualityConfig = null;
+  //: Czy formularz ustawień jakości został już wypełniony z serwera. Chroni
+  //: przed nadpisaniem tego, co użytkownik wpisał, gdy `ensureConfigApplied()`
+  //: zostanie wywołane ponownie (np. przy kolejnym otwarciu okna ustawień).
+  let configApplied = false;
   const visibleTargetIds = new Set();
   const knownTargetIds = new Set();
 
@@ -55,9 +59,13 @@ const Quality = (() => {
     ["q-cfg-retention-load-test-raw-days", "retention_load_test_raw_days"],
     ["q-cfg-retention-diagnostics-days", "retention_diagnostics_days"],
   ];
+  // `allowEmpty` oznacza pole, dla którego pusty tekst jest prawdziwą
+  // wartością: wyczyszczenie adresu bramy wyłącza sondę do routera, a pusty
+  // serwer iperf3 wyłącza testy obciążeniowe. Dla pozostałych pól pusty tekst
+  // znaczy tylko tyle, że formularz nie został wypełniony.
   const CONFIG_TEXT_FIELDS = [
-    ["q-cfg-gateway-host", "gateway_host"],
-    ["q-cfg-load-test-server", "load_test_server"],
+    ["q-cfg-gateway-host", "gateway_host", { allowEmpty: true }],
+    ["q-cfg-load-test-server", "load_test_server", { allowEmpty: true }],
     ["q-cfg-load-test-udp-bitrate", "load_test_udp_bitrate"],
     ["q-cfg-load-test-directions", "load_test_directions"],
     ["q-cfg-load-test-kind", "load_test_kind"],
@@ -1089,29 +1097,53 @@ const Quality = (() => {
   // ustawienia (config)
   // ---------------------------------------------------------------------
 
-  function configPayload() {
+  /**
+   * Body dla `PUT /api/config` z surowych wartości pól.
+   *
+   * Pole puste nigdy nie staje się wartością: `Number("")` to `0`, a więc
+   * niewypełniony formularz wysyłałby zera — API odrzuciłoby je błędem 422,
+   * a progi o dolnej granicy 0 (procent strat, czas stabilizacji) zapisałyby
+   * się po cichu i rozstroiły wykrywanie incydentów. Brakującego pola nie ma
+   * w body, więc serwer zostawia dotychczasowe ustawienie.
+   *
+   * Czysta funkcja — `readValue`/`readChecked` dostarczają wartości, dzięki
+   * czemu ta reguła jest testowalna bez przeglądarki.
+   */
+  function buildConfigPayload(readValue, readChecked) {
     const payload = {};
     for (const [id, key] of CONFIG_NUMBER_FIELDS) {
-      const el = qs(id);
-      if (!el) continue;
-      const n = Number(el.value);
-      payload[key] = Number.isFinite(n) ? n : null;
+      const raw = readValue(id);
+      if (raw == null) continue;
+      const text = String(raw).trim();
+      if (text === "") continue;
+      const n = Number(text);
+      if (Number.isFinite(n)) payload[key] = n;
     }
-    for (const [id, key] of CONFIG_TEXT_FIELDS) {
-      const el = qs(id);
-      if (!el) continue;
-      payload[key] = el.value.trim();
+    for (const [id, key, opts] of CONFIG_TEXT_FIELDS) {
+      const raw = readValue(id);
+      if (raw == null) continue;
+      const text = String(raw).trim();
+      if (text === "" && !(opts && opts.allowEmpty)) continue;
+      payload[key] = text;
     }
     for (const [id, key] of CONFIG_BOOL_FIELDS) {
-      const el = qs(id);
-      if (!el) continue;
-      payload[key] = Boolean(el.checked);
+      const raw = readChecked(id);
+      if (raw == null) continue;
+      payload[key] = Boolean(raw);
     }
     return payload;
   }
 
+  function configPayload() {
+    return buildConfigPayload(
+      (id) => qs(id)?.value,
+      (id) => qs(id)?.checked,
+    );
+  }
+
   function applyConfig(cfg) {
     if (!cfg) return;
+    configApplied = true;
     for (const [id, key] of CONFIG_NUMBER_FIELDS) {
       const el = qs(id);
       if (el && cfg[key] != null) el.value = cfg[key];
@@ -1125,6 +1157,27 @@ const Quality = (() => {
       if (el) el.checked = Boolean(cfg[key]);
     }
     lastQualityConfig = configPayload();
+  }
+
+  /**
+   * Wypełnij formularz konfiguracją, którą `app.js` pobrał, zanim ten plik
+   * zdążył się wykonać.
+   *
+   * `app.js` startuje `loadConfig()` od razu, a przeglądarka ściąga
+   * `quality.js` dopiero po wykonaniu `app.js`. Gdy odpowiedź `/api/config`
+   * wróci pierwsza, `typeof Quality === "undefined"` i `applyConfig()` nigdy
+   * nie zostaje wywołane — pola ustawień jakości zostają puste. Ta funkcja
+   * domyka wyścig z drugiej strony i jest wywoływana także przy otwieraniu
+   * okna ustawień. Działa raz, żeby nie skasować tego, co użytkownik wpisał.
+   *
+   * @returns {boolean} czy konfiguracja została właśnie zastosowana
+   */
+  function ensureConfigApplied() {
+    if (configApplied) return false;
+    const cfg = typeof lastLoadedConfig !== "undefined" ? lastLoadedConfig : null;
+    if (!cfg) return false;
+    applyConfig(cfg);
+    return true;
   }
 
   function isDirty() {
@@ -1220,6 +1273,8 @@ const Quality = (() => {
   // ---------------------------------------------------------------------
 
   function init() {
+    // `app.js` mogło pobrać konfigurację, zanim ten plik się wykonał.
+    ensureConfigApplied();
     wireConfigDirtyTracking();
     qs("q-annotation-form")?.addEventListener("submit", onAnnotationSubmit);
     qs("q-incident-annotation-form")?.addEventListener("submit", onIncidentAnnotationSubmit);
@@ -1264,7 +1319,9 @@ const Quality = (() => {
   return {
     refresh,
     configPayload,
+    buildConfigPayload,
     applyConfig,
+    ensureConfigApplied,
     isDirty,
     refreshTargetsTable,
     pickBucketSeconds,

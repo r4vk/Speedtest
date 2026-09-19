@@ -31,7 +31,8 @@ _ID_PATTERNS = [
     re.compile(r'\bqs\(\s*"([^"]+)"\s*\)'),
     re.compile(r'getElementById\(\s*"([^"]+)"\s*\)'),
     re.compile(r'setMsg\(\s*"([^"]+)"'),
-    re.compile(r'\[\s*"([a-zA-Z0-9-]+)"\s*,\s*"[a-zA-Z0-9_]+"\s*\]'),
+    # `["q-cfg-…", "klucz"]` oraz `["q-cfg-…", "klucz", { allowEmpty: true }]`
+    re.compile(r'\[\s*"(q-cfg-[a-zA-Z0-9-]+)"\s*,\s*"[a-zA-Z0-9_]+"\s*[,\]]'),
 ]
 
 
@@ -275,3 +276,139 @@ def test_esc_html_turns_nullish_into_an_empty_string():
     result = _run_node(program)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.strip()) == ["", "", "0"]
+
+
+# ---------------------------------------------------------------------------
+# settings form: an unpopulated field must never become a saved value
+#
+# `app.js` starts `loadConfig()` while the browser is still fetching
+# `quality.js`, so `Quality.applyConfig()` can be skipped entirely (the
+# `typeof Quality !== "undefined"` guard loses the race). The form then holds
+# empty inputs, and a plain `Number("")` turns each of them into a `0` that
+# the API either rejects (422) or — worse, for the thresholds whose lower
+# bound is 0 — stores as a real setting.
+# ---------------------------------------------------------------------------
+
+
+def _payload_program(values: dict[str, str], checked: dict[str, bool] | None = None) -> str:
+    """Run `buildConfigPayload` over a table of raw field values."""
+    return (
+        f"{QUALITY_JS}\n"
+        f"const values = {json.dumps(values)};\n"
+        f"const checked = {json.dumps(checked or {})};\n"
+        "const payload = Quality.buildConfigPayload(\n"
+        "  (id) => (id in values ? values[id] : undefined),\n"
+        "  (id) => (id in checked ? checked[id] : undefined),\n"
+        ");\n"
+        "console.log(JSON.stringify(payload));"
+    )
+
+
+@requires_node
+def test_an_empty_number_field_is_left_out_instead_of_being_sent_as_zero():
+    program = _payload_program(
+        {
+            "q-cfg-incident-window-seconds": "",
+            "q-cfg-incident-loss-pct-threshold": "",
+            "q-cfg-load-test-port": "",
+            "q-cfg-retention-raw-days": "14",
+        }
+    )
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip())
+
+    assert "incident_window_seconds" not in payload
+    assert "load_test_port" not in payload
+    # `ge=0`, so a zero would pass validation and silently disable the
+    # threshold instead of being rejected.
+    assert "incident_loss_pct_threshold" not in payload
+    assert payload["retention_raw_days"] == 14
+
+
+@requires_node
+def test_a_cleared_optional_text_field_is_still_sent_so_it_can_be_cleared():
+    program = _payload_program(
+        {
+            "q-cfg-gateway-host": "",
+            "q-cfg-load-test-server": "",
+            "q-cfg-load-test-udp-bitrate": "",
+            "q-cfg-load-test-kind": "iperf_udp",
+        }
+    )
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip())
+
+    # Clearing these two is how the panel turns the gateway probe and the
+    # load tests off, so an empty string is a real value here.
+    assert payload["gateway_host"] == ""
+    assert payload["load_test_server"] == ""
+    # The bitrate has a format the API enforces; "" only ever means
+    # "this form was never filled in".
+    assert "load_test_udp_bitrate" not in payload
+    assert payload["load_test_kind"] == "iperf_udp"
+
+
+@requires_node
+def test_a_field_missing_from_the_page_is_not_invented():
+    result = _run_node(_payload_program({"q-cfg-retention-raw-days": "14"}))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip()) == {"retention_raw_days": 14}
+
+
+def _pending_config_program(tail: str) -> str:
+    """Stub the DOM helpers `quality.js` shares with `app.js`, then run `tail`."""
+    return (
+        "const store = {};\n"
+        # Atrapa pola formularza: prawdziwy <input> rzutuje przypisaną wartość
+        # na tekst, więc stub musi robić to samo — inaczej test przepuściłby
+        # kod, który wpisuje do pola liczbę.
+        "const makeField = () => ({ _v: '', checked: false,\n"
+        "  get value() { return this._v; },\n"
+        "  set value(v) { this._v = String(v); } });\n"
+        "globalThis.qs = (id) => (store[id] ||= makeField());\n"
+        "globalThis.lastLoadedConfig = {\n"
+        "  incident_window_seconds: 10,\n"
+        "  load_test_port: 5201,\n"
+        "  load_test_udp_bitrate: '10M',\n"
+        "  diagnostics_enabled: true,\n"
+        "};\n"
+        f"{QUALITY_JS}\n"
+        f"{tail}"
+    )
+
+
+@requires_node
+def test_a_config_that_arrived_before_quality_js_loaded_is_still_applied():
+    program = _pending_config_program(
+        "console.log(JSON.stringify({\n"
+        "  applied: Quality.ensureConfigApplied(),\n"
+        "  window: qs('q-cfg-incident-window-seconds').value,\n"
+        "  port: qs('q-cfg-load-test-port').value,\n"
+        "  bitrate: qs('q-cfg-load-test-udp-bitrate').value,\n"
+        "  diagnostics: qs('q-cfg-diagnostics-enabled').checked,\n"
+        "}));"
+    )
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip()) == {
+        "applied": True,
+        "window": "10",
+        "port": "5201",
+        "bitrate": "10M",
+        "diagnostics": True,
+    }
+
+
+@requires_node
+def test_reapplying_the_pending_config_never_discards_what_the_user_typed():
+    program = _pending_config_program(
+        "Quality.ensureConfigApplied();\n"
+        "qs('q-cfg-load-test-port').value = '5301';\n"
+        "const again = Quality.ensureConfigApplied();\n"
+        "console.log(JSON.stringify({ again, port: qs('q-cfg-load-test-port').value }));"
+    )
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip()) == {"again": False, "port": "5301"}
