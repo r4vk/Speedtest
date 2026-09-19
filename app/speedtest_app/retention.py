@@ -209,7 +209,7 @@ def _delete_probe_results_before(db_path: str, cutoff_iso: str, batch_size: int)
     deleted = 0
     while True:
         with db_conn(db_path) as conn:
-            conn.execute("BEGIN")
+            conn.execute("BEGIN IMMEDIATE")
             try:
                 cur = conn.execute(
                     """
@@ -231,7 +231,7 @@ def _delete_probe_results_before(db_path: str, cutoff_iso: str, batch_size: int)
 def _delete_older_than(db_path: str, table: str, column: str, cutoff_iso: str) -> int:
     """One-shot delete for tables that are never large enough to need batching."""
     with db_conn(db_path) as conn:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         try:
             cur = conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff_iso,))  # noqa: S608
             conn.execute("COMMIT")
@@ -243,7 +243,7 @@ def _delete_older_than(db_path: str, table: str, column: str, cutoff_iso: str) -
 
 def _delete_closed_sessions_before(db_path: str, cutoff_iso: str) -> int:
     with db_conn(db_path) as conn:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         try:
             cur = conn.execute(
                 "DELETE FROM monitor_sessions WHERE ended_at IS NOT NULL AND started_at < ?",
@@ -258,7 +258,7 @@ def _delete_closed_sessions_before(db_path: str, cutoff_iso: str) -> int:
 
 def _null_old_load_test_raw(db_path: str, cutoff_iso: str) -> int:
     with db_conn(db_path) as conn:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         try:
             cur = conn.execute(
                 "UPDATE load_tests SET raw_json = NULL WHERE raw_json IS NOT NULL AND started_at < ?",

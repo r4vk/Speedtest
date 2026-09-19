@@ -245,7 +245,7 @@ def insert_probe_results(db_path: str, rows: Sequence[ProbeResult]) -> int:
     placeholders = ",".join(["?"] * len(PROBE_RESULT_COLUMNS))
     with db_conn(db_path) as conn:
         before = conn.total_changes
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         try:
             conn.executemany(
                 f"INSERT OR IGNORE INTO probe_results({','.join(PROBE_RESULT_COLUMNS)}) "

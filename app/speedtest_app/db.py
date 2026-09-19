@@ -387,7 +387,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if version >= SCHEMA_VERSION:
         return
     if version < 2:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         try:
             _migrate_1_to_2(conn)
             conn.execute("COMMIT")
@@ -560,7 +560,15 @@ def set_setting(
     """Store a setting and append a `config_changes` row when the value changes."""
     now_iso = now_iso or _utc_now_iso()
     with db_conn(db_path) as conn:
-        conn.execute("BEGIN")
+        # IMMEDIATE, not a plain (deferred) BEGIN: this transaction reads the
+        # old value before it writes, and in WAL mode such a transaction cannot
+        # upgrade its read snapshot once another connection has committed in
+        # between. SQLite then fails the first write with "database is locked"
+        # *without waiting*, so `busy_timeout` never applies — saving the
+        # settings form (one call per field) raced the probe scheduler's flush
+        # and answered 500. Taking the write lock up front turns that race back
+        # into the 30 s wait `busy_timeout` promises.
+        conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
             old_value = row["value"] if row is not None else None
@@ -680,7 +688,7 @@ def record_connectivity_checks_batch(
     values = [(checked_at_iso, 1 if is_up else 0, latency_ms) for checked_at_iso, is_up, latency_ms in rows]
     with db_conn(db_path) as conn:
         try:
-            conn.execute("BEGIN")
+            conn.execute("BEGIN IMMEDIATE")
             conn.executemany(
                 "INSERT INTO connectivity_checks(checked_at, is_up, latency_ms) VALUES (?,?,?)",
                 values,
