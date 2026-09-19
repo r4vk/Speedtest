@@ -126,7 +126,8 @@ function isDraftDifferent(draft, cfg) {
 
 function updateCfgDirty() {
   const draft = currentConfigDraft();
-  setCfgDirty(isDraftDifferent(draft, lastLoadedConfig));
+  const qualityDirty = typeof Quality !== "undefined" && Quality.isDirty();
+  setCfgDirty(isDraftDifferent(draft, lastLoadedConfig) || qualityDirty);
 }
 
 async function loadConfig() {
@@ -163,6 +164,7 @@ async function loadConfig() {
   renderScheduleList("speed");
 
   applySpeedtestModeUi(speedMode);
+  if (typeof Quality !== "undefined") Quality.applyConfig(cfg);
   setCfgDirty(false);
 }
 
@@ -309,6 +311,7 @@ async function saveConfig() {
     speed_schedules: JSON.stringify(speedSchedules),
     telemetry_enabled: qs("cfg-telemetry-enabled").checked,
   };
+  if (typeof Quality !== "undefined") Object.assign(payload, Quality.configPayload());
   const resp = await fetch("/api/config", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -325,6 +328,7 @@ async function saveConfig() {
   const urlChanged = (lastLoadedConfig?.speedtest_url ?? "") !== (newCfg?.speedtest_url ?? "");
   const intervalChanged = Number(lastLoadedConfig?.speedtest_interval_seconds ?? 0) !== Number(newCfg?.speedtest_interval_seconds ?? 0);
   lastLoadedConfig = newCfg;
+  if (typeof Quality !== "undefined") Quality.applyConfig(newCfg);
   setCfgDirty(false);
 
   if (modeChanged || urlChanged || intervalChanged) {
@@ -938,7 +942,10 @@ function refreshExports() {
 
 async function refreshTimeSeries() {
   refreshExports();
-  await Promise.all([loadChart(), loadQuality(), loadOutagesList()]);
+  const params = paramsFromInputs();
+  const tasks = [loadChart(), loadQuality(), loadOutagesList()];
+  if (typeof Quality !== "undefined") tasks.push(Quality.refresh(params));
+  await Promise.all(tasks);
 }
 
 function scheduleTimeSeriesRefresh() {
@@ -955,7 +962,10 @@ function scheduleTimeSeriesRefresh() {
 
 async function refreshAll() {
   refreshExports();
-  await Promise.all([loadStatus(), loadChart(), loadQuality(), loadOutagesList()]);
+  const params = paramsFromInputs();
+  const tasks = [loadStatus(), loadChart(), loadQuality(), loadOutagesList()];
+  if (typeof Quality !== "undefined") tasks.push(Quality.refresh(params));
+  await Promise.all(tasks);
   lastTimeSeriesRefreshAtMs = Date.now();
 }
 

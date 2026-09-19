@@ -20,6 +20,15 @@
             <span id="badge-last" class="badge badge-gray">...</span>
           </div>
           <span id="last-ok-time" class="last-ok-time" style="display:none;"></span>
+          <div id="q-status-strip" class="q-status-strip" aria-live="polite">
+            <span id="q-badge-availability" class="badge badge-gray">Dostępność: -</span>
+            <span id="q-badge-quality" class="badge badge-gray">Jakość: -</span>
+            <span id="q-badge-lan" class="badge badge-bad" style="display:none;">LAN: pogorszona</span>
+            <span class="q-hint">pomiar z NAS-a po kablu</span>
+            <span id="q-icmp-hint" class="q-hint q-hint-warn" style="display:none;"></span>
+            <span id="q-blocked-hint" class="q-hint q-hint-warn" style="display:none;"></span>
+            <span id="q-coverage-24h" class="q-hint">pokrycie danych 24h: – %</span>
+          </div>
         </div>
       </header>
 
@@ -172,6 +181,218 @@
                 </label>
               </div>
             </div>
+            <!-- Sekcja: Cele pomiarowe (jakość łącza) -->
+            <div class="settings-section" id="q-targets-section">
+              <div class="section-header">
+                <h4>Cele pomiarowe</h4>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="q-cfg-diagnostic-mode" />
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Tryb diagnostyczny (interwały &lt; 1 s)</span>
+                </label>
+              </div>
+              <div class="settings" style="grid-template-columns: 1fr;">
+                <label>
+                  Adres routera domowego (gateway_host)
+                  <input id="q-cfg-gateway-host" type="text" placeholder="192.168.1.1" />
+                  <span class="hint-inline">adres routera domowego — nie zakładaj, że to brama kontenera</span>
+                </label>
+              </div>
+              <div class="q-table-wrap">
+                <table class="tool-table" id="q-targets-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Nazwa</th>
+                      <th scope="col">Rodzaj</th>
+                      <th scope="col">Protokół</th>
+                      <th scope="col">Host</th>
+                      <th scope="col">Port</th>
+                      <th scope="col">Interwał (s)</th>
+                      <th scope="col">Timeout (ms)</th>
+                      <th scope="col">Włączony</th>
+                      <th scope="col">Akcje</th>
+                    </tr>
+                  </thead>
+                  <tbody id="q-targets-tbody"></tbody>
+                </table>
+              </div>
+              <div class="q-target-add-row" id="q-target-add-row">
+                <input id="q-target-new-name" type="text" placeholder="nazwa" aria-label="Nazwa nowego celu" />
+                <select id="q-target-new-kind" aria-label="Rodzaj nowego celu">
+                  <option value="internet">internet</option>
+                  <option value="tcp">tcp</option>
+                  <option value="dns">dns</option>
+                  <option value="https">https</option>
+                  <option value="gateway">gateway</option>
+                </select>
+                <select id="q-target-new-protocol" aria-label="Protokół nowego celu">
+                  <option value="icmp">icmp</option>
+                  <option value="tcp">tcp</option>
+                  <option value="dns">dns</option>
+                  <option value="https">https</option>
+                </select>
+                <input id="q-target-new-host" type="text" placeholder="host / adres" aria-label="Host nowego celu" />
+                <input id="q-target-new-port" type="number" placeholder="port" min="1" max="65535" aria-label="Port nowego celu" />
+                <input id="q-target-new-interval" type="number" placeholder="interwał (s)" min="0.2" step="0.1" value="1" aria-label="Interwał nowego celu w sekundach" />
+                <input id="q-target-new-timeout" type="number" placeholder="timeout (ms)" min="1" max="60000" value="1000" aria-label="Timeout nowego celu w milisekundach" />
+                <button id="q-target-add" type="button" class="btn-small">+ Dodaj cel</button>
+              </div>
+              <span id="q-targets-msg" class="cfgmsg"></span>
+            </div>
+
+            <!-- Sekcja: Progi incydentów i dostępności -->
+            <div class="settings-section">
+              <div class="section-header">
+                <h4>Progi incydentów</h4>
+              </div>
+              <div class="settings">
+                <label>
+                  Okno oceny (s)
+                  <input id="q-cfg-incident-window-seconds" type="number" min="5" max="300" />
+                  <span class="hint-inline">długość okna próbek ocenianego pod kątem werdyktu</span>
+                </label>
+                <label>
+                  Min. próbek w oknie
+                  <input id="q-cfg-incident-min-samples" type="number" min="1" max="1000" />
+                  <span class="hint-inline">poniżej tej liczby okno nie jest oceniane</span>
+                </label>
+                <label>
+                  Próg straty (%)
+                  <input id="q-cfg-incident-loss-pct-threshold" type="number" min="0" max="100" step="0.1" />
+                  <span class="hint-inline">strata powyżej progu = pogorszenie</span>
+                </label>
+                <label>
+                  Próg straty — awaria (%)
+                  <input id="q-cfg-incident-outage-loss-pct" type="number" min="0" max="100" step="0.1" />
+                  <span class="hint-inline">strata powyżej progu = awaria (outage)</span>
+                </label>
+                <label>
+                  Próg p95 RTT (ms)
+                  <input id="q-cfg-incident-rtt-p95-ms-threshold" type="number" min="1" max="10000" />
+                  <span class="hint-inline">p95 powyżej progu = pogorszenie</span>
+                </label>
+                <label>
+                  Próg serii błędów
+                  <input id="q-cfg-incident-fail-streak-threshold" type="number" min="1" max="1000" />
+                  <span class="hint-inline">liczba kolejnych timeoutów = pogorszenie</span>
+                </label>
+                <label>
+                  Okna otwierające incydent
+                  <input id="q-cfg-incident-open-windows" type="number" min="1" max="100" />
+                  <span class="hint-inline">ile złych okien z rzędu otwiera incydent</span>
+                </label>
+                <label>
+                  Czas stabilizacji (s)
+                  <input id="q-cfg-incident-stabilization-seconds" type="number" min="0" max="86400" />
+                  <span class="hint-inline">czas dobrych wyników przed zamknięciem incydentu</span>
+                </label>
+                <label>
+                  Zamknięcie przy braku danych (s)
+                  <input id="q-cfg-incident-no-data-close-seconds" type="number" min="0" max="86400" />
+                  <span class="hint-inline">po tylu sekundach bez danych incydent zamyka się sam</span>
+                </label>
+                <label>
+                  Okno oceny dostępności (s)
+                  <input id="q-cfg-availability-eval-seconds" type="number" min="1" max="60" />
+                  <span class="hint-inline">jak często oceniana jest dostępność łącza</span>
+                </label>
+                <label>
+                  Okno próbek dostępności (s)
+                  <input id="q-cfg-availability-window-seconds" type="number" min="5" max="300" />
+                  <span class="hint-inline">okno próbek użyte do oceny up/down</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Sekcja: Testy obciążeniowe -->
+            <div class="settings-section" id="q-loadtest-section">
+              <div class="section-header">
+                <h4>Testy obciążeniowe</h4>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="q-cfg-load-test-enabled" />
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Włączone</span>
+                </label>
+              </div>
+              <p class="hint">Wymagany własny lub uzgodniony serwer iperf3 — testy celowo generują ruch w sieci.</p>
+              <div class="settings">
+                <label>
+                  Serwer iperf3
+                  <input id="q-cfg-load-test-server" type="text" placeholder="iperf.example.com" />
+                </label>
+                <label>
+                  Port
+                  <input id="q-cfg-load-test-port" type="number" min="1" max="65535" />
+                </label>
+                <label>
+                  Interwał (s)
+                  <input id="q-cfg-load-test-interval-seconds" type="number" min="60" max="604800" />
+                </label>
+                <label>
+                  Czas trwania (s)
+                  <input id="q-cfg-load-test-duration-seconds" type="number" min="1" max="60" />
+                </label>
+                <label>
+                  Docelowy bitrate UDP
+                  <input id="q-cfg-load-test-udp-bitrate" type="text" placeholder="10M" />
+                </label>
+                <label>
+                  Długość datagramu (B)
+                  <input id="q-cfg-load-test-datagram-len" type="number" min="64" max="65507" />
+                </label>
+                <label>
+                  Kierunek
+                  <select id="q-cfg-load-test-directions">
+                    <option value="both">oba</option>
+                    <option value="upload">upload</option>
+                    <option value="download">download</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <!-- Sekcja: Diagnostyka -->
+            <div class="settings-section" id="q-diagnostics-section">
+              <div class="section-header">
+                <h4>Diagnostyka</h4>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="q-cfg-diagnostics-enabled" />
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Włączona</span>
+                </label>
+              </div>
+              <div class="settings">
+                <label>
+                  Min. odstęp między diagnozami (s)
+                  <input id="q-cfg-diagnostics-min-interval-seconds" type="number" min="30" max="86400" />
+                </label>
+                <label>
+                  Maks. diagnoz na incydent
+                  <input id="q-cfg-diagnostics-max-per-incident" type="number" min="1" max="20" />
+                </label>
+              </div>
+            </div>
+
+            <!-- Sekcja: Retencja -->
+            <div class="settings-section">
+              <div class="section-header">
+                <h4>Retencja</h4>
+              </div>
+              <div class="settings">
+                <label>
+                  Surowe pomiary (dni)
+                  <input id="q-cfg-retention-raw-days" type="number" min="1" max="3650" />
+                </label>
+                <label>
+                  Agregaty godzinowe/dobowe (dni)
+                  <input id="q-cfg-retention-aggregate-days" type="number" min="1" max="3650" />
+                </label>
+                <label>
+                  Incydenty (dni)
+                  <input id="q-cfg-retention-incident-days" type="number" min="1" max="3650" />
+                </label>
+              </div>
+            </div>
           </div>
 
           <div class="modal-actions">
@@ -211,6 +432,142 @@
         </section>
       </section>
 
+      <section class="panel" id="quality-panel">
+        <div class="panel-head">
+          <h2>Jakość łącza</h2>
+        </div>
+        <p id="q-range-error" class="tool-error" style="display:none;" role="alert"></p>
+
+        <div class="q-legend">
+          <span><i class="q-swatch q-swatch-incident"></i> Incydent</span>
+          <span><i class="q-swatch q-swatch-gap"></i> Brak danych (luka)</span>
+          <span><i class="q-swatch q-swatch-loadtest"></i> Test obciążeniowy</span>
+          <span><i class="q-swatch q-swatch-annotation"></i> Zgłoszenie użytkownika</span>
+        </div>
+
+        <div id="q-target-toggles" class="q-target-toggles"></div>
+        <canvas id="qualityChart" height="140"></canvas>
+        <p id="q-chart-caption" class="hint"></p>
+
+        <h3>Statystyki celów</h3>
+        <div class="q-table-wrap">
+          <table class="tool-table" id="q-stats-table">
+            <thead>
+              <tr>
+                <th scope="col">Cel</th>
+                <th scope="col">Protokół</th>
+                <th scope="col">Próby</th>
+                <th scope="col">OK</th>
+                <th scope="col">Timeouty</th>
+                <th scope="col">Błędy</th>
+                <th scope="col">Strata %</th>
+                <th scope="col">p50</th>
+                <th scope="col">p95</th>
+                <th scope="col">p99</th>
+                <th scope="col">Max</th>
+                <th scope="col">Zmienność RTT</th>
+                <th scope="col">Najdł. seria błędów</th>
+                <th scope="col">Uwagi</th>
+              </tr>
+            </thead>
+            <tbody id="q-stats-tbody"></tbody>
+            <tfoot>
+              <tr id="q-stats-sum-row"></tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <div id="q-legacy-tcp-wrap" style="display:none;">
+          <h3>Dotychczasowe pomiary TCP (legacy)</h3>
+          <table class="tool-table" id="q-legacy-tcp-table">
+            <thead>
+              <tr><th scope="col">Próby</th><th scope="col">Błędy</th></tr>
+            </thead>
+            <tbody id="q-legacy-tcp-tbody"></tbody>
+          </table>
+        </div>
+
+        <h3>Incydenty</h3>
+        <div class="q-table-wrap">
+          <table class="tool-table" id="q-incidents-table">
+            <thead>
+              <tr>
+                <th scope="col">Start</th>
+                <th scope="col">Koniec</th>
+                <th scope="col">Cel</th>
+                <th scope="col">Rodzaj</th>
+                <th scope="col">Szczyt straty</th>
+                <th scope="col">Szczyt p95</th>
+                <th scope="col">Przyczyna zamknięcia</th>
+              </tr>
+            </thead>
+            <tbody id="q-incidents-tbody"></tbody>
+          </table>
+        </div>
+        <p id="q-incidents-empty" class="hint" style="display:none;">Brak incydentów w wybranym zakresie.</p>
+
+        <dialog id="q-incident-drawer" class="modal">
+          <div class="modal-card">
+            <div class="modal-head">
+              <h3 id="q-incident-title">Incydent</h3>
+              <button id="q-incident-close" class="iconbtn" type="button" aria-label="Zamknij">×</button>
+            </div>
+            <div id="q-incident-body"></div>
+            <form id="q-incident-annotation-form" class="q-annotation-form">
+              <label>
+                Etykieta
+                <select id="q-incident-annotation-label">
+                  <option value="zacięcie TV">zacięcie TV</option>
+                  <option value="zerwane połączenie wideo">zerwane połączenie wideo</option>
+                  <option value="wolne strony">wolne strony</option>
+                  <option value="inne">inne</option>
+                </select>
+              </label>
+              <label>
+                Notatka
+                <input id="q-incident-annotation-note" type="text" placeholder="opcjonalny opis" />
+              </label>
+              <button type="submit">Dodaj objaw</button>
+              <span id="q-incident-annotation-msg" class="cfgmsg"></span>
+            </form>
+          </div>
+        </dialog>
+
+        <h3>Adnotacje</h3>
+        <form id="q-annotation-form" class="q-annotation-form">
+          <label>
+            Data i czas
+            <input id="q-annotation-at" type="text" placeholder="2026-01-28 20:00:00" />
+          </label>
+          <label>
+            Etykieta
+            <select id="q-annotation-label">
+              <option value="zacięcie TV">zacięcie TV</option>
+              <option value="zerwane połączenie wideo">zerwane połączenie wideo</option>
+              <option value="wolne strony">wolne strony</option>
+              <option value="inne">inne</option>
+            </select>
+          </label>
+          <label>
+            Notatka
+            <input id="q-annotation-note" type="text" placeholder="opcjonalny opis" />
+          </label>
+          <button type="submit">Dodaj zgłoszenie</button>
+          <span id="q-annotation-msg" class="cfgmsg"></span>
+        </form>
+        <div id="q-annotations-list" class="q-annotations-list"></div>
+
+        <div class="toolbar" id="q-export-toolbar">
+          <a id="q-export-report" class="linkbtn" href="#" target="_blank" rel="noopener">Raport HTML</a>
+          <a id="q-export-probes" class="linkbtn" href="#">CSV: pomiary</a>
+          <a id="q-export-incidents" class="linkbtn" href="#">CSV: incydenty</a>
+          <a id="q-export-aggregates" class="linkbtn" href="#">CSV: agregaty (1h)</a>
+          <a id="q-export-loadtests" class="linkbtn" href="#">CSV: testy obciążeniowe</a>
+          <button id="q-run-loadtest" type="button" class="btn-secondary">Uruchom test obciążeniowy</button>
+          <span id="q-loadtest-msg" class="cfgmsg"></span>
+        </div>
+      </section>
+
       <section class="panel tools-section" id="tools-section">
         <div class="tools-header" id="tools-header">
           <h2>Narzędzia sieciowe</h2>
@@ -226,5 +583,6 @@
     </main>
 
     <script src="/static/app.js"></script>
+    <script src="/static/quality.js"></script>
   </body>
 </html>
