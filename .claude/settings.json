@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile speedtest_app/config.py speedtest_app/scheduler.py speedtest_app/main.py)",
+      "Bash(python3 -c \"import fastapi, httpx, dns, pydantic; print\\('deps available'\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(rm -f \"/private/tmp/claude-501/-Users-rafalkawecki-Documents-ProjektyDev-r4vk-org-Speedtest/f7d084ba-baa0-42c7-84d8-c0cceb9769cb/scratchpad/app.db\"*; grep -rn \"CONNECT_TIMEOUT_SECONDS\\\\|CONNECT_INTERVAL\\\\|PING_TIMEOUT\\\\|latency\" README.md app/README.md 2>/dev/null | head)"
+    ],
+    "additionalDirectories": [
+      "/private/tmp/claude-501/-Users-rafalkawecki-Documents-ProjektyDev-r4vk-org-Speedtest/f7d084ba-baa0-42c7-84d8-c0cceb9769cb/scratchpad"
+    ]
+  }
+}

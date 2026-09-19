@@ -1,0 +1,10 @@
+role = "project"
+created = "2026-09-19"
+fork_to_main = false
+
+[platform]
+agent_cli = "claude"
+headless_command = "claude -p"
+
+[settings]
+auto_commit = true

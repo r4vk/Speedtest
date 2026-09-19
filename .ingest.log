@@ -1,0 +1,2 @@
+2026-09-19T17:11:17Z INFO  spawned ingester: capture=2026-09-19T17-11-17Z-sqlite-wal-deferred-begin-fails-instantly-with-database-is-locked-when-it-reads-before-it-writes.md.processing pid=43319
+2026-09-19T17:12:10Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest

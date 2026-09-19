@@ -1,0 +1,8 @@
+{
+  "userIgnoreFilters": [
+    ".wiki-pending/",
+    ".locks/",
+    ".ingest.log",
+    ".manifest.json"
+  ]
+}
