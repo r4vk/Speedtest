@@ -119,6 +119,19 @@ def seed(db_path: str) -> tuple[int, int]:
     return target.id, incident_id
 
 
+def new_incident(db_path: str, target_id: int) -> int:
+    """Another incident on an existing target."""
+    return quality_db.insert_incident(
+        db_path,
+        target_id=target_id,
+        protocol="icmp",
+        kind="degraded",
+        started_at=to_iso_z(NOW),
+        window_seconds=10,
+        probe_interval_seconds=1.0,
+    )
+
+
 def make_event(
     event_type: str,
     *,
@@ -620,6 +633,63 @@ async def test_an_incident_refused_a_slot_is_still_diagnosed_later(db_path: str)
     assert mtr.hosts == [TARGET_HOST, "198.51.100.20"]
     stored = rows(db_path, other_incident)
     assert [row["status"] for row in stored] == ["error", "ok"]
+
+
+async def test_a_new_incident_on_a_refused_target_is_still_answered(db_path: str) -> None:
+    """The refusal cooldown belongs to the incident, not to the target."""
+    target_id, first = seed(db_path)
+    blocker = quality_db.insert_target(
+        db_path,
+        name="dns",
+        kind="dns",
+        protocol=Protocol.ICMP,
+        host="198.51.100.20",
+        interval_seconds=1.0,
+        timeout_ms=1000,
+        enabled=True,
+    )
+    gate = asyncio.Event()
+    mtr = FakeMtr(
+        {TARGET_HOST: (0, LOSS_FROM_HOP_3, ""), "198.51.100.20": (0, LOSS_FROM_HOP_3, "")},
+        gate=gate,
+    )
+    clock = FakeClock()
+    runner = make_runner(db_path, mtr=mtr, clock=clock, max_concurrent=1, min_interval_seconds=300)
+
+    # another target takes the only slot, so the first incident is refused
+    await runner.on_incident_event(
+        make_event("opened", target_id=blocker.id, incident_id=new_incident(db_path, blocker.id)),
+        None,
+    )
+    await drain()
+    await runner.on_incident_event(make_event("opened", target_id=target_id, incident_id=first), None)
+    await drain()
+    assert [row["error"] for row in rows(db_path, first)] == ["rate_limited"]
+
+    # the same incident inside the cooldown still adds nothing
+    clock.now += 30.0
+    await runner.on_incident_event(
+        make_event("updated", target_id=target_id, incident_id=first, at=NOW + timedelta(seconds=600)),
+        None,
+    )
+    await drain()
+    assert len(rows(db_path, first)) == 1
+
+    # a new incident on the same target inside that cooldown is answered
+    second = new_incident(db_path, target_id)
+    await runner.on_incident_event(make_event("opened", target_id=target_id, incident_id=second), None)
+    await drain()
+    assert [row["error"] for row in rows(db_path, second)] == ["rate_limited"]
+
+    # and it is diagnosed, not merely recorded, once the slot is free again
+    gate.set()
+    await drain()
+    clock.now += 30.0
+    third = new_incident(db_path, target_id)
+    await runner.on_incident_event(make_event("opened", target_id=target_id, incident_id=third), None)
+    await drain()
+    assert TARGET_HOST in mtr.hosts
+    assert [row["status"] for row in rows(db_path, third)] == ["ok"]
 
 
 async def test_close_cancels_a_running_diagnostic(db_path: str) -> None:

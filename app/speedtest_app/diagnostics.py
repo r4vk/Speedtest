@@ -355,7 +355,7 @@ class DiagnosticsRunner:
         self._tasks: set[asyncio.Task[None]] = set()
         self._running = 0
         self._last_run_at: dict[int, float] = {}
-        self._last_refusal_at: dict[int, float] = {}
+        self._last_refusal_at: dict[tuple[int, int], float] = {}
         self._last_settings = DiagnosticsSettings()
 
     @property
@@ -394,9 +394,11 @@ class DiagnosticsRunner:
         if event.type == "updated" and not self._updated_is_due(event, incident_id):
             return
 
-        if self._refused_recently(event.target_id, settings):
-            # The refusal is already written down; repeating the row every
-            # window would bury the incident under its own bookkeeping.
+        if self._refused_recently(event.target_id, incident_id, settings):
+            # This incident's refusal is already written down; repeating the
+            # row every window would bury it under its own bookkeeping. The
+            # cooldown is per incident: a new incident on the same target is a
+            # new question and gets its own answer below.
             log.debug(
                 "diagnostics for incident %s still in the refusal cooldown", incident_id
             )
@@ -407,7 +409,7 @@ class DiagnosticsRunner:
             log.info(
                 "diagnostics for incident %s skipped (%s)", incident_id, limit
             )
-            self._last_refusal_at[event.target_id] = self._clock()
+            self._remember_refusal(event.target_id, incident_id, settings)
             self._record(
                 incident_id=incident_id,
                 target_id=event.target_id,
@@ -465,10 +467,23 @@ class DiagnosticsRunner:
             return False
         return not self._executed_rows(incident_id)
 
-    def _refused_recently(self, target_id: int, settings: DiagnosticsSettings) -> bool:
-        """True while a refusal for this target is still inside the interval."""
-        last = self._last_refusal_at.get(target_id)
+    def _refused_recently(
+        self, target_id: int, incident_id: int, settings: DiagnosticsSettings
+    ) -> bool:
+        """True while *this incident's* refusal is still inside the interval."""
+        last = self._last_refusal_at.get((target_id, incident_id))
         return last is not None and (self._clock() - last) < settings.min_interval_seconds
+
+    def _remember_refusal(
+        self, target_id: int, incident_id: int, settings: DiagnosticsSettings
+    ) -> None:
+        """Note when this incident was refused, and forget the stale notes."""
+        now = self._clock()
+        horizon = float(settings.min_interval_seconds)
+        self._last_refusal_at = {
+            key: at for key, at in self._last_refusal_at.items() if now - at < horizon
+        }
+        self._last_refusal_at[(target_id, incident_id)] = now
 
     def _limit_hit(
         self, target_id: int, incident_id: int, settings: DiagnosticsSettings
