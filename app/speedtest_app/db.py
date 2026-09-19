@@ -44,6 +44,10 @@ def _connect(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
+    # Belt-and-braces on top of `timeout=` above: a writer waits up to 30s for
+    # another writer's transaction instead of failing immediately with
+    # "database is locked" (design spec §14 write robustness).
+    conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
 
@@ -782,6 +786,34 @@ def end_blocked_period(db_path: str, test_type: str, now_iso: str | None = None)
             "UPDATE blocked_periods SET ended_at = ? WHERE id = ?",
             (now_iso, current["id"]),
         )
+
+
+def integrity_quick_check(db_path: str) -> str:
+    """``PRAGMA quick_check``: ``'ok'`` when healthy, otherwise a short summary.
+
+    Cheaper than ``PRAGMA integrity_check`` (it skips verifying every index),
+    which is why it is safe to run once on every startup. A problem here is
+    logged as a warning by the caller and never stops the app from starting —
+    a corrupt row store is something to investigate, not a reason to refuse
+    to serve the UI or keep probing.
+    """
+    with db_conn(db_path) as conn:
+        rows = conn.execute("PRAGMA quick_check").fetchall()
+    values = [str(r[0]) for r in rows]
+    if values == ["ok"]:
+        return "ok"
+    return "; ".join(values) if values else "unknown"
+
+
+def checkpoint_wal(db_path: str) -> None:
+    """``PRAGMA wal_checkpoint(TRUNCATE)``: fold the WAL back into ``app.db``.
+
+    Run at the end of a retention pass so that deleting a large number of rows
+    does not leave a bloated ``-wal`` file sitting next to a much smaller main
+    file until SQLite gets around to checkpointing it on its own.
+    """
+    with db_conn(db_path) as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def query_blocked_periods(db_path: str, tr: TimeRange, test_type: str | None = None):
