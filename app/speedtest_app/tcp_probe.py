@@ -107,7 +107,10 @@ async def _attempt(
     writer: asyncio.StreamWriter | None = None
     try:
         _reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host=ip, port=target.port), remaining
+            # The family is already known, so the connect does not look the host
+            # up a second time across both families.
+            asyncio.open_connection(host=ip, port=target.port, family=family),
+            remaining,
         )
     except (asyncio.TimeoutError, TimeoutError):
         return _result(

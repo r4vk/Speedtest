@@ -594,6 +594,7 @@ async def test_stats_defaults_and_targets_view() -> None:
     stats = scheduler.stats()
     assert (stats.buffered_rows, stats.dropped_rows, stats.flush_errors) == (0, 0, 0)
     assert stats.skipped_ticks == {}
+    assert stats.restarts == {}
     assert stats.last_flush_at is None
     assert scheduler.targets() == []
 
@@ -620,6 +621,39 @@ async def test_reload_supervises_a_stopped_loop() -> None:
         await scheduler.reload_targets()
         await drain()
         assert scheduler._tasks[1] is not dead
+        assert scheduler.stats().restarts == {1: 1}
 
         await fake.advance(1.0)
         assert len(scheduler.recent(1, 60.0)) >= 2
+
+
+async def test_hard_guard_kills_a_hanging_probe_and_the_loop_continues() -> None:
+    """The only real-time test: `wait_for` runs on the loop clock, not ours."""
+    fake = FakeTime()
+    calls = 0
+
+    async def hangs(target: ProbeTarget) -> ProbeResult:
+        nonlocal calls
+        calls += 1
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    target = make_target(1, interval=1.0, timeout_ms=20)  # guard at 20 ms + 250 ms
+    scheduler = build_scheduler(fake, [target], {Protocol.ICMP: hangs})
+
+    async with running(scheduler):
+        await fake.advance(0)
+        assert calls == 1
+        for _ in range(400):  # bounded wait for the real guard timer
+            if scheduler.recent(1, 60.0):
+                break
+            await asyncio.sleep(0.005)
+
+        results = scheduler.recent(1, 60.0)
+        assert len(results) == 1
+        assert results[0].outcome is Outcome.ERROR
+        assert results[0].error_kind == "exec_timeout"
+        assert results[0].timeout_ms == 20
+
+        await fake.advance(1.0)  # the loop is alive and takes the next tick
+        assert calls == 2

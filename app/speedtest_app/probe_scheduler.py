@@ -67,6 +67,8 @@ class SchedulerStats:
     skipped_ticks: dict[int, int]
     flush_errors: int
     last_flush_at: str | None
+    #: Per target: how often a stopped loop had to be restarted by a reload.
+    restarts: dict[int, int]
 
 
 def _is_async_callable(fn: Any) -> bool:
@@ -129,6 +131,7 @@ class ProbeScheduler:
         self._inflight = 0
         self._recent: dict[int, deque[tuple[float, ProbeResult]]] = {}
         self._skipped_ticks: dict[int, int] = {}
+        self._restarts: dict[int, int] = {}
         self._dropped_rows = 0
         self._flush_errors = 0
         self._last_flush_at: str | None = None
@@ -206,8 +209,15 @@ class ProbeScheduler:
                     logger.info("target %s disabled, loop stopped", target_id)
                 continue
             if running is None or running.done():
-                # A loop that stopped on its own (a crash, a cancellation) is
-                # supervised here: the next reload brings it back.
+                if running is not None:
+                    # A loop that stopped on its own (a crash, a cancellation)
+                    # is supervised here: the next reload brings it back.
+                    self._restarts[target_id] = self._restarts.get(target_id, 0) + 1
+                    logger.warning(
+                        "target %s loop was not running, restarting it (%d time(s))",
+                        target_id,
+                        self._restarts[target_id],
+                    )
                 self._start_target(target)
                 continue
             if previous is not None and _loop_relevant_change(previous, target):
@@ -384,6 +394,7 @@ class ProbeScheduler:
             skipped_ticks=dict(self._skipped_ticks),
             flush_errors=self._flush_errors,
             last_flush_at=self._last_flush_at,
+            restarts=dict(self._restarts),
         )
 
     # -- flushing ----------------------------------------------------------

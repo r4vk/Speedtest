@@ -140,3 +140,17 @@ async def test_explicit_timeout_argument_wins(listening_port: int) -> None:
     result = await tcp_probe.probe(make_target(port=listening_port), timeout_ms=750)
     assert result.timeout_ms == 750
     assert result.outcome is Outcome.OK
+
+
+async def test_hard_guard_reports_exec_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stage stuck before the connect timeout still cannot run away (§4.2)."""
+
+    async def stuck(target: Any) -> Any:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(tcp_probe, "_resolve", stuck)
+    result = await tcp_probe.probe(make_target(timeout_ms=20))
+
+    assert result.outcome is Outcome.ERROR
+    assert result.error_kind == "exec_timeout"
+    assert result.duration_ms >= 20
