@@ -1,7 +1,10 @@
 """Streaming CSV responses shared by the legacy exports and the quality exports.
 
-One home for the download headers and the row-by-row streaming, so a large
-export never builds the whole file in memory.
+One home for the download headers and the row-by-row streaming: the response
+body is written and sent one row at a time rather than assembled into a
+single string first. ``rows`` itself is an ordinary, fully materialised
+sequence built by the caller before this function ever runs — this module
+only avoids adding a second, whole-file copy of it in memory.
 """
 from __future__ import annotations
 
