@@ -33,6 +33,7 @@ from .db import (
     set_setting,
     get_settings,
 )
+from .network_tools import _validate_hostname
 from .probe_types import ProbeTarget
 from .quality_engine import QualityEngine
 from .quality_settings import (
@@ -71,9 +72,27 @@ ensure_default_setting(cfg.db_path, "speed_enabled", "true")
 ensure_default_setting(cfg.db_path, "ping_schedules", "[]")
 ensure_default_setting(cfg.db_path, "speed_schedules", "[]")
 ensure_default_setting(cfg.db_path, "telemetry_enabled", "true" if cfg.telemetry_default_enabled else "false")
+def _env_gateway_host() -> str:
+    """`GATEWAY_HOST`, validated — an unusable value is dropped with a warning.
+
+    The variable reaches the `gateway` probe target *and* the `gateway_host`
+    setting the diagnostics trace to, so it must not enter the database
+    unchecked: a value starting with `-` would become an mtr flag rather than
+    a host (review finding I7).
+    """
+    raw = (os.getenv("GATEWAY_HOST") or "").strip()
+    if not raw:
+        return ""
+    try:
+        return _validate_hostname(raw)
+    except ValueError as exc:
+        log.warning("GATEWAY_HOST=%r is unusable (%s); the gateway stays unconfigured", raw, exc)
+        return ""
+
+
 # Quality settings (spec §7, §8, §10, §11, §14) come from one table, so every
 # reader of a key sees the same default.
-ensure_quality_defaults(cfg.db_path, {"gateway_host": cfg.gateway_host})
+ensure_quality_defaults(cfg.db_path, {"gateway_host": _env_gateway_host()})
 _telemetry_install_id = get_settings(cfg.db_path, ["telemetry_install_id"]).get("telemetry_install_id", "").strip()
 if not _telemetry_install_id:
     set_setting(cfg.db_path, "telemetry_install_id", uuid.uuid4().hex, now_iso=to_iso_z(utc_now()))
@@ -130,6 +149,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     integrity = integrity_quick_check(cfg.db_path)
     if integrity != "ok":
         log.warning("SQLite integrity check reported problems: %s", integrity)
+    _reconcile_gateway_host_from_env()
     state = RunningState(stop=asyncio.Event())
     app.state.running_state = state
     tracker = SessionTracker()
@@ -453,6 +473,38 @@ def _effective_config() -> ConfigResponse:
         telemetry_enabled=telemetry_enabled,
         telemetry_endpoint_configured=True,
     )
+
+
+def _reconcile_gateway_host_from_env() -> None:
+    """Let `GATEWAY_HOST` reach the gateway target on *every* start (§3.1).
+
+    The env used to be read only by `db._seed_probe_targets`, which returns
+    early once `probe_targets` has a row, and by `ensure_default_setting`,
+    which is a no-op once the key exists. An operator who upgraded, saw the
+    gateway target disabled, added `GATEWAY_HOST` to `docker-compose.yml` and
+    restarted therefore got nothing at all (review finding I3).
+
+    A host configured through the UI or the API always wins: the env only
+    fills a host that is still empty, so restarting never undoes a change the
+    operator made in the panel. `_env_gateway_host` validates the value, so an
+    unusable one is logged and leaves the target disabled rather than becoming
+    an mtr/ping argument.
+    """
+    host = _env_gateway_host()
+    if not host:
+        return
+    try:
+        targets = quality_db.list_targets(cfg.db_path)
+    except Exception:
+        log.warning("Could not read the probe targets to apply GATEWAY_HOST", exc_info=True)
+        return
+    target = next((t for t in targets if t.name == "gateway"), None)
+    if target is None or (target.host or "").strip():
+        return
+    now_iso = to_iso_z(utc_now())
+    quality_db.update_target(cfg.db_path, target.id, now_iso=now_iso, host=host, enabled=True)
+    set_setting(cfg.db_path, "gateway_host", host, now_iso=now_iso, source="env")
+    log.info("gateway target enabled from GATEWAY_HOST=%s", host)
 
 
 def _apply_gateway_host(host: str, now_iso: str) -> None:

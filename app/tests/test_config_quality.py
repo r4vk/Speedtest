@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import importlib
 
+from fastapi.testclient import TestClient
+
 from speedtest_app import quality_db
-from speedtest_app.db import get_settings
+from speedtest_app.db import ensure_db, get_settings, set_setting
 from speedtest_app.quality_settings import QUALITY_SETTING_SPECS
 
 
@@ -233,3 +235,84 @@ def test_invalid_gateway_host_leaves_other_fields_of_the_same_request_untouched(
     assert payload["incident_window_seconds"] == 10
     assert payload["gateway_host"] == ""
     assert _gateway(client.app_db_path).enabled is False
+
+
+# ---------------------------------------------------------------------------
+# GATEWAY_HOST reaches the gateway target on every start (review finding I3)
+# ---------------------------------------------------------------------------
+
+def _start_app(tmp_path, monkeypatch, gateway_host: str | None):
+    """A client over a database seeded *without* the env, then started with it.
+
+    That is the upgrade path the finding describes: the targets already
+    exist, so `_seed_probe_targets` returns early and only the startup
+    reconciliation can still apply the variable.
+    """
+    data_dir = tmp_path / "gw-data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    db_path = str(data_dir / "app.db")
+
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.delenv("GATEWAY_HOST", raising=False)
+    monkeypatch.setenv("TELEMETRY_DEFAULT_ENABLED", "false")
+    ensure_db(db_path)  # seeds the gateway target with an empty host
+    set_setting(db_path, "ping_enabled", "false", source="env")
+    set_setting(db_path, "speed_enabled", "false", source="env")
+    assert _gateway(db_path).host == ""
+
+    if gateway_host is not None:
+        monkeypatch.setenv("GATEWAY_HOST", gateway_host)
+    config_module = importlib.import_module("speedtest_app.config")
+    db_module = importlib.import_module("speedtest_app.db")
+    importlib.reload(config_module)
+    main_module = importlib.import_module("speedtest_app.main")
+    importlib.reload(main_module)
+    return db_path, main_module, config_module, db_module
+
+
+def test_env_gateway_host_is_applied_on_a_later_start(tmp_path, monkeypatch) -> None:
+    db_path, main_module, config_module, db_module = _start_app(
+        tmp_path, monkeypatch, "192.168.7.1"
+    )
+    try:
+        with TestClient(main_module.app):
+            gateway = _gateway(db_path)
+            assert (gateway.host, gateway.enabled) == ("192.168.7.1", True)
+            assert get_settings(db_path, ["gateway_host"])["gateway_host"] == "192.168.7.1"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)
+        importlib.reload(db_module)
+
+
+def test_env_never_overwrites_a_host_configured_in_the_ui(tmp_path, monkeypatch) -> None:
+    db_path, main_module, config_module, db_module = _start_app(
+        tmp_path, monkeypatch, "10.0.0.1"
+    )
+    try:
+        with TestClient(main_module.app) as client:
+            assert client.put("/api/config", json={"gateway_host": "192.168.50.1"}).status_code == 200
+        # a restart with the env still set must keep the operator's host
+        with TestClient(main_module.app):
+            gateway = _gateway(db_path)
+            assert (gateway.host, gateway.enabled) == ("192.168.50.1", True)
+            assert get_settings(db_path, ["gateway_host"])["gateway_host"] == "192.168.50.1"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)
+        importlib.reload(db_module)
+
+
+def test_an_unusable_env_gateway_host_leaves_the_target_disabled(tmp_path, monkeypatch) -> None:
+    db_path, main_module, config_module, db_module = _start_app(
+        tmp_path, monkeypatch, "-nie jest hostem"
+    )
+    try:
+        with TestClient(main_module.app):
+            gateway = _gateway(db_path)
+            assert (gateway.host, gateway.enabled) == ("", False)
+            assert get_settings(db_path, ["gateway_host"])["gateway_host"] == ""
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)
+        importlib.reload(db_module)
