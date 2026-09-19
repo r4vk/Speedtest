@@ -1,5 +1,11 @@
 # Speedtest - Przewodnik dla AI Agentów
 
+## Plan rozwoju monitoringu jakości
+
+Przed realizacją funkcjonalności monitoringu przeczytaj [NETWORK_QUALITY_PLAN.md](NETWORK_QUALITY_PLAN.md).
+Dokument określa kolejność etapów, kryteria ukończenia i zasady wiarygodności pomiarów.
+Priorytetem jest NAS po kablu; agent macOS jest ostatnim etapem. Aktualizuj checklisty i dziennik realizacji po wykonaniu oraz zweryfikowaniu prac.
+
 ## Zasoby AI — lokalizacja (niedostępne z tego poziomu)
 
 Skills i pluginy są w folderze WYŻEJ:
