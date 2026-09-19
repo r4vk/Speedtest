@@ -16,6 +16,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import quality_db, retention
+from .api_retention import router as retention_router
 from .config import AppConfig
 from .coverage import SessionTracker, clip_to_observed, coverage, observed_intervals
 from .db import (
@@ -25,12 +27,14 @@ from .db import (
     get_current_connectivity_period,
     get_last_speed_test,
     get_last_success_speed_test,
+    integrity_quick_check,
     query_connectivity_periods,
     query_connectivity_checks,
     query_speed_tests,
     set_setting,
     get_settings,
 )
+from .probe_types import ProbeTarget
 from .quality_engine import QualityEngine
 from .runtime import get_runtime, init_runtime
 from .scheduler import RunningState, run_speedtest_once, speedtest_loop
@@ -77,6 +81,15 @@ def _read_version() -> str:
 APP_VERSION = _read_version()
 
 
+def _retention_settings() -> retention.RetentionSettings:
+    values = get_settings(cfg.db_path, list(retention.RETENTION_SETTINGS_KEYS))
+    return retention.RetentionSettings.from_settings(values)
+
+
+def _retention_targets() -> list[ProbeTarget]:
+    return quality_db.list_targets(cfg.db_path)
+
+
 def _heartbeat_once(tracker: SessionTracker) -> bool:
     """One heartbeat. A failure costs one heartbeat, never the whole loop."""
     try:
@@ -106,6 +119,9 @@ async def _session_heartbeat_loop(
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start the monitor with the app and stop it before the app goes away."""
     init_runtime()
+    integrity = integrity_quick_check(cfg.db_path)
+    if integrity != "ok":
+        log.warning("SQLite integrity check reported problems: %s", integrity)
     state = RunningState(stop=asyncio.Event())
     app.state.running_state = state
     tracker = SessionTracker()
@@ -134,6 +150,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     timeout_seconds=cfg.telemetry_timeout_seconds,
                 )
             ),
+            asyncio.create_task(
+                retention.retention_loop(cfg.db_path, _retention_settings, _retention_targets)
+            ),
         ]
         yield
     finally:
@@ -153,6 +172,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Speedtest Monitor", version=APP_VERSION, lifespan=lifespan)
+app.include_router(retention_router)
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _STATIC_DIR = _BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
