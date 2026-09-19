@@ -46,15 +46,21 @@ const Quality = (() => {
     ["q-cfg-load-test-datagram-len", "load_test_datagram_len"],
     ["q-cfg-diagnostics-min-interval-seconds", "diagnostics_min_interval_seconds"],
     ["q-cfg-diagnostics-max-per-incident", "diagnostics_max_per_incident"],
+    ["q-cfg-diagnostics-max-concurrent", "diagnostics_max_concurrent"],
+    ["q-cfg-diagnostics-mtr-count", "diagnostics_mtr_count"],
+    ["q-cfg-diagnostics-mtr-timeout-seconds", "diagnostics_mtr_timeout_seconds"],
     ["q-cfg-retention-raw-days", "retention_raw_days"],
     ["q-cfg-retention-aggregate-days", "retention_aggregate_days"],
     ["q-cfg-retention-incident-days", "retention_incident_days"],
+    ["q-cfg-retention-load-test-raw-days", "retention_load_test_raw_days"],
+    ["q-cfg-retention-diagnostics-days", "retention_diagnostics_days"],
   ];
   const CONFIG_TEXT_FIELDS = [
     ["q-cfg-gateway-host", "gateway_host"],
     ["q-cfg-load-test-server", "load_test_server"],
     ["q-cfg-load-test-udp-bitrate", "load_test_udp_bitrate"],
     ["q-cfg-load-test-directions", "load_test_directions"],
+    ["q-cfg-load-test-kind", "load_test_kind"],
   ];
   const CONFIG_BOOL_FIELDS = [
     ["q-cfg-diagnostic-mode", "diagnostic_mode"],

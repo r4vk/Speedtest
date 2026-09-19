@@ -341,6 +341,13 @@
                   <input id="q-cfg-load-test-datagram-len" type="number" min="64" max="65507" />
                 </label>
                 <label>
+                  Rodzaj testu
+                  <select id="q-cfg-load-test-kind">
+                    <option value="iperf_udp">iperf3 UDP</option>
+                    <option value="iperf_tcp">iperf3 TCP</option>
+                  </select>
+                </label>
+                <label>
                   Kierunek
                   <select id="q-cfg-load-test-directions">
                     <option value="both">oba</option>
@@ -370,6 +377,18 @@
                   Maks. diagnoz na incydent
                   <input id="q-cfg-diagnostics-max-per-incident" type="number" min="1" max="20" />
                 </label>
+                <label>
+                  Maks. równoległych diagnoz
+                  <input id="q-cfg-diagnostics-max-concurrent" type="number" min="1" max="4" />
+                </label>
+                <label>
+                  Liczba pakietów MTR
+                  <input id="q-cfg-diagnostics-mtr-count" type="number" min="1" max="100" />
+                </label>
+                <label>
+                  Timeout MTR (s)
+                  <input id="q-cfg-diagnostics-mtr-timeout-seconds" type="number" min="10" max="600" />
+                </label>
               </div>
             </div>
 
@@ -390,6 +409,14 @@
                 <label>
                   Incydenty (dni)
                   <input id="q-cfg-retention-incident-days" type="number" min="1" max="3650" />
+                </label>
+                <label>
+                  Surowe wyniki testów obciążeniowych (dni)
+                  <input id="q-cfg-retention-load-test-raw-days" type="number" min="1" max="3650" />
+                </label>
+                <label>
+                  Diagnostyka (dni)
+                  <input id="q-cfg-retention-diagnostics-days" type="number" min="1" max="3650" />
                 </label>
               </div>
             </div>

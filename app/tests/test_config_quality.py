@@ -6,6 +6,8 @@ and nowhere else.
 """
 from __future__ import annotations
 
+import importlib
+
 from speedtest_app import quality_db
 from speedtest_app.db import get_settings
 from speedtest_app.quality_settings import QUALITY_SETTING_SPECS
@@ -51,13 +53,69 @@ def test_defaults_are_seeded_and_served(client) -> None:
 def test_every_spec_key_is_stored_in_the_database(client) -> None:
     stored = get_settings(client.app_db_path, list(QUALITY_SETTING_SPECS))
     assert set(stored) == set(QUALITY_SETTING_SPECS)
-    # keys the update model does not expose still have to exist for T7/T9
     assert stored["retention_load_test_raw_days"] == "90"
     assert stored["retention_diagnostics_days"] == "365"
     assert stored["diagnostics_max_concurrent"] == "1"
     assert stored["diagnostics_mtr_count"] == "10"
     assert stored["diagnostics_mtr_timeout_seconds"] == "90"
     assert stored["load_test_kind"] == "iperf_udp"
+
+
+def test_every_spec_key_is_reachable_through_the_config_api(client) -> None:
+    """finding I1: a key the engine reads must be readable and writable here.
+
+    Six keys were seeded, read and clamped but exposed by neither model, so
+    the operator could not reach the knobs (`retention_diagnostics_days`,
+    the mtr limits) they need when the database grows. These two assertions
+    turn "we remembered to add the field" into a permanent guarantee.
+    """
+    main = importlib.import_module("speedtest_app.main")
+    assert set(QUALITY_SETTING_SPECS) <= set(main.ConfigResponse.model_fields)
+    assert set(QUALITY_SETTING_SPECS) <= set(main.ConfigUpdate.model_fields)
+
+
+def test_the_six_late_keys_are_served_and_writable(client) -> None:
+    payload = client.get("/api/config").json()
+    assert payload["load_test_kind"] == "iperf_udp"
+    assert payload["diagnostics_max_concurrent"] == 1
+    assert payload["diagnostics_mtr_count"] == 10
+    assert payload["diagnostics_mtr_timeout_seconds"] == 90
+    assert payload["retention_load_test_raw_days"] == 90
+    assert payload["retention_diagnostics_days"] == 365
+
+    written = client.put(
+        "/api/config",
+        json={
+            "load_test_kind": "iperf_tcp",
+            "diagnostics_max_concurrent": 2,
+            "diagnostics_mtr_count": 20,
+            "diagnostics_mtr_timeout_seconds": 120,
+            "retention_load_test_raw_days": 30,
+            "retention_diagnostics_days": 60,
+        },
+    )
+    assert written.status_code == 200
+    assert written.json()["load_test_kind"] == "iperf_tcp"
+
+    stored = get_settings(
+        client.app_db_path,
+        [
+            "load_test_kind",
+            "diagnostics_max_concurrent",
+            "diagnostics_mtr_count",
+            "diagnostics_mtr_timeout_seconds",
+            "retention_load_test_raw_days",
+            "retention_diagnostics_days",
+        ],
+    )
+    assert stored == {
+        "load_test_kind": "iperf_tcp",
+        "diagnostics_max_concurrent": "2",
+        "diagnostics_mtr_count": "20",
+        "diagnostics_mtr_timeout_seconds": "120",
+        "retention_load_test_raw_days": "30",
+        "retention_diagnostics_days": "60",
+    }
 
 
 def test_update_persists_the_quality_fields(client) -> None:
@@ -122,6 +180,14 @@ def test_out_of_range_values_are_refused(client) -> None:
         {"retention_raw_days": 0},
         {"retention_aggregate_days": 4000},
         {"retention_incident_days": 0},
+        {"load_test_kind": "iperf_smoke"},
+        {"diagnostics_max_concurrent": 5},
+        {"diagnostics_max_concurrent": 0},
+        {"diagnostics_mtr_count": 101},
+        {"diagnostics_mtr_timeout_seconds": 9},
+        {"diagnostics_mtr_timeout_seconds": 601},
+        {"retention_load_test_raw_days": 0},
+        {"retention_diagnostics_days": 4000},
     ]
     for case in cases:
         assert client.put("/api/config", json=case).status_code == 422, case

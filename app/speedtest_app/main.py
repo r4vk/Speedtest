@@ -290,6 +290,7 @@ class ConfigResponse(BaseModel):
     availability_window_seconds: int
     load_test_enabled: bool
     load_test_interval_seconds: int
+    load_test_kind: str
     load_test_server: str
     load_test_port: int
     load_test_udp_bitrate: str
@@ -299,9 +300,14 @@ class ConfigResponse(BaseModel):
     diagnostics_enabled: bool
     diagnostics_min_interval_seconds: int
     diagnostics_max_per_incident: int
+    diagnostics_max_concurrent: int
+    diagnostics_mtr_count: int
+    diagnostics_mtr_timeout_seconds: int
     retention_raw_days: int
     retention_aggregate_days: int
     retention_incident_days: int
+    retention_load_test_raw_days: int
+    retention_diagnostics_days: int
     diagnostic_mode: bool
     gateway_host: str
 
@@ -337,6 +343,7 @@ class ConfigUpdate(BaseModel):
     availability_window_seconds: int | None = Field(default=None, ge=5, le=300)
     load_test_enabled: bool | None = Field(default=None)
     load_test_interval_seconds: int | None = Field(default=None, ge=60, le=604800)
+    load_test_kind: Literal["iperf_udp", "iperf_tcp"] | None = Field(default=None)
     load_test_server: str | None = Field(default=None, max_length=253)
     load_test_port: int | None = Field(default=None, ge=1, le=65535)
     load_test_udp_bitrate: str | None = Field(default=None, pattern=r"^\d+(\.\d+)?[KMG]?$")
@@ -346,9 +353,16 @@ class ConfigUpdate(BaseModel):
     diagnostics_enabled: bool | None = Field(default=None)
     diagnostics_min_interval_seconds: int | None = Field(default=None, ge=30, le=86400)
     diagnostics_max_per_incident: int | None = Field(default=None, ge=1, le=20)
+    # More than a handful of concurrent mtr runs would itself load the link
+    # the diagnostics are trying to describe (spec §11).
+    diagnostics_max_concurrent: int | None = Field(default=None, ge=1, le=4)
+    diagnostics_mtr_count: int | None = Field(default=None, ge=1, le=100)
+    diagnostics_mtr_timeout_seconds: int | None = Field(default=None, ge=10, le=600)
     retention_raw_days: int | None = Field(default=None, ge=1, le=3650)
     retention_aggregate_days: int | None = Field(default=None, ge=1, le=3650)
     retention_incident_days: int | None = Field(default=None, ge=1, le=3650)
+    retention_load_test_raw_days: int | None = Field(default=None, ge=1, le=3650)
+    retention_diagnostics_days: int | None = Field(default=None, ge=1, le=3650)
     diagnostic_mode: bool | None = Field(default=None)
     gateway_host: str | None = Field(default=None, max_length=253)
 
