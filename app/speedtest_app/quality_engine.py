@@ -130,7 +130,12 @@ class QualityEngine:
         self.incident_engine = IncidentEngine(
             self._incident_settings, probe_interval_seconds=self._probe_interval_for
         )
-        self.availability = AvailabilityTracker(self._db_path, cfg)
+        self.availability = AvailabilityTracker(
+            self._db_path,
+            cfg,
+            clock=wall_clock,
+            no_data_close_seconds=self._incident_settings.no_data_close_seconds,
+        )
         self.scheduler = ProbeScheduler(
             self._db_path,
             probe_registry if probe_registry is not None else default_probe_registry(),
@@ -329,7 +334,16 @@ class QualityEngine:
         gap = latest_end - last
         if gap <= 1e-6:
             return []
-        count = min(max(int(round(gap / width)), 1), MAX_CATCHUP_WINDOWS)
+        missed = max(int(round(gap / width)), 1)
+        count = min(missed, MAX_CATCHUP_WINDOWS)
+        if missed > MAX_CATCHUP_WINDOWS:
+            log.warning(
+                "target %s (%s): %d evaluation window(s) missed, replaying only the last %d",
+                key[0],
+                key[1],
+                missed - MAX_CATCHUP_WINDOWS,
+                MAX_CATCHUP_WINDOWS,
+            )
         ends = [latest_end - width * index for index in range(count - 1, -1, -1)]
         return [end for end in ends if end - width + 1e-6 >= self._first_window_epoch]
 
@@ -337,36 +351,39 @@ class QualityEngine:
         """Write the event to `incidents`; a DB failure never stops the loop."""
         key = (event.target_id, event.protocol)
         try:
-            if event.type == "opened":
-                interval = self.incident_engine.probe_interval_for(*key)
-                row = incident_row_from_state(
-                    event.state, event.target_id, event.protocol, settings, interval
-                )
-                incident_id = quality_db.insert_incident(self._db_path, **row)
-                self.incident_engine.attach_incident_id(*key, incident_id)
-                event.state.incident_id = incident_id
-                self._open_keys.add(key)
-                log.info(
-                    "incident %s opened on target %s (%s), kind=%s",
-                    incident_id,
-                    event.target_id,
-                    event.protocol,
-                    event.state.kind,
-                )
-                return
-
-            incident_id = event.state.incident_id
-            if incident_id is None:
-                log.warning(
-                    "incident event %s for target %s has no row to update",
-                    event.type,
-                    event.target_id,
-                )
-                return
             interval = self.incident_engine.probe_interval_for(*key)
             row = incident_row_from_state(
                 event.state, event.target_id, event.protocol, settings, interval
             )
+            incident_id = event.state.incident_id
+            if incident_id is None:
+                # Either this is the `opened` event, or the insert it should
+                # have done failed (a busy database, a full disk). The incident
+                # is real either way, so it is written now from the current
+                # state instead of being lost for the rest of its life.
+                incident_id = quality_db.insert_incident(self._db_path, **row)
+                self.incident_engine.attach_incident_id(*key, incident_id)
+                event.state.incident_id = incident_id
+                self._open_keys.add(key)
+                if event.type == "opened":
+                    log.info(
+                        "incident %s opened on target %s (%s), kind=%s",
+                        incident_id,
+                        event.target_id,
+                        event.protocol,
+                        event.state.kind,
+                    )
+                else:
+                    log.warning(
+                        "incident on target %s (%s) was written late as %s: "
+                        "the opening insert had failed",
+                        event.target_id,
+                        event.protocol,
+                        incident_id,
+                    )
+            if event.type == "opened":
+                return
+
             fields = INCIDENT_CLOSE_FIELDS if event.type == "closed" else INCIDENT_UPDATE_FIELDS
             quality_db.update_incident(
                 self._db_path, incident_id, **{name: row[name] for name in fields}
@@ -428,10 +445,14 @@ class QualityEngine:
                 log.exception("Aggregation failed")
 
     def _aggregate_once(self) -> None:
-        """Re-aggregate the last two hours, plus the previous day after midnight.
+        """Re-aggregate the last two hours, plus the previous day when it is due.
 
         Upserts are idempotent, so overlapping runs only refresh a bucket that
-        raw rows have since completed.
+        raw rows have since completed. The rolling two-hour window can never
+        complete a `1d` bucket, so the previous UTC day is aggregated when the
+        day changes under a running engine and, on the first pass after a start,
+        when it has no daily row yet — otherwise a monitor that was restarted
+        after midnight would never get yesterday's row.
         """
         now = self._wall_clock()
         now_iso = to_iso_z(now)
@@ -446,17 +467,30 @@ class QualityEngine:
             now_iso=now_iso,
         )
         today = now.date()
-        if self._last_aggregated_day is not None and today != self._last_aggregated_day:
-            day_end = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+        day_start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+        if self._last_aggregated_day is None:
+            due = self._previous_day_missing(day_start)
+        else:
+            due = today != self._last_aggregated_day
+        if due:
             aggregates.aggregate_all(
                 self._db_path,
                 targets,
-                day_end - timedelta(days=1),
-                day_end,
+                day_start - timedelta(days=1),
+                day_start,
                 now_iso=now_iso,
             )
-            log.info("aggregated the previous UTC day (%s)", day_end.date() - timedelta(days=1))
+            log.info("aggregated the previous UTC day (%s)", (day_start.date() - timedelta(days=1)))
         self._last_aggregated_day = today
+
+    def _previous_day_missing(self, day_start: datetime) -> bool:
+        """True when no `1d` aggregate exists for the day before ``day_start``."""
+        previous = to_iso_z(day_start - timedelta(days=1))
+        try:
+            return not quality_db.query_aggregates(self._db_path, "1d", previous, previous)
+        except Exception:
+            log.warning("Could not check yesterday's daily aggregate", exc_info=True)
+            return False
 
     # -- settings ----------------------------------------------------------
 
@@ -478,6 +512,7 @@ class QualityEngine:
             log.info("incident settings changed: %s", incident_settings)
             self._incident_settings = incident_settings
             self.incident_engine.settings = incident_settings
+            self.availability.no_data_close_seconds = incident_settings.no_data_close_seconds
         availability_settings = AvailabilitySettings.from_settings(values)
         if availability_settings != self._availability_settings:
             log.info("availability settings changed: %s", availability_settings)

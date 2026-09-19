@@ -164,6 +164,11 @@ def quality_state(
     return "ok", lan_degraded
 
 
+#: Default budget for an unmeasurable stretch inside an outage; the engine
+#: replaces it with the live `incident_no_data_close_seconds` setting (spec §7).
+DEFAULT_NO_DATA_CLOSE_SECONDS = 300.0
+
+
 class AvailabilityTracker:
     """Persists availability transitions and sends the recovery e-mail.
 
@@ -179,13 +184,17 @@ class AvailabilityTracker:
         *,
         notifier: Callable[[AppConfig, str, str, float], Any] = send_outage_notification,
         clock: Callable[[], datetime] = utc_now,
+        no_data_close_seconds: float = DEFAULT_NO_DATA_CLOSE_SECONDS,
     ) -> None:
         self._db_path = db_path
         self._cfg = cfg
         self._notifier = notifier
         self._clock = clock
+        #: Kept in step with `incident_no_data_close_seconds` by the engine.
+        self.no_data_close_seconds = float(no_data_close_seconds)
         self._last_state: str | None = None
         self._outage_started_at: str | None = None
+        self._no_data_since: str | None = None
         self._notifications: set[asyncio.Task[None]] = set()
         self._adopt_open_period()
 
@@ -229,20 +238,38 @@ class AvailabilityTracker:
         return previous
 
     def _apply_no_data(self, now_iso: str) -> None:
-        """Close the open period; unobserved time belongs to nobody (spec §8)."""
-        if end_current_connectivity_period(self._db_path, now_iso) and self._outage_started_at:
-            # The outage is no longer measurable, so it can no longer be timed:
-            # a recovery mail after the gap would report a made-up duration.
-            log.info("Availability became unknown during an outage, dropping its start mark")
+        """Close the open period; unobserved time belongs to nobody (spec §8).
+
+        A running outage keeps its start mark across the gap — a few windows
+        nobody could measure do not make the outage less real — until the gap
+        itself reaches ``no_data_close_seconds``, the same budget at which the
+        incident engine gives up on a key (spec §7). Past that we no longer
+        know what happened, so the eventual recovery is not reported.
+        """
+        end_current_connectivity_period(self._db_path, now_iso)
+        if self._no_data_since is None:
+            self._no_data_since = now_iso
+        if self._outage_started_at is None:
+            return
+        gap_seconds = (parse_dt(now_iso) - parse_dt(self._no_data_since)).total_seconds()
+        if gap_seconds < self.no_data_close_seconds:
+            return
+        log.warning(
+            "Availability has been unknown for %.0f s during an outage, "
+            "dropping its start mark: the recovery cannot be timed",
+            gap_seconds,
+        )
         self._outage_started_at = None
 
     def _on_down(self, now_iso: str) -> None:
+        self._no_data_since = None
         if self._outage_started_at is not None:
             return
         self._outage_started_at = now_iso
         log.info("Internet outage detected at %s", to_local_display(parse_dt(now_iso)))
 
     def _on_up(self, now_iso: str) -> None:
+        self._no_data_since = None
         started_at = self._outage_started_at
         if started_at is None:
             return

@@ -305,16 +305,58 @@ async def test_no_email_without_smtp_configuration(db_path: str, tmp_path: Any) 
     assert notifier.calls == []
 
 
-async def test_unmeasured_time_cancels_the_pending_recovery_email(db_path: str, tmp_path: Any) -> None:
+async def test_a_short_gap_inside_an_outage_keeps_its_start(db_path: str, tmp_path: Any) -> None:
     notifier = FakeNotifier()
-    tracker = AvailabilityTracker(db_path, smtp_config(tmp_path), notifier=notifier)
+    tracker = AvailabilityTracker(
+        db_path, smtp_config(tmp_path), notifier=notifier, no_data_close_seconds=300.0
+    )
 
     tracker.apply("down", NOW)
     tracker.apply("no_data", NOW + timedelta(seconds=100))
+    tracker.apply("no_data", NOW + timedelta(seconds=105))
+    tracker.apply("down", NOW + timedelta(seconds=110))
     tracker.apply("up", NOW + timedelta(seconds=200))
     await tracker.drain()
 
+    assert len(notifier.calls) == 1
+    # the mail reports the outage from its real start, gap included
+    assert notifier.calls[0][2] == pytest.approx(200.0)
+
+
+async def test_a_gap_longer_than_the_no_data_budget_drops_the_outage(
+    db_path: str, tmp_path: Any
+) -> None:
+    notifier = FakeNotifier()
+    tracker = AvailabilityTracker(
+        db_path, smtp_config(tmp_path), notifier=notifier, no_data_close_seconds=300.0
+    )
+
+    tracker.apply("down", NOW)
+    tracker.apply("no_data", NOW + timedelta(seconds=100))
+    tracker.apply("no_data", NOW + timedelta(seconds=399))
+    assert tracker.apply("no_data", NOW + timedelta(seconds=400)) == "no_data"
+    tracker.apply("up", NOW + timedelta(seconds=500))
+    await tracker.drain()
+
     assert notifier.calls == []
+
+
+async def test_a_gap_is_measured_from_its_own_start(db_path: str, tmp_path: Any) -> None:
+    """Two short gaps far apart are two gaps, not one long one."""
+    notifier = FakeNotifier()
+    tracker = AvailabilityTracker(
+        db_path, smtp_config(tmp_path), notifier=notifier, no_data_close_seconds=300.0
+    )
+
+    tracker.apply("down", NOW)
+    tracker.apply("no_data", NOW + timedelta(seconds=100))
+    tracker.apply("down", NOW + timedelta(seconds=200))
+    tracker.apply("no_data", NOW + timedelta(seconds=600))
+    tracker.apply("up", NOW + timedelta(seconds=700))
+    await tracker.drain()
+
+    assert len(notifier.calls) == 1
+    assert notifier.calls[0][2] == pytest.approx(700.0)
 
 
 async def test_a_failing_notifier_never_breaks_the_tracker(db_path: str, tmp_path: Any) -> None:
@@ -344,6 +386,26 @@ async def test_restart_adopts_the_open_period_without_duplicating_it(
     tracker.apply("up", NOW)
     await tracker.drain()
     assert len(_periods(db_path)) == 1
+
+
+async def test_restart_then_a_gap_still_reports_the_adopted_outage(
+    db_path: str, tmp_path: Any
+) -> None:
+    notifier = FakeNotifier()
+    started = NOW - timedelta(seconds=300)
+    record_connectivity(db_path, is_up=False, now_iso=to_iso_z(started))
+    tracker = AvailabilityTracker(
+        db_path, smtp_config(tmp_path), notifier=notifier, no_data_close_seconds=300.0
+    )
+
+    assert tracker.last_state == "down"
+    tracker.apply("no_data", NOW)  # the first verdict after the restart
+    tracker.apply("down", NOW + timedelta(seconds=10))
+    tracker.apply("up", NOW + timedelta(seconds=60))
+    await tracker.drain()
+
+    assert len(notifier.calls) == 1
+    assert notifier.calls[0][2] == pytest.approx(360.0)
 
 
 async def test_restart_during_an_outage_keeps_the_outage_start(db_path: str, tmp_path: Any) -> None:

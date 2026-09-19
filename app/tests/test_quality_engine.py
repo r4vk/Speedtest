@@ -14,12 +14,12 @@ import asyncio
 import os
 import sqlite3
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
 import pytest
 
-from speedtest_app import quality_db
+from speedtest_app import quality_db, quality_engine
 from speedtest_app.config import AppConfig
 from speedtest_app.db import TimeRange, query_blocked_periods, set_setting
 from speedtest_app.probe_types import Outcome, ProbeResult, ProbeTarget, Protocol
@@ -542,3 +542,170 @@ async def test_availability_periods_follow_the_probe_outcomes(db_path: str) -> N
         conn.close()
     assert [row["is_up"] for row in rows] == [1, 0]
     assert rows[-1]["ended_at"] is not None  # no_data closed the outage period
+
+
+# ---------------------------------------------------------------------------
+# a failed insert must not lose the incident
+# ---------------------------------------------------------------------------
+
+
+async def test_a_failed_opening_insert_is_retried_on_the_next_event(
+    db_path: str, monkeypatch: Any
+) -> None:
+    fake = FakeTime()
+    probes = FakeProbes(fake)
+    prepare_db(db_path)
+    engine = make_engine(db_path, fake, probes)
+
+    real_insert = quality_db.insert_incident
+    failures: list[int] = []
+
+    def flaky_insert(path: str, **fields: Any) -> int:
+        if not failures:
+            failures.append(1)
+            raise sqlite3.OperationalError("database is locked")
+        return real_insert(path, **fields)
+
+    monkeypatch.setattr(quality_engine.quality_db, "insert_incident", flaky_insert)
+
+    async with running(engine):
+        probes.outcome[1] = Outcome.TIMEOUT
+        await fake.advance(6.0)  # the `opened` insert fails
+        assert incidents(db_path) == []
+        assert failures == [1]
+
+        await fake.advance(2.0)  # the next `updated` writes the row after all
+        rows = incidents(db_path)
+        assert len(rows) == 1
+        assert rows[0]["started_at"] == fake.iso_at(_START)
+        assert rows[0]["closed_at"] is None
+
+        probes.outcome[1] = Outcome.OK
+        await fake.advance(8.0)  # ... and it still closes properly
+
+    closed = incidents(db_path)[0]
+    assert closed["close_reason"] == "recovered"
+    assert closed["closed_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# aggregation
+# ---------------------------------------------------------------------------
+
+
+class Wall:
+    """A wall clock the test moves by hand, with real calendar dates."""
+
+    def __init__(self, moment: datetime) -> None:
+        self.moment = moment
+
+    def __call__(self) -> datetime:
+        return self.moment
+
+
+def write_probe_rows(db_path: str, target_id: int, start: datetime, count: int, step: float) -> None:
+    quality_db.insert_probe_results(
+        db_path,
+        [
+            ProbeResult(
+                target_id=target_id,
+                protocol=Protocol.ICMP,
+                started_at=to_iso_z(start + timedelta(seconds=index * step)),
+                duration_ms=1.0,
+                outcome=Outcome.OK,
+                timeout_ms=1000,
+                rtt_ms=10.0 + index,
+            )
+            for index in range(count)
+        ],
+    )
+
+
+def aggregate_engine(db_path: str, wall: Wall) -> QualityEngine:
+    fake = FakeTime()
+    cfg = AppConfig(data_dir=os.path.dirname(db_path))
+    return QualityEngine(
+        cfg,
+        app_version="test",
+        probe_registry={},
+        clock=fake.clock,
+        wall_clock=wall,
+        sleep=fake.sleep,
+    )
+
+
+async def test_aggregation_completes_yesterday_and_follows_the_day_change(
+    db_path: str, monkeypatch: Any
+) -> None:
+    prepare_db(db_path)
+    yesterday = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    today = yesterday + timedelta(days=1)
+    write_probe_rows(db_path, 1, yesterday + timedelta(hours=22), 120, 60.0)  # 22:00-23:59
+    write_probe_rows(db_path, 1, today + timedelta(hours=8, minutes=30), 120, 60.0)
+
+    # more than the rolling window after midnight: that window alone can never
+    # complete yesterday's daily bucket
+    wall = Wall(today + timedelta(hours=10, minutes=30))
+    engine = aggregate_engine(db_path, wall)
+
+    ranges: list[tuple[datetime, datetime]] = []
+    real = quality_engine.aggregates.aggregate_all
+
+    def spy(path: str, targets: Any, start: datetime, end: datetime, *, now_iso: str) -> Any:
+        ranges.append((start, end))
+        return real(path, targets, start, end, now_iso=now_iso)
+
+    monkeypatch.setattr(quality_engine.aggregates, "aggregate_all", spy)
+
+    # first pass after a start: yesterday has no daily row yet, so it is built
+    engine._aggregate_once()
+    assert len(ranges) == 2
+    assert ranges[0] == (wall.moment - timedelta(hours=2), wall.moment)
+    assert ranges[1] == (yesterday, today)
+    daily = quality_db.query_aggregates(db_path, "1d", to_iso_z(yesterday), to_iso_z(yesterday))
+    assert len(daily) == 1
+    assert daily[0]["attempts"] == 120
+    hourly = quality_db.query_aggregates(
+        db_path, "1h", to_iso_z(yesterday), to_iso_z(today + timedelta(hours=23))
+    )
+    assert [row["bucket_start"] for row in hourly] == [
+        to_iso_z(yesterday + timedelta(hours=22)),
+        to_iso_z(yesterday + timedelta(hours=23)),
+        to_iso_z(today + timedelta(hours=8)),
+        to_iso_z(today + timedelta(hours=9)),
+    ]
+    assert engine._last_aggregated_day == today.date()
+
+    # a second pass on the same day does not redo yesterday
+    ranges.clear()
+    engine._aggregate_once()
+    assert len(ranges) == 1
+
+    # ... and neither does a later start, because the daily row is there now
+    ranges.clear()
+    engine._last_aggregated_day = None
+    engine._aggregate_once()
+    assert len(ranges) == 1
+
+    # crossing midnight while running always aggregates the day that just ended
+    write_probe_rows(db_path, 1, today + timedelta(hours=23), 60, 60.0)
+    wall.moment = today + timedelta(days=1, hours=10, minutes=30)
+    ranges.clear()
+    engine._aggregate_once()
+    assert len(ranges) == 2
+    assert ranges[1] == (today, today + timedelta(days=1))
+    daily = quality_db.query_aggregates(db_path, "1d", to_iso_z(today), to_iso_z(today))
+    assert len(daily) == 1
+    assert daily[0]["attempts"] == 180
+
+
+async def test_aggregation_does_nothing_without_targets(db_path: str, monkeypatch: Any) -> None:
+    prepare_db(db_path, targets=0)
+    calls: list[Any] = []
+    monkeypatch.setattr(
+        quality_engine.aggregates, "aggregate_all", lambda *a, **k: calls.append(a)
+    )
+    engine = aggregate_engine(db_path, Wall(datetime(2026, 3, 2, tzinfo=timezone.utc)))
+
+    engine._aggregate_once()
+    assert calls == []
