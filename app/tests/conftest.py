@@ -17,8 +17,6 @@ from fastapi.testclient import TestClient
 from speedtest_app.db import ensure_db, set_setting
 from speedtest_app.time_utils import to_iso_z, utc_now
 
-FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
-
 
 @pytest.fixture
 def db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:

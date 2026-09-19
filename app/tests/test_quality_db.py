@@ -22,7 +22,7 @@ def _make_target(db_path: str, name: str = "unit-target") -> ProbeTarget:
     )
 
 
-def test_target_crud_round_trip(db_path, utc_iso):
+def test_target_crud_round_trip(db_path):
     target = _make_target(db_path)
 
     assert target.id > 0
