@@ -249,6 +249,15 @@ def hypotheses(
                 f"Możliwa przyczyna: problem dalej w trasie do {target_host} — straty "
                 f"({loss_text}) pojawiają się dopiero od przeskoku {hop_number}."
             )
+        if (
+            final_loss >= SILENT_HOP_LOSS_PCT
+            and len(hops) > 1
+            and onset == len(hops) - 1
+        ):
+            lines.append(
+                f"Uwaga: 100% strat tylko na ostatnim przeskoku może oznaczać, że "
+                f"{target_host} nie odpowiada na ICMP, a nie utratę ruchu."
+            )
         if gateway_lossy:
             lines.append(
                 "Możliwa przyczyna: problem w sieci lokalnej — straty widać już w pomiarze "
@@ -379,11 +388,13 @@ class DiagnosticsRunner:
             return
 
         self._last_run_at[event.target_id] = self._clock()
-        self._running += 1
         task = asyncio.create_task(
             self._diagnose(incident_id, event.target_id, host, settings),
             name=f"diagnostics-{incident_id}",
         )
+        # only a task that exists may hold a slot, and `_dispatch` never awaits,
+        # so the done callback cannot run before the slot is taken
+        self._running += 1
         self._tasks.add(task)
         task.add_done_callback(self._task_done)
 

@@ -236,6 +236,18 @@ class TestHypotheses:
         assert _phrasing_is_hypothetical(lines)
         assert any("nie dowodzi" in line for line in lines)
 
+    def test_a_silent_destination_is_not_read_as_a_broken_path(self) -> None:
+        hops = parse_mtr_json(
+            mtr_report(
+                hop(1, GATEWAY_HOST, 0.0),
+                hop(2, "198.51.100.1", 0.0),
+                hop(3, TARGET_HOST, 100.0),
+            )
+        )
+        lines = hypotheses(hops, TARGET_HOST, None)
+        assert _phrasing_is_hypothetical(lines)
+        assert any("nie odpowiada na ICMP" in line for line in lines)
+
     def test_no_loss_at_all_states_only_what_was_measured(self) -> None:
         hops = parse_mtr_json(mtr_report(hop(1, GATEWAY_HOST, 0.0), hop(2, TARGET_HOST, 0.0)))
         lines = hypotheses(hops, TARGET_HOST, None)
