@@ -12,6 +12,7 @@ import json
 from datetime import timedelta
 
 from speedtest_app import quality_db
+from speedtest_app.quality_views import RAW_RANGE_MAX_DAYS
 from speedtest_app.probe_types import Outcome, ProbeResult, Protocol
 from speedtest_app.time_utils import parse_dt, to_iso_z, utc_now
 
@@ -294,3 +295,44 @@ def test_stats_timeline_csv_and_report_agree_on_the_same_range(client) -> None:
     }
     assert timeline["bucket_seconds"] >= 10
     assert timeline["last_complete_bucket"] is not None
+
+
+# ---------------------------------------------------------------------------
+# the raw-range cap and the streaming export (review findings C1a, C1b)
+# ---------------------------------------------------------------------------
+
+def test_probes_csv_refuses_a_range_wider_than_the_raw_limit(client) -> None:
+    now = utc_now()
+    too_wide = client.get(
+        "/api/quality/export/probes.csv",
+        params={
+            "from": to_iso_z(now - timedelta(days=RAW_RANGE_MAX_DAYS, hours=1)),
+            "to": to_iso_z(now),
+        },
+    )
+    assert too_wide.status_code == 422
+    assert too_wide.json()["detail"] == "zakres surowych danych maks. 31 dni"
+
+    at_the_limit = client.get(
+        "/api/quality/export/probes.csv",
+        params={"from": to_iso_z(now - timedelta(days=RAW_RANGE_MAX_DAYS)), "to": to_iso_z(now)},
+    )
+    assert at_the_limit.status_code == 200
+
+
+def test_probes_csv_streams_from_the_cursor(client, monkeypatch) -> None:
+    """finding C1a: the export never builds the whole result set as a list."""
+    db_path = client.app_db_path
+    target_id, start, end = _seed_range(db_path)
+
+    def _refuse(*args, **kwargs):  # pragma: no cover - only runs on a regression
+        raise AssertionError("probes.csv must stream, not materialise the range")
+
+    monkeypatch.setattr(quality_db, "query_probe_results", _refuse)
+    rows = _csv_rows(
+        client.get("/api/quality/export/probes.csv", params={"from": start, "to": end}).text
+    )
+
+    assert rows[0][0] == "started_at_local"
+    assert len(rows) == 7  # header + the six rows inside [from, to]
+    assert all(row[3] for row in rows[1:])  # the target name is resolved per row

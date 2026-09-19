@@ -1,6 +1,7 @@
 """Accessors for the schema v2 tables."""
 from __future__ import annotations
 
+import inspect
 import sqlite3
 
 import pytest
@@ -255,3 +256,52 @@ def test_annotations_load_tests_diagnostics_and_devices(db_path, utc_iso):
     assert device["name"] == "MacBook Pro"
     assert device["token_hash"] == "deadbeef"
     assert {d["id"] for d in quality_db.list_devices(db_path)} == {"nas", "macbook"}
+
+
+def test_iter_probe_results_streams_the_same_rows_as_the_list_accessor(db_path, utc_iso):
+    """finding C1a: the streaming accessor is the list accessor, one page at a time."""
+    target = _make_target(db_path)
+    other = _make_target(db_path, name="other-streamed")
+    common = dict(duration_ms=1.0, outcome=Outcome.TIMEOUT, timeout_ms=1000)
+    rows = [
+        ProbeResult(target_id=target.id, protocol=Protocol.ICMP, started_at=utc_iso(i), **common)
+        for i in range(12)
+    ]
+    rows.append(
+        ProbeResult(target_id=other.id, protocol=Protocol.TCP, started_at=utc_iso(3), **common)
+    )
+    quality_db.insert_probe_results(db_path, rows)
+
+    streamed = quality_db.iter_probe_results(db_path, utc_iso(0), utc_iso(60), batch_size=5)
+    assert inspect.isgenerator(streamed)
+    assert list(streamed) == quality_db.query_probe_results(db_path, utc_iso(0), utc_iso(60))
+
+    for filters in ({"target_id": target.id}, {"protocol": "tcp"}, {"device_id": "nas"}):
+        assert list(
+            quality_db.iter_probe_results(db_path, utc_iso(0), utc_iso(60), batch_size=3, **filters)
+        ) == quality_db.query_probe_results(db_path, utc_iso(0), utc_iso(60), **filters)
+
+
+def test_iter_probe_results_does_not_materialise_the_whole_range(db_path, utc_iso):
+    """The generator yields before the cursor has been drained (finding C1a)."""
+    target = _make_target(db_path)
+    quality_db.insert_probe_results(
+        db_path,
+        [
+            ProbeResult(
+                target_id=target.id,
+                protocol=Protocol.ICMP,
+                started_at=utc_iso(i),
+                duration_ms=1.0,
+                outcome=Outcome.OK,
+                timeout_ms=1000,
+            )
+            for i in range(50)
+        ],
+    )
+
+    stream = quality_db.iter_probe_results(db_path, utc_iso(0), utc_iso(100), batch_size=5)
+    first = next(stream)
+    assert first["started_at"] == utc_iso(0)
+    # closing the abandoned generator must release the connection, not raise
+    stream.close()

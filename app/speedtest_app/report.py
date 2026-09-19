@@ -25,12 +25,15 @@ from .quality_settings import INCIDENT_THRESHOLD_KEYS, parse_settings, read_qual
 from .quality_views import (
     MEASURED_FROM,
     MIN_BUCKET_SECONDS,
+    aggregate_bucket_for,
+    aggregate_points,
     incident_span,
     incident_windows,
     legacy_tcp_counters,
     load_test_summaries,
     local_iso,
     range_payload,
+    raw_rows_by_target,
     retention_cutoff,
     target_payload,
     target_stats_entries,
@@ -245,20 +248,32 @@ def _chart_series(
     start: datetime,
     end: datetime,
     targets: Sequence[Any],
+    raw_rows: Mapping[int, Sequence[Mapping[str, Any]]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
-    """Loss and p95 series per target, from the timeline's own bucket function."""
+    """Loss and p95 series per target, from the timeline's own bucket function.
+
+    ``raw_rows`` holds the rows `build_report_model` already fetched for this
+    range, so one report request reads the raw range once rather than twice
+    (review finding C1b). A target whose raw rows are gone — or a range too
+    wide to read raw at all — is drawn from the same aggregates its row in the
+    table above is pooled from, so the picture cannot be empty under a
+    populated counter; p95 stays unknown there, because percentiles do not
+    pool (spec §6).
+    """
     bucket = _chart_bucket_seconds(start, end)
+    aggregate_bucket = aggregate_bucket_for(start, end, MAX_CHART_POINTS)
     include_date = (end - start) > timedelta(hours=24)
     loss: list[dict[str, Any]] = []
     p95: list[dict[str, Any]] = []
     for target in targets:
-        rows = quality_db.query_probe_results(
-            db_path, to_iso_z(start), to_iso_z(end), target_id=target.id
-        )
-        # `include_partial=True`: the chart covers the whole `[start, end]`
-        # exactly like the stats and the timeline (finding 1), so a reader
-        # comparing the picture with the numbers above it sees the same range.
-        points = bucket_rows(rows, bucket, start, end, include_partial=True)
+        rows = raw_rows.get(target.id) or ()
+        if rows:
+            # `include_partial=True`: the chart covers the whole `[start, end]`
+            # exactly like the stats and the timeline (finding 1), so a reader
+            # comparing the picture with the numbers above it sees the same range.
+            points = bucket_rows(rows, bucket, start, end, include_partial=True)
+        else:
+            points = aggregate_points(db_path, target.id, start, end, aggregate_bucket)
         labels = [_chart_label(parse_dt(point["t"]), include_date=include_date) for point in points]
         loss.append(
             {
@@ -406,7 +421,10 @@ def build_report_model(
     targets = quality_db.list_targets(db_path)
     names = {target.id: target.name for target in targets}
 
-    entries = target_stats_entries(db_path, start, end, targets)
+    # One read of the raw range per request, shared by the per-target table
+    # and the charts below (review finding C1b).
+    raw_rows = raw_rows_by_target(db_path, start, end, targets)
+    entries = target_stats_entries(db_path, start, end, targets, raw_rows=raw_rows)
     for entry in entries:
         entry["data_source_label"] = DATA_SOURCE_LABELS[entry["data_source"]]
 
@@ -440,7 +458,7 @@ def build_report_model(
             }
         )
 
-    loss_series, p95_series, chart_bucket = _chart_series(db_path, start, end, targets)
+    loss_series, p95_series, chart_bucket = _chart_series(db_path, start, end, targets, raw_rows)
 
     return {
         "generated_at": local_iso(now),

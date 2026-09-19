@@ -2,9 +2,9 @@
 
 One home for the download headers and the row-by-row streaming: the response
 body is written and sent one row at a time rather than assembled into a
-single string first. ``rows`` itself is an ordinary, fully materialised
-sequence built by the caller before this function ever runs — this module
-only avoids adding a second, whole-file copy of it in memory.
+single string first. ``rows`` may be any iterable, including a generator
+reading straight off a database cursor, so an export never has to hold the
+whole file — nor the whole result set — in memory (review finding C1a).
 """
 from __future__ import annotations
 
@@ -20,11 +20,16 @@ LINE_TERMINATOR = "\r\n"
 
 def csv_response(
     filename: str,
-    rows: Sequence[Sequence[Any]],
+    rows: Iterable[Sequence[Any]],
     *,
     comment_lines: Iterable[str] = (),
 ) -> StreamingResponse:
     """A CSV download of ``rows``, preceded by ``comment_lines`` verbatim.
+
+    ``rows`` is iterated exactly once, lazily, while the response body is
+    being written: a generator (see `quality_db.iter_probe_results`) is the
+    intended shape for anything that can be large, and the rows it yields are
+    never collected into a list on the way out.
 
     ``comment_lines`` carry their own ``#`` marker and are written before the
     header, which is how an export states that part of the range has no raw

@@ -32,10 +32,11 @@ from .network_tools import _validate_hostname
 from .quality_settings import read_quality_settings
 from .quality_views import (
     MEASURED_FROM,
+    RAW_RANGE_MAX_DAYS,
     _loads,
-    _stats_from_aggregates,
+    aggregate_bucket_for,
+    aggregate_points,
     db_path_of,
-    fully_contained_aggregates,
     get_range,
     incident_payload,
     incident_span,
@@ -45,6 +46,7 @@ from .quality_views import (
     localized,
     legacy_tcp_counters,
     range_payload,
+    raw_range_allowed,
     stats_payload,
     target_names,
     target_payload,
@@ -264,6 +266,10 @@ def api_quality_status(request: Request) -> dict[str, Any]:
         "session": _latest_session(db_path),
         "coverage_24h_pct": coverage_24h["coverage_pct"],
         "coverage_known": coverage_24h["coverage_known"],
+        # How wide a range the raw views and `probes.csv` will serve
+        # (review finding C1b) — the panel states the limit instead of
+        # letting the operator discover it as a 422.
+        "raw_range_max_days": RAW_RANGE_MAX_DAYS,
     }
 
 
@@ -285,32 +291,21 @@ def _coverage_payload(db_path: str, start: datetime, end: datetime) -> dict[str,
     return result
 
 
-def _aggregate_timeline_points(db_path: str, target_id: int, start: datetime, end: datetime) -> list[dict[str, Any]]:
-    """Hourly aggregates mapped to the timeline shape (spec §14, finding 2c).
+def _aggregate_timeline_points(
+    db_path: str, target_id: int, start: datetime, end: datetime, bucket: str
+) -> list[dict[str, Any]]:
+    """Aggregates of ``bucket`` mapped to the timeline shape (spec §14, finding 2c).
 
     Only buckets that fit completely inside ``[start, end]`` are used — the
     same set `target_stats_entries` pools — so a target's timeline always
-    sums to its own stats total, aggregate fallback or not.
+    sums to its own stats total, aggregate fallback or not. `bucket` comes
+    from `aggregate_bucket_for`, which is what keeps this path under the same
+    2000-point cap as the raw one (review finding I6).
     """
-    rows = fully_contained_aggregates(db_path, "1h", start, end, target_id)
-    points: list[dict[str, Any]] = []
-    for row in rows:
-        stats = _stats_from_aggregates([row])
-        points.append(
-            {
-                "t": local_iso(row["bucket_start"]),
-                "attempts": stats.attempts,
-                "ok": stats.ok,
-                "timeouts": stats.timeouts,
-                "errors": stats.errors,
-                "loss_pct": stats.loss_pct,
-                "p50": None,
-                "p95": None,
-                "max": None,
-                "partial": False,
-            }
-        )
-    return points
+    return [
+        {**point, "t": local_iso(point["t"])}
+        for point in aggregate_points(db_path, target_id, start, end, bucket)
+    ]
 
 
 @router.get("/quality/timeline")
@@ -330,28 +325,42 @@ def api_quality_timeline(
     series is drawing on, and `last_complete_bucket` only ever reflects `raw`
     coverage — the live panel's "not measured yet" signal has no equivalent
     once the data is a historical rollup.
+
+    A range wider than `RAW_RANGE_MAX_DAYS` takes the aggregate path for every
+    target, whether or not raw rows survive for it (review finding C1b): a
+    month of raw rows is the widest window this box can materialise. On that
+    path each series also states the `bucket` its points are made of.
     """
     db_path = db_path_of(request)
     bucket = timeline_bucket_seconds(bucket_seconds, pr.start, pr.end)
     start_iso, end_iso = to_iso_z(pr.start), to_iso_z(pr.end)
+    allow_raw = raw_range_allowed(pr.start, pr.end)
+    aggregate_bucket = aggregate_bucket_for(pr.start, pr.end)
 
     targets = quality_db.list_targets(db_path)
     series = []
     complete_buckets = 0
     for target in targets:
-        rows = quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
+        rows = (
+            quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
+            if allow_raw
+            else []
+        )
         if rows:
             raw_points = bucket_rows(rows, bucket, pr.start, pr.end, include_partial=True)
             points = [{**point, "t": local_iso(point["t"])} for point in raw_points]
             complete_buckets = max(complete_buckets, sum(1 for p in raw_points if not p["partial"]))
             source = "raw"
         else:
-            points = _aggregate_timeline_points(db_path, target.id, pr.start, pr.end)
+            points = _aggregate_timeline_points(
+                db_path, target.id, pr.start, pr.end, aggregate_bucket
+            )
             source = "aggregates" if points else "none"
         series.append(
             {
                 "target": target_payload(target),
                 "data_source": source,
+                "bucket": aggregate_bucket if source == "aggregates" else None,
                 "points": points,
             }
         )

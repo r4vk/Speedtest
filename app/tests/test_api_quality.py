@@ -10,7 +10,7 @@ import json
 from datetime import timedelta
 from types import SimpleNamespace
 
-from speedtest_app import api_quality, quality_db
+from speedtest_app import api_quality, quality_db, quality_views
 from speedtest_app.db import db_conn
 from speedtest_app.probe_types import Outcome, ProbeResult, Protocol
 from speedtest_app.stats import compute_stats
@@ -671,3 +671,112 @@ def test_an_unparsable_range_is_a_422_not_a_500(client) -> None:
     for path in ("/api/quality/stats", "/api/quality/timeline", "/api/quality/incidents"):
         response = client.get(path, params={"from": "not-a-date"})
         assert response.status_code == 422, path
+
+
+# ---------------------------------------------------------------------------
+# the raw-range cap and the aggregate point cap (review findings C1b, I6)
+# ---------------------------------------------------------------------------
+
+def _day_aggregate(db_path: str, target_id: int, bucket_start, attempts: int) -> None:
+    quality_db.upsert_aggregate(
+        db_path,
+        {
+            "target_id": target_id,
+            "protocol": "icmp",
+            "bucket": "1d",
+            "bucket_start": to_iso_z(bucket_start),
+            "attempts": attempts,
+            "ok_count": attempts,
+            "timeout_count": 0,
+            "error_count": 0,
+            "loss_pct": 0.0,
+            "rtt_p95_ms": 20.0,
+            "percentiles_from_raw": 0,
+            "computed_at": to_iso_z(utc_now()),
+        },
+    )
+
+
+def test_status_states_the_raw_range_limit(client) -> None:
+    payload = client.get("/api/quality/status").json()
+    assert payload["raw_range_max_days"] == quality_views.RAW_RANGE_MAX_DAYS == 31
+
+
+def test_stats_of_a_range_wider_than_the_raw_limit_use_aggregates(client) -> None:
+    """finding C1b: a two-month range never materialises raw rows, even if they exist."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="wide-range")
+    now = utc_now().replace(minute=0, second=0, microsecond=0)
+    start = now - timedelta(days=60)
+    # raw rows inside the range *and* an aggregate for an older hour of it
+    _seed_results(db_path, target.id, now - timedelta(days=10))
+    _hour_aggregate(db_path, target.id, start + timedelta(days=1), attempts=3600)
+
+    payload = client.get(
+        "/api/quality/stats", params={"from": to_iso_z(start), "to": to_iso_z(now)}
+    ).json()
+    entry = next(t for t in payload["targets"] if t["target"]["id"] == target.id)
+    assert entry["data_source"] == "aggregates"
+    assert entry["stats"]["attempts"] == 3600
+
+    # just inside the limit the same target is served from raw rows
+    narrow = client.get(
+        "/api/quality/stats",
+        params={
+            "from": to_iso_z(now - timedelta(days=quality_views.RAW_RANGE_MAX_DAYS)),
+            "to": to_iso_z(now),
+        },
+    ).json()
+    narrow_entry = next(t for t in narrow["targets"] if t["target"]["id"] == target.id)
+    assert narrow_entry["data_source"] == "raw"
+
+
+def test_timeline_of_a_three_month_range_uses_daily_aggregates(client) -> None:
+    """finding I6: the aggregate fallback is capped the way the raw path is."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="quarter")
+    now = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = now - timedelta(days=92)
+    _day_aggregate(db_path, target.id, start + timedelta(days=1), attempts=86400)
+    # an hourly aggregate inside the same range must not be the one picked
+    _hour_aggregate(db_path, target.id, start + timedelta(days=1), attempts=3600)
+
+    payload = client.get(
+        "/api/quality/timeline", params={"from": to_iso_z(start), "to": to_iso_z(now)}
+    ).json()
+    series = next(t for t in payload["targets"] if t["target"]["id"] == target.id)
+
+    assert series["data_source"] == "aggregates"
+    assert series["bucket"] == "1d"
+    assert [point["attempts"] for point in series["points"]] == [86400]
+    assert len(series["points"]) <= 2000
+
+    # the same range in the stats endpoint pools the same buckets
+    stats = client.get(
+        "/api/quality/stats", params={"from": to_iso_z(start), "to": to_iso_z(now)}
+    ).json()
+    entry = next(t for t in stats["targets"] if t["target"]["id"] == target.id)
+    assert entry["stats"]["attempts"] == 86400
+
+
+def test_timeline_keeps_hourly_buckets_while_they_fit_the_budget(client) -> None:
+    db_path = client.app_db_path
+    target = _target(db_path, name="hourly-budget")
+    hour_start = utc_now().replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
+    _hour_aggregate(db_path, target.id, hour_start, attempts=100)
+
+    payload = client.get(
+        "/api/quality/timeline",
+        params={"from": to_iso_z(hour_start), "to": to_iso_z(hour_start + timedelta(hours=2))},
+    ).json()
+    series = next(t for t in payload["targets"] if t["target"]["id"] == target.id)
+    assert series["bucket"] == "1h"
+    assert series["data_source"] == "aggregates"
+
+
+def test_aggregate_bucket_for_switches_at_the_point_budget() -> None:
+    now = utc_now()
+    assert quality_views.aggregate_bucket_for(now - timedelta(days=30), now) == "1h"
+    # 2000 h is the cap; a hair more has to drop to daily rows
+    assert quality_views.aggregate_bucket_for(now - timedelta(hours=2000), now) == "1h"
+    assert quality_views.aggregate_bucket_for(now - timedelta(hours=2001), now) == "1d"

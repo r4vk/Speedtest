@@ -9,16 +9,18 @@ returning a short file without explanation (spec §14).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterator, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from . import quality_db
 from .quality_views import (
     AGGREGATE_BUCKETS,
+    RAW_RANGE_MAX_DAYS,
     db_path_of,
     get_range,
     load_test_summaries,
+    raw_range_allowed,
     retention_cutoff,
     target_names,
     tz_name,
@@ -49,53 +51,77 @@ def _retention_comments(db_path: str, start: datetime, now: datetime) -> list[st
     return [RETENTION_CSV_COMMENT.format(when=to_local_display(cutoff))]
 
 
+#: Header of `probes.csv`; the streaming generator yields it first.
+PROBE_CSV_HEADER: tuple[str, ...] = (
+    "started_at_local",
+    "started_at_utc",
+    "device_id",
+    "target",
+    "protocol",
+    "outcome",
+    "rtt_ms",
+    "timeout_ms",
+    "resolved_ip",
+    "ip_family",
+    "error_kind",
+    "error_detail",
+    "load_test_id",
+)
+
+
+def _probe_csv_rows(
+    db_path: str, pr: ParsedRange, target_id: int | None, names: Mapping[int, str]
+) -> Iterator[list[Any]]:
+    """The header and one list per raw row, straight off the cursor.
+
+    A generator on purpose (review finding C1a): the export used to fetch the
+    whole range and then build a second, equally large list of CSV rows on top
+    of it, which is ~640 MB for the default 24 h of the seeded targets. Here
+    exactly one row exists at a time.
+    """
+    yield list(PROBE_CSV_HEADER)
+    for row in quality_db.iter_probe_results(
+        db_path, to_iso_z(pr.start), to_iso_z(pr.end), target_id=target_id
+    ):
+        yield [
+            to_local_display(parse_dt(row["started_at"])),
+            row["started_at"],
+            row["device_id"],
+            names.get(int(row["target_id"]), str(row["target_id"])),
+            row["protocol"],
+            row["outcome"],
+            row["rtt_ms"] if row["rtt_ms"] is not None else "",
+            row["timeout_ms"],
+            row["resolved_ip"] or "",
+            row["ip_family"] if row["ip_family"] is not None else "",
+            row["error_kind"] or "",
+            row["error_detail"] or "",
+            row["load_test_id"] if row["load_test_id"] is not None else "",
+        ]
+
+
 @router.get("/quality/export/probes.csv")
 def export_probes_csv(
     request: Request,
     pr: ParsedRange = Depends(get_range),
     target_id: int | None = Query(default=None),
 ):
+    if not raw_range_allowed(pr.start, pr.end):
+        # Stating the limit is better than streaming for ten minutes and
+        # dying on the last row (review finding C1b); the aggregates export
+        # covers arbitrarily wide ranges.
+        raise HTTPException(
+            status_code=422,
+            detail=f"zakres surowych danych maks. {RAW_RANGE_MAX_DAYS} dni",
+        )
     db_path = db_path_of(request)
     names = target_names(db_path)
-    rows: list[list[Any]] = [
-        [
-            "started_at_local",
-            "started_at_utc",
-            "device_id",
-            "target",
-            "protocol",
-            "outcome",
-            "rtt_ms",
-            "timeout_ms",
-            "resolved_ip",
-            "ip_family",
-            "error_kind",
-            "error_detail",
-            "load_test_id",
-        ]
-    ]
-    for row in quality_db.query_probe_results(
-        db_path, to_iso_z(pr.start), to_iso_z(pr.end), target_id=target_id
-    ):
-        rows.append(
-            [
-                to_local_display(parse_dt(row["started_at"])),
-                row["started_at"],
-                row["device_id"],
-                names.get(int(row["target_id"]), str(row["target_id"])),
-                row["protocol"],
-                row["outcome"],
-                row["rtt_ms"] if row["rtt_ms"] is not None else "",
-                row["timeout_ms"],
-                row["resolved_ip"] or "",
-                row["ip_family"] if row["ip_family"] is not None else "",
-                row["error_kind"] or "",
-                row["error_detail"] or "",
-                row["load_test_id"] if row["load_test_id"] is not None else "",
-            ]
-        )
     comments = [_timezone_comment(), *_retention_comments(db_path, pr.start, utc_now())]
-    return csv_response("probes.csv", rows, comment_lines=comments)
+    return csv_response(
+        "probes.csv",
+        _probe_csv_rows(db_path, pr, target_id, names),
+        comment_lines=comments,
+    )
 
 
 @router.get("/quality/export/incidents.csv")

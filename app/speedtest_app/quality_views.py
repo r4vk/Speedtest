@@ -54,6 +54,35 @@ MAX_TIMELINE_POINTS = 2000
 AGGREGATE_BUCKETS = ("1h", "1d")
 AGGREGATE_BUCKET_SECONDS: dict[str, int] = {"1h": 3600, "1d": 86400}
 
+#: Widest range that may be served from raw rows (review finding C1b).
+#:
+#: A raw row costs ~1 kB resident once it is a `dict`, and the seeded targets
+#: produce ~370 000 rows a day, so an unbounded range is an out-of-memory kill
+#: on the NAS this runs on — and an OOM kill loses the probe buffer, which is
+#: exactly the coverage the feature exists to guarantee. Beyond this span the
+#: views fall back to the hourly/daily aggregates (`data_source:
+#: "aggregates"`) even when raw rows are still there, and `probes.csv` refuses
+#: with 422 rather than dying halfway through the download.
+RAW_RANGE_MAX_DAYS = 31
+
+
+def raw_range_allowed(start: datetime, end: datetime) -> bool:
+    """Whether `[start, end]` is narrow enough to read raw rows for."""
+    return (end - start) <= timedelta(days=RAW_RANGE_MAX_DAYS)
+
+
+def aggregate_bucket_for(start: datetime, end: datetime, max_points: int = MAX_TIMELINE_POINTS) -> str:
+    """`"1h"` while hourly buckets fit the point budget, `"1d"` beyond it.
+
+    The raw timeline is capped at `MAX_TIMELINE_POINTS` per target by
+    `timeline_bucket_seconds`; the aggregate fallback — the path *every* range
+    older than `retention_raw_days` takes — needs the same bound, or a
+    one-year view answers with 8760 points per target (review finding I6).
+    """
+    span = max(0.0, (end - start).total_seconds())
+    hourly = math.ceil(span / AGGREGATE_BUCKET_SECONDS["1h"]) if span > 0 else 0
+    return "1h" if hourly <= max(1, max_points) else "1d"
+
 
 # ---------------------------------------------------------------------------
 # request plumbing
@@ -192,11 +221,69 @@ def fully_contained_aggregates(
     return [row for row in rows if parse_dt(str(row["bucket_start"])) + width <= end]
 
 
+def aggregate_points(
+    db_path: str, target_id: int, start: datetime, end: datetime, bucket: str
+) -> list[dict[str, Any]]:
+    """Fully-contained aggregate rows in the timeline's point shape (spec §14).
+
+    Only buckets that fit completely inside ``[start, end]`` are used — the
+    same set `target_stats_entries` pools — so a target's timeline always sums
+    to its own stats total, aggregate fallback or not. ``t`` is the stored
+    UTC timestamp; the callers localise it the way they localise every other
+    timestamp they emit.
+    """
+    points: list[dict[str, Any]] = []
+    for row in fully_contained_aggregates(db_path, bucket, start, end, target_id):
+        stats = _stats_from_aggregates([row])
+        points.append(
+            {
+                "t": str(row["bucket_start"]),
+                "attempts": stats.attempts,
+                "ok": stats.ok,
+                "timeouts": stats.timeouts,
+                "errors": stats.errors,
+                "loss_pct": stats.loss_pct,
+                # Percentiles are not poolable across buckets (spec §6): the
+                # aggregate path reports counters and says nothing it cannot
+                # know.
+                "p50": None,
+                "p95": None,
+                "max": None,
+                "partial": False,
+            }
+        )
+    return points
+
+
+def raw_rows_by_target(
+    db_path: str,
+    start: datetime,
+    end: datetime,
+    targets: Sequence[ProbeTarget],
+) -> dict[int, list[dict[str, Any]]]:
+    """Each target's raw rows for the range, fetched exactly once.
+
+    The report needs the same rows twice (the per-target table and the
+    charts); fetching them once and passing them around is what keeps one
+    report request from materialising the range twice (review finding C1b).
+    Beyond `RAW_RANGE_MAX_DAYS` nothing is read at all and every target gets
+    an empty list, which sends the callers down the aggregate path.
+    """
+    if not raw_range_allowed(start, end):
+        return {target.id: [] for target in targets}
+    start_iso, end_iso = to_iso_z(start), to_iso_z(end)
+    return {
+        target.id: quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
+        for target in targets
+    }
+
+
 def target_stats_entries(
     db_path: str,
     start: datetime,
     end: datetime,
     targets: Sequence[ProbeTarget] | None = None,
+    raw_rows: Mapping[int, Sequence[Mapping[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Per-target counters and statistics for the range, enabled targets included.
 
@@ -209,21 +296,35 @@ def target_stats_entries(
     span of the pooled buckets for `aggregates`, and `None` for `none` — a
     short sub-hour range can legitimately have no fully-contained aggregate at
     all, and that must never be confused with "the target was silent".
+
+    A range wider than `RAW_RANGE_MAX_DAYS` never reads raw rows, even when
+    they are still there (review finding C1b): it takes the aggregate path and
+    labels itself `aggregates`, which is the honest description of numbers
+    pooled from rollups. ``raw_rows`` lets a caller that already fetched the
+    rows for this very range (the report) hand them over instead of paying for
+    a second query.
     """
     start_iso, end_iso = to_iso_z(start), to_iso_z(end)
+    allow_raw = raw_range_allowed(start, end)
+    bucket = aggregate_bucket_for(start, end)
     entries: list[dict[str, Any]] = []
     for target in targets if targets is not None else quality_db.list_targets(db_path):
-        rows = quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
+        if raw_rows is not None:
+            rows: Sequence[Mapping[str, Any]] = raw_rows.get(target.id) or ()
+        elif allow_raw:
+            rows = quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
+        else:
+            rows = ()
         covered_from: datetime | None
         covered_to: datetime | None
         if rows:
             stats, source = compute_stats(rows), "raw"
             covered_from, covered_to = start, end
         else:
-            aggregates = fully_contained_aggregates(db_path, "1h", start, end, target.id)
+            aggregates = fully_contained_aggregates(db_path, bucket, start, end, target.id)
             if aggregates:
                 stats, source = _stats_from_aggregates(aggregates), "aggregates"
-                width = timedelta(seconds=AGGREGATE_BUCKET_SECONDS["1h"])
+                width = timedelta(seconds=AGGREGATE_BUCKET_SECONDS[bucket])
                 starts = [parse_dt(str(row["bucket_start"])) for row in aggregates]
                 covered_from, covered_to = min(starts), max(starts) + width
             else:

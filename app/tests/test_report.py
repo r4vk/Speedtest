@@ -303,3 +303,96 @@ def test_report_model_shares_the_incident_configuration(client) -> None:
     assert model["config"]["targets"]
     assert model["incidents"][0]["kind"] == "outage"
     assert model["incidents"][0]["windows"][0]["verdict"] == "outage"
+
+
+# ---------------------------------------------------------------------------
+# one read of the raw range per report (review finding C1b)
+# ---------------------------------------------------------------------------
+
+def test_report_reads_the_raw_range_once_per_target(client, monkeypatch) -> None:
+    """The table and the charts share one fetch instead of querying twice."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="single-fetch")
+    now = utc_now().replace(microsecond=0)
+    start = now - timedelta(minutes=10)
+    _seed(db_path, target.id, start)
+
+    calls: list[dict] = []
+    original = quality_db.query_probe_results
+
+    def _counting(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(quality_db, "query_probe_results", _counting)
+    model = report.build_report_model(db_path, start, now, app_version="1.0.0", now=now)
+
+    targets = quality_db.list_targets(db_path)
+    # one fetch per target for the range, and nothing else (`_latency_under_load`
+    # only runs for a load test, and there is none here)
+    assert len(calls) == len(targets)
+    entry = next(t for t in model["targets"] if t["target"]["id"] == target.id)
+    assert entry["data_source"] == "raw"
+    assert "polyline" in model["charts"]["loss"]
+
+
+def test_report_charts_fall_back_to_aggregates_when_raw_rows_are_gone(client) -> None:
+    """A populated table under an empty chart would contradict itself."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="agg-chart")
+    now = utc_now()
+    bucket_start = (now - timedelta(days=20)).replace(minute=0, second=0, microsecond=0)
+    quality_db.upsert_aggregate(
+        db_path,
+        {
+            "target_id": target.id,
+            "protocol": "icmp",
+            "bucket": "1h",
+            "bucket_start": to_iso_z(bucket_start),
+            "attempts": 3600,
+            "ok_count": 3000,
+            "timeout_count": 600,
+            "error_count": 0,
+            "loss_pct": 600 * 100 / 3600,
+            "rtt_p95_ms": 30.0,
+            "percentiles_from_raw": 0,
+            "computed_at": to_iso_z(now),
+        },
+    )
+
+    model = report.build_report_model(
+        db_path,
+        bucket_start - timedelta(hours=1),
+        bucket_start + timedelta(hours=2),
+        app_version="1.0.0",
+        now=now,
+    )
+    entry = next(t for t in model["targets"] if t["target"]["id"] == target.id)
+    assert entry["data_source"] == "aggregates"
+    # the loss chart carries the pooled bucket; p95 stays unknown (spec §6)
+    assert "brak danych" not in model["charts"]["loss"]
+    assert "brak danych" in model["charts"]["p95"]
+
+
+def test_report_of_a_range_wider_than_the_raw_limit_uses_aggregates(client, monkeypatch) -> None:
+    """finding C1b: the report is bound by the same raw-range cap as the API."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="wide-report")
+    now = utc_now().replace(microsecond=0)
+    _seed(db_path, target.id, now - timedelta(minutes=10))
+
+    calls: list[tuple] = []
+    original = quality_db.query_probe_results
+
+    def _counting(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(quality_db, "query_probe_results", _counting)
+    model = report.build_report_model(
+        db_path, now - timedelta(days=60), now, app_version="1.0.0", now=now
+    )
+
+    assert calls == []  # nothing read a raw row for a 60 day range
+    entry = next(t for t in model["targets"] if t["target"]["id"] == target.id)
+    assert entry["data_source"] in {"aggregates", "none"}

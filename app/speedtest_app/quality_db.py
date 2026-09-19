@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .db import db_conn
 from .probe_types import ProbeResult, ProbeTarget
@@ -259,13 +259,19 @@ def insert_probe_results(db_path: str, rows: Sequence[ProbeResult]) -> int:
         return conn.total_changes - before
 
 
-def query_probe_results(
-    db_path: str,
+def _probe_results_query(
     start_iso: str,
     end_iso: str,
-    target_id: int | None = None,
-    protocol: str | None = None,
-) -> list[dict[str, Any]]:
+    target_id: int | None,
+    protocol: str | None,
+    device_id: str | None,
+) -> tuple[str, tuple[Any, ...]]:
+    """The one SELECT behind both the list and the streaming accessor.
+
+    `query_probe_results` and `iter_probe_results` must return exactly the
+    same rows in exactly the same order, or a CSV export and the statistics
+    built from the same range would disagree.
+    """
     where = ["started_at >= ?", "started_at <= ?"]
     params: list[Any] = [start_iso, end_iso]
     if target_id is not None:
@@ -274,12 +280,67 @@ def query_probe_results(
     if protocol is not None:
         where.append("protocol = ?")
         params.append(str(protocol))
+    if device_id is not None:
+        where.append("device_id = ?")
+        params.append(str(device_id))
+    sql = (
+        f"SELECT * FROM probe_results WHERE {' AND '.join(where)} "
+        "ORDER BY started_at ASC, id ASC"
+    )
+    return sql, tuple(params)
+
+
+def query_probe_results(
+    db_path: str,
+    start_iso: str,
+    end_iso: str,
+    target_id: int | None = None,
+    protocol: str | None = None,
+    device_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Every matching raw row, materialised.
+
+    Callers that only walk the rows once should prefer `iter_probe_results`:
+    a wide range holds ~1 kB per row, so a whole day of the seeded targets is
+    a few hundred megabytes. The view layer caps how wide a range may be
+    served from raw rows at all (`quality_views.RAW_RANGE_MAX_DAYS`).
+    """
+    sql, params = _probe_results_query(start_iso, end_iso, target_id, protocol, device_id)
     with db_conn(db_path) as conn:
-        rows = conn.execute(
-            f"SELECT * FROM probe_results WHERE {' AND '.join(where)} ORDER BY started_at ASC, id ASC",
-            tuple(params),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return _dicts(rows)
+
+
+def iter_probe_results(
+    db_path: str,
+    start_iso: str,
+    end_iso: str,
+    target_id: int | None = None,
+    protocol: str | None = None,
+    device_id: str | None = None,
+    batch_size: int = 5000,
+) -> Iterator[dict[str, Any]]:
+    """The same rows as `query_probe_results`, streamed off the cursor.
+
+    The generator holds one connection and one `fetchmany(batch_size)` page in
+    memory, never the whole range, which is what lets `probes.csv` export a
+    month of probes without the result set ever existing as a Python list
+    (review finding C1a). Closing the generator closes the connection, so a
+    client that abandons the download does not leak one.
+    """
+    sql, params = _probe_results_query(start_iso, end_iso, target_id, protocol, device_id)
+    page = max(1, int(batch_size))
+    with db_conn(db_path) as conn:
+        cursor = conn.execute(sql, params)
+        try:
+            while True:
+                rows = cursor.fetchmany(page)
+                if not rows:
+                    return
+                for row in rows:
+                    yield dict(row)
+        finally:
+            cursor.close()
 
 
 def last_result_per_target(db_path: str) -> dict[int, dict[str, Any]]:
