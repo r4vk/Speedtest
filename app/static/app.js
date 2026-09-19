@@ -267,11 +267,66 @@ function addSchedule(type) {
   updateCfgDirty();
 }
 
-function setCfgMsg(text, ok) {
+function setCfgMsg(text, ok, holdMs) {
   const el = qs("cfg-msg");
   el.textContent = text;
   el.style.color = ok ? "rgba(34,197,94,.95)" : "rgba(239,68,68,.95)";
-  setTimeout(() => { el.textContent = ""; el.style.color = ""; }, 3500);
+  setTimeout(() => { el.textContent = ""; el.style.color = ""; }, holdMs ?? 3500);
+}
+
+/** „1 pole", „3 pola", „7 pól" — polska odmiana po liczbie. */
+function polishFields(n) {
+  if (n === 1) return "1 pole";
+  const last = n % 10;
+  const teen = n % 100;
+  const many = last >= 2 && last <= 4 && !(teen >= 12 && teen <= 14);
+  return `${n} ${many ? "pola" : "pól"}`;
+}
+
+/**
+ * Odpowiedź błędu z `PUT /api/config` w postaci zdania dla człowieka.
+ *
+ * FastAPI odsyła przy 422 listę `detail` z lokalizacją i komunikatem dla
+ * każdego pola. Wklejenie surowego JSON-a do panelu daje ścianę tekstu, z
+ * której nie widać, które pole poprawić — tutaj zostaje nazwa pola (z etykiety
+ * formularza) i powód, a reszta jest policzona.
+ *
+ * @param {number} status kod HTTP
+ * @param {string} text surowe ciało odpowiedzi
+ * @param {(field: string) => string} labelFor nazwa pola widoczna w formularzu
+ */
+function formatConfigError(status, text, labelFor) {
+  let detail;
+  try {
+    detail = JSON.parse(text).detail;
+  } catch {
+    return `Błąd zapisu (HTTP ${status}): ${String(text).slice(0, 200)}`;
+  }
+  if (typeof detail === "string") return `Nie zapisano: ${detail}`;
+  if (!Array.isArray(detail) || detail.length === 0) {
+    return `Błąd zapisu (HTTP ${status}).`;
+  }
+  const items = detail.map((d) => {
+    const loc = Array.isArray(d?.loc) ? d.loc[d.loc.length - 1] : null;
+    const name = loc ? labelFor(String(loc)) : "pole";
+    return `${name} — ${d?.msg ?? "nieprawidłowa wartość"}`;
+  });
+  const head = items.slice(0, 3).join("; ");
+  const rest = items.length > 3 ? ` (i ${items.length - 3} więcej)` : "";
+  return `Nie zapisano — popraw ${polishFields(items.length)}: ${head}${rest}`;
+}
+
+/** Etykieta pola ustawień z formularza; klucz API, gdy pola nie ma. */
+function configFieldLabel(field) {
+  const el = qs(`q-cfg-${String(field).replace(/_/g, "-")}`);
+  const label = el?.closest("label");
+  if (!label) return field;
+  const clone = label.cloneNode(true);
+  for (const node of clone.querySelectorAll("input, select, textarea, .hint-inline")) {
+    node.remove();
+  }
+  const text = clone.textContent.trim().replace(/\s+/g, " ");
+  return text || field;
 }
 
 function selectedSpeedtestMode() {
@@ -319,7 +374,7 @@ async function saveConfig() {
   });
   if (!resp.ok) {
     const text = await resp.text();
-    setCfgMsg(`Błąd zapisu: ${text}`, false);
+    setCfgMsg(formatConfigError(resp.status, text, configFieldLabel), false, 20000);
     return;
   }
   const newCfg = await resp.json();
