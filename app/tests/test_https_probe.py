@@ -8,7 +8,10 @@ fixture pair committed under ``tests/fixtures/tls/``.
 from __future__ import annotations
 
 import asyncio
+import gc
 import ssl
+import time
+import warnings
 from pathlib import Path
 
 import pytest
@@ -227,3 +230,116 @@ class TestHttpsProbeTls:
         assert result.stages is not None
         assert "tls_ms" in result.stages
         assert "ttfb_ms" in result.stages
+
+
+class TestRunStageDoesNotLeakCoroutines:
+    """Regression tests for the eager-coroutine-construction bug (review round 1).
+
+    ``_run_stage`` used to take an already-built awaitable, so an expired
+    deadline raised ``_StageTimeout`` without ever awaiting (or closing) it,
+    producing a "coroutine was never awaited" RuntimeWarning on GC. It now
+    takes a zero-arg factory invoked only after the budget check passes.
+    """
+
+    async def test_expired_deadline_never_calls_the_factory(self):
+        stages: dict[str, float] = {}
+        calls: list[object] = []
+
+        def factory():
+            async def _inner():
+                return "unused"  # pragma: no cover - never reached
+
+            coro = _inner()
+            calls.append(coro)
+            return coro
+
+        expired_deadline = time.perf_counter() - 1.0
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with pytest.raises(https_probe._StageTimeout) as exc_info:
+                await https_probe._run_stage("ttfb", expired_deadline, factory, stages)
+            del exc_info  # keep the traceback frame from pinning anything
+            gc.collect()
+
+        assert calls == []  # factory must not run once the budget is already spent
+        assert stages == {}
+        runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+        assert not runtime_warnings, [str(w.message) for w in runtime_warnings]
+
+    async def test_expired_deadline_raises_stage_timeout_naming_the_stage(self):
+        stages: dict[str, float] = {}
+        expired_deadline = time.perf_counter() - 1.0
+
+        with pytest.raises(https_probe._StageTimeout) as exc_info:
+            await https_probe._run_stage(
+                "connect", expired_deadline, lambda: asyncio.sleep(0), stages
+            )
+
+        assert exc_info.value.stage == "connect"
+
+    async def test_probe_with_zero_budget_times_out_without_runtime_warning(self):
+        """End-to-end repro: timeout_ms=0 expires the deadline before the very
+        first stage (dns) runs, which used to leak an un-awaited coroutine.
+        """
+        server, port = await start_plain_server(respond_204())
+        try:
+            target = make_target(f"http://127.0.0.1:{port}/", timeout_ms=0)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = await https_probe.probe(target)
+                gc.collect()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+        assert result.outcome == Outcome.TIMEOUT
+        assert result.error_detail == "dns exceeded budget"
+        runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+        assert not runtime_warnings, [str(w.message) for w in runtime_warnings]
+
+
+class TestBuildRequest:
+    def test_plain_hostname_host_header(self):
+        req = https_probe._build_request("example.com", "/status")
+        lines = req.split(b"\r\n")
+        assert lines[0] == b"GET /status HTTP/1.1"
+        assert b"Host: example.com" in lines
+
+    def test_ipv6_literal_hostname_is_bracketed(self):
+        req = https_probe._build_request("::1", "/")
+        assert b"Host: [::1]" in req.split(b"\r\n")
+
+
+class _FakeReader:
+    """Feeds fixed-size chunks with no CRLFCRLF, so the header loop can only
+    stop via the size bound - used to pin the exact 64 KiB cutoff."""
+
+    def __init__(self, chunk: bytes) -> None:
+        self._chunk = chunk
+        self.calls = 0
+
+    async def read(self, n: int) -> bytes:
+        self.calls += 1
+        return self._chunk[:n]
+
+
+class _FakeWriter:
+    def write(self, data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        return None
+
+
+class TestHeaderReadBound:
+    async def test_stops_at_exact_64kib_without_one_extra_chunk(self):
+        reader = _FakeReader(b"x" * 4096)
+        writer = _FakeWriter()
+
+        with pytest.raises(ValueError):
+            await https_probe._fetch_status(reader, writer, "host", "/")
+
+        # 64 KiB of 4 KiB chunks is exactly 16 reads; `<=` instead of `<`
+        # would let a 17th read push the buffer past the 64 KiB cap.
+        assert reader.calls == https_probe._MAX_HEADER_BYTES // 4096

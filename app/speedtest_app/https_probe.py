@@ -16,7 +16,7 @@ import logging
 import socket
 import ssl
 import time
-from typing import Awaitable, TypeVar
+from typing import Awaitable, Callable, TypeVar
 from urllib.parse import urlsplit
 
 from .probe_types import Outcome, ProbeResult, ProbeTarget, Protocol
@@ -60,19 +60,23 @@ def _truncate(detail: str) -> str:
 
 
 async def _run_stage(
-    stage: str, deadline: float, awaitable: Awaitable[_T], stages: dict[str, float]
+    stage: str, deadline: float, factory: Callable[[], Awaitable[_T]], stages: dict[str, float]
 ) -> _T:
-    """Await ``awaitable`` within what remains of the overall budget.
+    """Call ``factory()`` and await its result within what remains of the budget.
 
-    Records ``stages[f"{stage}_ms"]`` on success; raises ``_StageTimeout``
-    when the remaining budget is already spent or is exceeded while waiting.
+    ``factory`` takes no arguments and returns the awaitable to run; it is
+    only invoked once the remaining budget is confirmed positive, so an
+    already-expired deadline never constructs (and thereby leaks) a coroutine
+    that is never awaited. Records ``stages[f"{stage}_ms"]`` on success;
+    raises ``_StageTimeout`` when the remaining budget is already spent or is
+    exceeded while waiting.
     """
     remaining = deadline - time.perf_counter()
     if remaining <= 0:
         raise _StageTimeout(stage)
     stage_start = time.perf_counter()
     try:
-        result = await asyncio.wait_for(awaitable, timeout=remaining)
+        result = await asyncio.wait_for(factory(), timeout=remaining)
     except asyncio.TimeoutError as exc:
         raise _StageTimeout(stage) from exc
     stages[f"{stage}_ms"] = (time.perf_counter() - stage_start) * 1000
@@ -101,19 +105,28 @@ def _parse_status_line(data: bytes) -> int:
         raise ValueError(f"malformed status code: {parts[1][:20]!r}") from exc
 
 
-async def _fetch_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, hostname: str, path: str) -> int:
-    request = (
+def _host_header(hostname: str) -> str:
+    """Format ``hostname`` for the ``Host:`` header, bracketing IPv6 literals."""
+    return f"[{hostname}]" if ":" in hostname else hostname
+
+
+def _build_request(hostname: str, path: str) -> bytes:
+    """Build the minimal GET request sent for the ttfb stage."""
+    return (
         f"GET {path} HTTP/1.1\r\n"
-        f"Host: {hostname}\r\n"
+        f"Host: {_host_header(hostname)}\r\n"
         f"User-Agent: {_USER_AGENT}\r\n"
         f"Accept: */*\r\n"
         f"Connection: close\r\n\r\n"
     ).encode("ascii")
-    writer.write(request)
+
+
+async def _fetch_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, hostname: str, path: str) -> int:
+    writer.write(_build_request(hostname, path))
     await writer.drain()
 
     buf = b""
-    while b"\r\n\r\n" not in buf and len(buf) <= _MAX_HEADER_BYTES:
+    while b"\r\n\r\n" not in buf and len(buf) < _MAX_HEADER_BYTES:
         chunk = await reader.read(4096)
         if not chunk:
             break
@@ -188,18 +201,21 @@ async def probe(target: ProbeTarget, *, timeout_ms: int | None = None) -> ProbeR
 
         try:
             resolved_ip, ip_family = await _run_stage(
-                "dns", deadline, _resolve_host(loop, hostname, port, family), stages
+                "dns", deadline, lambda: _resolve_host(loop, hostname, port, family), stages
             )
             reader, writer = await _run_stage(
-                "connect", deadline, asyncio.open_connection(resolved_ip, port), stages
+                "connect", deadline, lambda: asyncio.open_connection(resolved_ip, port), stages
             )
             if scheme == "https":
                 ctx = _ssl_context()
                 await _run_stage(
-                    "tls", deadline, writer.start_tls(ctx, server_hostname=hostname), stages
+                    "tls",
+                    deadline,
+                    lambda: writer.start_tls(ctx, server_hostname=hostname),
+                    stages,
                 )
             status = await _run_stage(
-                "ttfb", deadline, _fetch_status(reader, writer, hostname, path), stages
+                "ttfb", deadline, lambda: _fetch_status(reader, writer, hostname, path), stages
             )
         except _StageTimeout as exc:
             return _finish(
