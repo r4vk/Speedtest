@@ -250,57 +250,57 @@
               <div class="settings">
                 <label>
                   Okno oceny (s)
-                  <input id="q-cfg-incident-window-seconds" type="number" min="5" max="300" />
+                  <input id="q-cfg-incident-window-seconds" type="number" min="5" max="300" placeholder="10" />
                   <span class="hint-inline">długość okna próbek ocenianego pod kątem werdyktu</span>
                 </label>
                 <label>
                   Min. próbek w oknie
-                  <input id="q-cfg-incident-min-samples" type="number" min="1" max="1000" />
+                  <input id="q-cfg-incident-min-samples" type="number" min="1" max="1000" placeholder="5" />
                   <span class="hint-inline">poniżej tej liczby okno nie jest oceniane</span>
                 </label>
                 <label>
                   Próg straty (%)
-                  <input id="q-cfg-incident-loss-pct-threshold" type="number" min="0" max="100" step="0.1" />
+                  <input id="q-cfg-incident-loss-pct-threshold" type="number" min="0" max="100" step="0.1" placeholder="20" />
                   <span class="hint-inline">strata powyżej progu = pogorszenie</span>
                 </label>
                 <label>
                   Próg straty — awaria (%)
-                  <input id="q-cfg-incident-outage-loss-pct" type="number" min="0" max="100" step="0.1" />
+                  <input id="q-cfg-incident-outage-loss-pct" type="number" min="0" max="100" step="0.1" placeholder="100" />
                   <span class="hint-inline">strata powyżej progu = awaria (outage)</span>
                 </label>
                 <label>
                   Próg p95 RTT (ms)
-                  <input id="q-cfg-incident-rtt-p95-ms-threshold" type="number" min="1" max="10000" />
+                  <input id="q-cfg-incident-rtt-p95-ms-threshold" type="number" min="1" max="10000" placeholder="150" />
                   <span class="hint-inline">p95 powyżej progu = pogorszenie</span>
                 </label>
                 <label>
                   Próg serii błędów
-                  <input id="q-cfg-incident-fail-streak-threshold" type="number" min="1" max="1000" />
+                  <input id="q-cfg-incident-fail-streak-threshold" type="number" min="1" max="1000" placeholder="3" />
                   <span class="hint-inline">liczba kolejnych timeoutów = pogorszenie</span>
                 </label>
                 <label>
                   Okna otwierające incydent
-                  <input id="q-cfg-incident-open-windows" type="number" min="1" max="100" />
+                  <input id="q-cfg-incident-open-windows" type="number" min="1" max="100" placeholder="2" />
                   <span class="hint-inline">ile złych okien z rzędu otwiera incydent</span>
                 </label>
                 <label>
                   Czas stabilizacji (s)
-                  <input id="q-cfg-incident-stabilization-seconds" type="number" min="0" max="86400" />
+                  <input id="q-cfg-incident-stabilization-seconds" type="number" min="0" max="86400" placeholder="60" />
                   <span class="hint-inline">czas dobrych wyników przed zamknięciem incydentu</span>
                 </label>
                 <label>
                   Zamknięcie przy braku danych (s)
-                  <input id="q-cfg-incident-no-data-close-seconds" type="number" min="0" max="86400" />
+                  <input id="q-cfg-incident-no-data-close-seconds" type="number" min="0" max="86400" placeholder="300" />
                   <span class="hint-inline">po tylu sekundach bez danych incydent zamyka się sam</span>
                 </label>
                 <label>
                   Okno oceny dostępności (s)
-                  <input id="q-cfg-availability-eval-seconds" type="number" min="1" max="60" />
+                  <input id="q-cfg-availability-eval-seconds" type="number" min="1" max="60" placeholder="5" />
                   <span class="hint-inline">jak często oceniana jest dostępność łącza</span>
                 </label>
                 <label>
                   Okno próbek dostępności (s)
-                  <input id="q-cfg-availability-window-seconds" type="number" min="5" max="300" />
+                  <input id="q-cfg-availability-window-seconds" type="number" min="5" max="300" placeholder="10" />
                   <span class="hint-inline">okno próbek użyte do oceny up/down</span>
                 </label>
               </div>
@@ -316,31 +316,37 @@
                   <span class="toggle-label">Włączone</span>
                 </label>
               </div>
-              <p class="hint">Wymagany własny lub uzgodniony serwer iperf3 — testy celowo generują ruch w sieci.</p>
+              <p class="hint">Wymagany własny lub uzgodniony serwer iperf3 (komenda iperf3 -s po drugiej stronie) — testy celowo generują ruch w sieci, więc uruchamiaj je rzadko i krótko.</p>
               <div class="settings">
                 <label>
                   Serwer iperf3
                   <input id="q-cfg-load-test-server" type="text" placeholder="iperf.example.com" />
+                  <span class="hint-inline">host serwera iperf3 w Twojej sieci; puste = testy obciążeniowe wyłączone</span>
                 </label>
                 <label>
                   Port
-                  <input id="q-cfg-load-test-port" type="number" min="1" max="65535" />
+                  <input id="q-cfg-load-test-port" type="number" min="1" max="65535" placeholder="5201" />
+                  <span class="hint-inline">port, na którym nasłuchuje iperf3 -s (domyślny port iperf3 to 5201)</span>
                 </label>
                 <label>
                   Interwał (s)
-                  <input id="q-cfg-load-test-interval-seconds" type="number" min="60" max="604800" />
+                  <input id="q-cfg-load-test-interval-seconds" type="number" min="60" max="604800" placeholder="21600" />
+                  <span class="hint-inline">odstęp między testami; generują realny ruch, więc trzymaj go rzadkim — domyślnie co 6 h (21600 s)</span>
                 </label>
                 <label>
                   Czas trwania (s)
-                  <input id="q-cfg-load-test-duration-seconds" type="number" min="1" max="60" />
+                  <input id="q-cfg-load-test-duration-seconds" type="number" min="1" max="60" placeholder="10" />
+                  <span class="hint-inline">długość jednego przebiegu iperf3 na kierunek; im dłużej, tym więcej wygenerowanego ruchu</span>
                 </label>
                 <label>
                   Docelowy bitrate UDP
                   <input id="q-cfg-load-test-udp-bitrate" type="text" placeholder="10M" />
+                  <span class="hint-inline">zadana przepustowość UDP, np. 10M = 10 Mbit/s (K/M/G jako mnożnik); ustaw poniżej realnej przepustowości łącza, inaczej zmierzona strata to przeciążenie od samego testu, nie jakość łącza — dotyczy tylko trybu UDP</span>
                 </label>
                 <label>
                   Długość datagramu (B)
-                  <input id="q-cfg-load-test-datagram-len" type="number" min="64" max="65507" />
+                  <input id="q-cfg-load-test-datagram-len" type="number" min="64" max="65507" placeholder="1200" />
+                  <span class="hint-inline">rozmiar pojedynczego datagramu UDP; 1200 B mieści się poniżej typowego MTU (1500 B) i unika fragmentacji IP — dotyczy tylko trybu UDP</span>
                 </label>
                 <label>
                   Rodzaj testu
@@ -348,6 +354,7 @@
                     <option value="iperf_udp">iperf3 UDP</option>
                     <option value="iperf_tcp">iperf3 TCP</option>
                   </select>
+                  <span class="hint-inline">UDP mierzy stratę pakietów i jitter przy zadanym bitrate; TCP mierzy tylko osiąganą przepustowość (bez straty/jitter)</span>
                 </label>
                 <label>
                   Kierunek
@@ -356,6 +363,7 @@
                     <option value="upload">upload</option>
                     <option value="download">download</option>
                   </select>
+                  <span class="hint-inline">„oba" uruchamia upload, a po nim download — sekwencyjnie, nie równolegle; jeden kierunek skraca czas trwania testu</span>
                 </label>
               </div>
             </div>
@@ -370,55 +378,67 @@
                   <span class="toggle-label">Włączona</span>
                 </label>
               </div>
+              <p class="hint">Diagnostyka (mtr) uruchamia się automatycznie w reakcji na incydent — nie da się jej odpalić ręcznie z tego panelu. Odrzucona próba jest zapisywana jako "rate_limited", a nie po cichu pomijana.</p>
               <div class="settings">
                 <label>
                   Min. odstęp między diagnozami (s)
-                  <input id="q-cfg-diagnostics-min-interval-seconds" type="number" min="30" max="86400" />
+                  <input id="q-cfg-diagnostics-min-interval-seconds" type="number" min="30" max="86400" placeholder="300" />
+                  <span class="hint-inline">minimalny odstęp między kolejnymi mtr dla tego samego celu (nawet w różnych incydentach) — chroni przed lawiną procesów przy długiej awarii</span>
                 </label>
                 <label>
                   Maks. diagnoz na incydent
-                  <input id="q-cfg-diagnostics-max-per-incident" type="number" min="1" max="20" />
+                  <input id="q-cfg-diagnostics-max-per-incident" type="number" min="1" max="20" placeholder="3" />
+                  <span class="hint-inline">ile razy mtr może się uruchomić w ramach jednego incydentu, zanim kolejne próby będą odrzucane</span>
                 </label>
                 <label>
                   Maks. równoległych diagnoz
-                  <input id="q-cfg-diagnostics-max-concurrent" type="number" min="1" max="4" />
+                  <input id="q-cfg-diagnostics-max-concurrent" type="number" min="1" max="4" placeholder="1" />
+                  <span class="hint-inline">ile procesów mtr może biec jednocześnie; więcej niż kilka samo obciążyłoby łącze, które diagnostyka ma opisać</span>
                 </label>
                 <label>
                   Liczba pakietów MTR
-                  <input id="q-cfg-diagnostics-mtr-count" type="number" min="1" max="100" />
+                  <input id="q-cfg-diagnostics-mtr-count" type="number" min="1" max="100" placeholder="10" />
+                  <span class="hint-inline">liczba pakietów wysyłanych do każdego przeskoku trasy — więcej pakietów to dokładniejszy pomiar straty na hopie, ale dłuższy czas jednej diagnozy</span>
                 </label>
                 <label>
                   Timeout MTR (s)
-                  <input id="q-cfg-diagnostics-mtr-timeout-seconds" type="number" min="10" max="600" />
+                  <input id="q-cfg-diagnostics-mtr-timeout-seconds" type="number" min="10" max="600" placeholder="90" />
+                  <span class="hint-inline">maksymalny czas jednego uruchomienia mtr, zanim zostanie przerwane — razem z liczbą pakietów ogranicza czas trwania pojedynczej diagnozy</span>
                 </label>
               </div>
             </div>
 
             <!-- Sekcja: Retencja -->
-            <div class="settings-section">
+            <div class="settings-section" id="q-retention-section">
               <div class="section-header">
                 <h4>Retencja</h4>
               </div>
+              <p class="hint">Zanim surowe dane zostaną usunięte, są agregowane godzinowo i dziennie — historia jakości łącza zostaje dostępna bezterminowo, tylko z mniejszą rozdzielczością. Próg usuwania jest zaokrąglany w dół do początku doby UTC, więc surowe wiersze mogą przeżyć do ok. 24 h dłużej niż ustawiona wartość (nigdy krócej). Niezależnie od retencji, widoki oparte na surowych wierszach (statystyki, wykres, raport, probes.csv) pokazują maksymalnie 31 dni wstecz — dłuższe okresy eksportuje się przez aggregates.csv.</p>
               <div class="settings">
                 <label>
                   Surowe pomiary (dni)
-                  <input id="q-cfg-retention-raw-days" type="number" min="1" max="3650" />
+                  <input id="q-cfg-retention-raw-days" type="number" min="1" max="3650" placeholder="14" />
+                  <span class="hint-inline">największa tabela — jeden cel pingowany co 1 s to ok. 86 400 wierszy dziennie; krócej niż domyślne 14 dni oszczędza miejsce, dłużej ułatwia analizę awarii sprzed tygodni</span>
                 </label>
                 <label>
                   Agregaty godzinowe/dobowe (dni)
-                  <input id="q-cfg-retention-aggregate-days" type="number" min="1" max="3650" />
+                  <input id="q-cfg-retention-aggregate-days" type="number" min="1" max="3650" placeholder="365" />
+                  <span class="hint-inline">zagregowane dane zajmują dużo mniej miejsca niż surowe wiersze, dlatego można je trzymać znacznie dłużej</span>
                 </label>
                 <label>
                   Incydenty (dni)
-                  <input id="q-cfg-retention-incident-days" type="number" min="1" max="3650" />
+                  <input id="q-cfg-retention-incident-days" type="number" min="1" max="3650" placeholder="730" />
+                  <span class="hint-inline">historia incydentów — mała tabela, zwykle warto trzymać najdłużej ze wszystkich</span>
                 </label>
                 <label>
                   Surowe wyniki testów obciążeniowych (dni)
-                  <input id="q-cfg-retention-load-test-raw-days" type="number" min="1" max="3650" />
+                  <input id="q-cfg-retention-load-test-raw-days" type="number" min="1" max="3650" placeholder="90" />
+                  <span class="hint-inline">surowy JSON każdego przebiegu iperf3; przy rzadkich testach rośnie wolno, więc można go trzymać dłużej niż surowe pomiary sond</span>
                 </label>
                 <label>
                   Diagnostyka (dni)
-                  <input id="q-cfg-retention-diagnostics-days" type="number" min="1" max="3650" />
+                  <input id="q-cfg-retention-diagnostics-days" type="number" min="1" max="3650" placeholder="365" />
+                  <span class="hint-inline">wyniki mtr z incydentów — powstają tylko przy awariach, więc tabela rośnie wolno</span>
                 </label>
               </div>
             </div>
