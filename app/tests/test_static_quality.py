@@ -236,3 +236,42 @@ def test_a_write_failure_alone_is_enough_to_warn():
     result = _run_node(program)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.strip())["lost"] == "utracone pomiary: 0 (błędy zapisu: 3)"
+
+
+# ---------------------------------------------------------------------------
+# _escHtml is safe in an attribute (review minor)
+# ---------------------------------------------------------------------------
+
+
+def _esc_html_source() -> str:
+    """The `_escHtml` helper alone: app.js as a whole needs a browser."""
+    match = re.search(r"const _ESC_HTML = .*?\nfunction _escHtml\(str\) \{.*?\n\}", APP_JS, re.S)
+    assert match, "the _escHtml helper could not be located in app.js"
+    return match.group(0)
+
+
+@requires_node
+def test_esc_html_escapes_quotes_so_attribute_use_is_safe():
+    # quality.js puts the result inside title="…", so a bare `"` would end
+    # the attribute; the old textContent/innerHTML trick did not escape it.
+    payload = '<b>a</b> "quoted" \'single\' & more'
+    program = (
+        f"{_esc_html_source()}\n"
+        f"console.log(JSON.stringify(_escHtml({json.dumps(payload)})));"
+    )
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip()) == (
+        "&lt;b&gt;a&lt;/b&gt; &quot;quoted&quot; &#39;single&#39; &amp; more"
+    )
+
+
+@requires_node
+def test_esc_html_turns_nullish_into_an_empty_string():
+    program = (
+        f"{_esc_html_source()}\n"
+        "console.log(JSON.stringify([_escHtml(null), _escHtml(undefined), _escHtml(0)]));"
+    )
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip()) == ["", "", "0"]

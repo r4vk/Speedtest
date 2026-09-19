@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from speedtest_app import quality_db
+from speedtest_app import network_tools, quality_db
 from speedtest_app.diagnostics import (
     DiagnosticsRunner,
     DiagnosticsSettings,
@@ -758,3 +758,43 @@ async def test_an_unusable_gateway_host_does_not_stop_the_target_trace(db_path: 
     statuses = [(row["status"], row["error"]) for row in rows(db_path, incident_id)]
     assert ("error", "invalid host") in statuses
     assert any(status == "ok" for status, _error in statuses)
+
+
+# ---------------------------------------------------------------------------
+# the subprocess helper (review minor)
+# ---------------------------------------------------------------------------
+
+
+class SlowProc:
+    """A child that never finishes on its own."""
+
+    def __init__(self) -> None:
+        self.killed = False
+        self.returncode = 0
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        return 0
+
+
+async def test_run_subprocess_kills_the_child_when_cancelled(monkeypatch) -> None:
+    """`DiagnosticsRunner.close()` must not leave a 90 s mtr behind."""
+    proc = SlowProc()
+
+    async def fake_exec(*argv: str, **kwargs: Any) -> SlowProc:
+        return proc
+
+    monkeypatch.setattr(network_tools.asyncio, "create_subprocess_exec", fake_exec)
+    task = asyncio.create_task(network_tools._run_subprocess(["mtr", "--report", "x"], timeout=90.0))
+    await drain(5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert proc.killed is True

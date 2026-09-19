@@ -357,10 +357,11 @@ def test_timeline_clamps_the_bucket_and_caps_the_points(client) -> None:
     fine_series = next(t for t in fine["targets"] if t["target"]["id"] == target.id)
     points = fine_series["points"]
     assert fine_series["data_source"] == "raw"
-    # 12 complete 10 s windows plus the closing partial point at `to` (finding
-    # 1): the range divides evenly, but a row could still sit exactly on `to`.
-    assert len(points) == 13
-    assert [point["partial"] for point in points] == [False] * 12 + [True]
+    # 12 complete 10 s windows: the range divides evenly and no row sits
+    # exactly on `to`, so the zero-width closing point is left out — it could
+    # only ever have said "no data" about no time at all.
+    assert len(points) == 12
+    assert [point["partial"] for point in points] == [False] * 12
     assert sum(point["attempts"] for point in points) == 12
     assert fine["last_complete_bucket"] is not None
 

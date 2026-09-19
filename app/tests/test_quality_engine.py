@@ -329,6 +329,40 @@ async def test_startup_closes_incidents_left_open_by_a_crash(db_path: str) -> No
         assert row["ended_at"] == fake.iso_at(_START - 500.0)
 
 
+async def test_startup_closes_load_tests_left_running_by_a_crash(db_path: str) -> None:
+    """A killed process used to leave a `running` row visible for ever."""
+    fake = FakeTime()
+    probes = FakeProbes(fake)
+    prepare_db(db_path)
+    stale_id = quality_db.insert_load_test(
+        db_path,
+        started_at=fake.iso_at(_START - 600.0),
+        kind="iperf_udp",
+        direction="both",
+        server="iperf.example",
+        params_json="{}",
+        status="running",
+    )
+    finished_id = quality_db.insert_load_test(
+        db_path,
+        started_at=fake.iso_at(_START - 500.0),
+        ended_at=fake.iso_at(_START - 490.0),
+        kind="iperf_udp",
+        direction="both",
+        server="iperf.example",
+        params_json="{}",
+        status="ok",
+    )
+    engine = make_engine(db_path, fake, probes)
+
+    async with running(engine):
+        stale = quality_db.get_load_test(db_path, stale_id)
+        assert (stale["status"], stale["error"]) == ("error", "interrupted")
+        assert stale["ended_at"] == fake.iso_at(_START)
+        # a finished row is left exactly as it was
+        assert quality_db.get_load_test(db_path, finished_id)["status"] == "ok"
+
+
 # ---------------------------------------------------------------------------
 # (e) blocked probes
 # ---------------------------------------------------------------------------

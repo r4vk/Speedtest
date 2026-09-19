@@ -634,6 +634,20 @@ def get_load_test(db_path: str, load_test_id: int) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def close_running_load_tests(db_path: str, now_iso: str, error: str) -> int:
+    """Close every `running` row: the recovery after an unclean stop."""
+    with db_conn(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE load_tests
+            SET status = 'error', error = ?, ended_at = COALESCE(ended_at, ?)
+            WHERE status = 'running'
+            """,
+            (error, now_iso),
+        )
+        return cur.rowcount
+
+
 def query_load_tests(db_path: str, start_iso: str, end_iso: str) -> list[dict[str, Any]]:
     """Load tests overlapping the range (a running test has `ended_at IS NULL`)."""
     with db_conn(db_path) as conn:

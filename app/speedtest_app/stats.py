@@ -311,5 +311,11 @@ def bucket_rows(
     if tail_start > end:
         return points
     tail = [row for ts, row in _timed(rows) if ts is not None and tail_start <= ts <= end]
+    if tail_start == end and not tail:
+        # A zero-width closing point cannot mean "no data": there is no time in
+        # it for a measurement to have happened. It is still emitted when a row
+        # sits exactly on `end_at` — `query_probe_results` is inclusive there,
+        # so dropping it would stop the buckets summing to the statistics.
+        return points
     points.append(_bucket_point(tail_start, compute_stats(tail), partial=True))
     return points

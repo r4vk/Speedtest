@@ -390,3 +390,33 @@ def test_bucket_rows_without_a_range_has_no_partial_tail():
             "loss_pct": 0.0, "p50": 10.0, "p95": 10.0, "max": 10.0, "partial": True,
         }
     ]
+
+
+def test_a_zero_width_tail_is_emitted_only_for_a_row_sitting_on_the_end():
+    """The closing point exists to carry `end_at` itself, not to pad the chart.
+
+    `query_probe_results` is inclusive on both ends, so a row stamped exactly
+    `end_at` belongs to no complete window and would be lost without the
+    partial point — the buckets would stop summing to the statistics. With no
+    such row the zero-width point would say "no data" about no time at all,
+    so it is left out.
+    """
+    end = BASE + timedelta(seconds=120)
+    inside = [_ok(5, 10.0)]
+    on_the_edge = [_ok(5, 10.0), _ok(120, 11.0)]
+
+    without = stats.bucket_rows(inside, 10.0, BASE, end, include_partial=True)
+    assert len(without) == 12
+    assert [point["partial"] for point in without] == [False] * 12
+    assert sum(point["attempts"] for point in without) == 1
+
+    with_edge = stats.bucket_rows(on_the_edge, 10.0, BASE, end, include_partial=True)
+    assert len(with_edge) == 13
+    assert with_edge[-1]["partial"] is True
+    assert with_edge[-1]["attempts"] == 1
+    assert sum(point["attempts"] for point in with_edge) == 2
+
+    # a tail with real width is still emitted, empty or not
+    ragged = stats.bucket_rows(inside, 10.0, BASE, end + timedelta(seconds=3), include_partial=True)
+    assert ragged[-1]["partial"] is True
+    assert ragged[-1]["attempts"] == 0

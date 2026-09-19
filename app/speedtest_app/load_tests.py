@@ -223,6 +223,29 @@ def _direction_result(result: LoadTestResult) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+#: What a row left `running` by a kill is closed with at the next start.
+INTERRUPTED_ERROR = "interrupted"
+
+
+def close_stale_load_tests(db_path: str, now_iso: str | None = None) -> int:
+    """Close load tests an earlier crash left `running` (review minor).
+
+    `run_once` closes its row on every path it controls, including
+    cancellation — but not when the process is killed. Without this there is
+    no `_close_stale_incidents` equivalent for load tests, so such a row stays
+    `running` for ever in `/api/quality/load-tests` and in the CSV export.
+    """
+    stamp = now_iso or to_iso_z(utc_now())
+    try:
+        closed = quality_db.close_running_load_tests(db_path, stamp, INTERRUPTED_ERROR)
+    except Exception:
+        log.exception("Closing the load tests left running by an unclean stop failed")
+        return 0
+    if closed:
+        log.warning("closed %d load test(s) left running by an unclean stop", closed)
+    return closed
+
+
 class LoadTestRunner:
     """Runs load tests on a schedule and on demand, one at a time."""
 

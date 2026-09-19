@@ -30,7 +30,7 @@ from .incidents import (
     incident_row_from_state,
 )
 from .load_tests import SETTINGS_KEYS as LOAD_TEST_SETTINGS_KEYS
-from .load_tests import LoadTestRunner, LoadTestSettings
+from .load_tests import LoadTestRunner, LoadTestSettings, close_stale_load_tests
 from .probe_scheduler import ProbeFn, ProbeScheduler
 from .probe_types import ProbeResult, ProbeTarget, Protocol
 from .runtime import get_runtime
@@ -190,6 +190,7 @@ class QualityEngine:
             # visible proof that the measurement was impossible (spec §4.2).
             log.warning("ICMP is unavailable; ICMP targets will report errors")
         self._close_stale_incidents()
+        close_stale_load_tests(self._db_path, to_iso_z(self._wall_clock()))
         self._align_windows()
         await self.scheduler.start()
         self._tasks = [

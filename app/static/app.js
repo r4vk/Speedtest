@@ -1226,10 +1226,12 @@ const TOOL_GROUPS = [
 
 // ---- Tool rendering ----
 
+// Bezpieczne także w atrybucie: `textContent` -> `innerHTML` nie escapuje
+// cudzyslowow, a helper trafia m.in. do `title="..."` w quality.js.
+const _ESC_HTML = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
 function _escHtml(str) {
-  const d = document.createElement("div");
-  d.textContent = String(str ?? "");
-  return d.innerHTML;
+  return String(str ?? "").replace(/[&<>"']/g, (ch) => _ESC_HTML[ch]);
 }
 
 function renderToolsSection() {

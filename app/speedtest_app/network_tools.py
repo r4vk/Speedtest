@@ -125,6 +125,12 @@ async def _run_subprocess(
         proc.kill()
         await proc.wait()
         raise TimeoutError(f"Timeout ({timeout}s): {' '.join(cmd[:3])}")
+    except asyncio.CancelledError:
+        # A cancelled caller (shutdown, `DiagnosticsRunner.close`) must not
+        # leave a 90 s mtr running behind it.
+        proc.kill()
+        await proc.wait()
+        raise
 
 
 # ---------------------------------------------------------------------------
