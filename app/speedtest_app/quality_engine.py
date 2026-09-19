@@ -21,14 +21,19 @@ from . import aggregates, dns_probe, https_probe, icmp_probe, quality_db, stats,
 from .availability import AvailabilitySettings, AvailabilityTracker, evaluate, quality_state
 from .config import AppConfig
 from .db import end_blocked_period, get_settings, start_blocked_period
+from .diagnostics import SETTINGS_KEYS as DIAGNOSTICS_SETTINGS_KEYS
+from .diagnostics import DiagnosticsRunner, DiagnosticsSettings
 from .incidents import (
     IncidentEngine,
     IncidentEvent,
     IncidentSettings,
     incident_row_from_state,
 )
+from .load_tests import SETTINGS_KEYS as LOAD_TEST_SETTINGS_KEYS
+from .load_tests import LoadTestRunner, LoadTestSettings
 from .probe_scheduler import ProbeFn, ProbeScheduler
 from .probe_types import ProbeResult, ProbeTarget, Protocol
+from .runtime import get_runtime
 from .scheduler import _is_blocked_by_schedule
 from .time_utils import to_iso_z, utc_now
 
@@ -150,6 +155,27 @@ class QualityEngine:
             target_loader=self._load_targets,
         )
         self.scheduler.on_result(self._remember_result)
+        self.load_tests = LoadTestRunner(
+            self._db_path,
+            scheduler=self.scheduler,
+            # The speed test lock, so a load test and a speed test never
+            # overlap. It is resolved once, here: `main.lifespan` calls
+            # `init_runtime()` before it builds the engine, and a later
+            # `init_runtime()` would leave this holding the previous lock.
+            runtime_lock=get_runtime().lock,
+            settings_getter=self._read_load_test_settings,
+            clock=clock,
+            wall_clock=wall_clock,
+            sleep=sleep,
+        )
+        self.diagnostics = DiagnosticsRunner(
+            self._db_path,
+            settings_getter=self._read_diagnostics_settings,
+            gateway_host_getter=self.gateway_host,
+            clock=clock,
+            wall_clock=wall_clock,
+        )
+        self.subscribe(self.diagnostics.on_incident_event)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -171,6 +197,7 @@ class QualityEngine:
             asyncio.create_task(self._incident_loop(), name="quality-incidents"),
             asyncio.create_task(self._aggregation_loop(), name="quality-aggregation"),
             asyncio.create_task(self._settings_loop(), name="quality-settings"),
+            asyncio.create_task(self.load_tests.loop(), name="quality-load-tests"),
         ]
         log.info(
             "quality engine started: ICMP method %s, %d target(s)",
@@ -188,6 +215,7 @@ class QualityEngine:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self.diagnostics.close()
         self._close_open_incidents_for_shutdown()
         await self.scheduler.stop()
         await self.availability.drain()
@@ -228,6 +256,13 @@ class QualityEngine:
             return "schedule"
         return None
 
+    def gateway_host(self) -> str | None:
+        """Host of the enabled `gateway` target, for the diagnostics runner."""
+        for target in self.scheduler.targets():
+            if target.kind == "gateway" and target.enabled and target.host:
+                return target.host
+        return None
+
     def _probe_interval_for(self, target_id: int) -> float:
         for target in self.scheduler.targets():
             if target.id == target_id:
@@ -236,6 +271,16 @@ class QualityEngine:
 
     def _remember_result(self, result: ProbeResult) -> None:
         self._last_results[result.target_id] = result
+
+    # -- load tests --------------------------------------------------------
+
+    async def run_load_test(self, trigger: str = "manual") -> int:
+        """Run one load test now and return its `load_tests` row id.
+
+        Never raises for an unconfigured or busy monitor: the row itself says
+        `skipped` / `not_configured` / `speedtest_running`.
+        """
+        return await self.load_tests.run_once(trigger)
 
     # -- availability ------------------------------------------------------
 
@@ -519,11 +564,20 @@ class QualityEngine:
             self._availability_settings = availability_settings
 
     def _read_settings(self) -> dict[str, str]:
+        return self._read_keys(SETTINGS_KEYS)
+
+    def _read_keys(self, keys: list[str]) -> dict[str, str]:
         try:
-            return get_settings(self._db_path, SETTINGS_KEYS)
+            return get_settings(self._db_path, keys)
         except Exception:
             log.warning("Could not read the quality settings, keeping defaults", exc_info=True)
             return {}
+
+    def _read_load_test_settings(self) -> LoadTestSettings:
+        return LoadTestSettings.from_settings(self._read_keys(LOAD_TEST_SETTINGS_KEYS))
+
+    def _read_diagnostics_settings(self) -> DiagnosticsSettings:
+        return DiagnosticsSettings.from_settings(self._read_keys(DIAGNOSTICS_SETTINGS_KEYS))
 
     @property
     def availability_settings(self) -> AvailabilitySettings:
@@ -558,6 +612,8 @@ class QualityEngine:
             "icmp_method": self.icmp_method,
             "open_incidents": open_incidents,
             "blocked_reason": self._blocked_reason,
+            "load_test_running": self.load_tests.running,
+            "diagnostics_running": self.diagnostics.running,
             "scheduler": {
                 "buffered_rows": scheduler_stats.buffered_rows,
                 "dropped_rows": scheduler_stats.dropped_rows,
