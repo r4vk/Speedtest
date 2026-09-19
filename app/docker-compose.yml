@@ -23,6 +23,20 @@ services:
       # - SMTP_FROM=your-email@gmail.com
       # - SMTP_TO=recipient@example.com
       # - SMTP_USE_TLS=true
+      # Network quality monitoring (see app/README.md "Monitoring jakości łącza"):
+      # - GATEWAY_HOST=192.168.1.1
+      # - DEVICE_ID=nas
+      # - PROBE_MAX_CONCURRENCY=16
+      # - PROBE_FLUSH_SECONDS=5
+      # - PROBE_FLUSH_MAX=500
+      # - PROBE_BUFFER_HARD_MAX=20000
+    # Only needed if /api/quality/status reports icmp_method other than "dgram"
+    # (some Synology DSM/container setups block unprivileged ICMP sockets).
+    # Pick ONE of the two options below, not both:
+    # cap_add:
+    #   - NET_RAW
+    # sysctls:
+    #   - net.ipv4.ping_group_range=0 2147483647
 
 volumes:
   speedtest-data:
