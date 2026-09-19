@@ -41,6 +41,15 @@ docker cp r4vk-speedtest:/data/app-backup.db ./app-backup-$(date +%Y%m%d).db
 pliku "na żywo"), więc jest bezpieczny nawet przy trwających zapisach sond —
 nie trzeba nic zatrzymywać.
 
+Jeśli w obrazie nie ma narzędzia `sqlite3` (starsze wydania go nie
+instalowały — `sqlite3: not found`), to samo API wywołuje sam Python, który
+jest w obrazie zawsze:
+
+```bash
+docker exec r4vk-speedtest python -c "import sqlite3; s=sqlite3.connect('/data/app.db'); d=sqlite3.connect('/data/app-backup.db'); s.backup(d); d.close()"
+docker cp r4vk-speedtest:/data/app-backup.db ./app-backup-$(date +%Y%m%d).db
+```
+
 Alternatywnie, przy zatrzymanym kontenerze, można skopiować cały katalog
 danych (razem z ewentualnymi plikami `-wal`/`-shm`):
 

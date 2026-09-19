@@ -123,13 +123,13 @@ Każdy protokół ma własne, osobne metryki (strata pakietów, RTT p50/p95/p99,
 
 ### Konfiguracja monitoringu
 
-- `GATEWAY_HOST` (domyślnie: puste) — adres bramy domowej; puste = cel `gateway` pozostaje wyłączony (aplikacja celowo nie zgaduje domyślnej trasy kontenera jako "bramy domowej")
-- Cele pomiarowe (targets) edytuje się w UI lub przez `/api/quality/targets`; domyślny zestaw jest zakładany automatycznie przy pierwszym uruchomieniu
+- `GATEWAY_HOST` (domyślnie: puste) — adres bramy domowej; puste = cel `gateway` pozostaje wyłączony (aplikacja celowo nie zgaduje domyślnej trasy kontenera jako "bramy domowej"). Zmienna jest stosowana **przy każdym starcie**, ale tylko dopóki host celu `gateway` jest pusty: adres ustawiony w UI albo przez API nigdy nie jest nadpisywany przez restart. Wartość, która nie jest poprawnym hostem/IP, jest odrzucana z ostrzeżeniem w logu, a cel zostaje wyłączony.
+- Cele pomiarowe (targets) edytuje się w UI albo przez `GET/POST /api/targets` i `PUT/DELETE /api/targets/{id}`; domyślny zestaw jest zakładany automatycznie przy pierwszym uruchomieniu
 - `PROBE_MAX_CONCURRENCY` (domyślnie: `16`) — ile sond może biec równolegle
 - `PROBE_FLUSH_SECONDS` (domyślnie: `5`) i `PROBE_FLUSH_MAX` (domyślnie: `500`) — bufor zapisu wyników do SQLite, patrz niżej
 - `PROBE_BUFFER_HARD_MAX` (domyślnie: `20000`) — twardy limit wierszy trzymanych w pamięci
 - `DEVICE_ID` (domyślnie: `nas`) — identyfikator tego urządzenia pomiarowego
-- Progi incydentów, okno oceny dostępności, testy obciążeniowe (iperf3) i limity diagnostyki (mtr) konfiguruje się w UI (zapisywane w SQLite, działa bez restartu)
+- Progi incydentów, okno oceny dostępności, testy obciążeniowe (iperf3), limity diagnostyki (mtr) i wszystkie okresy retencji konfiguruje się w UI (zapisywane w SQLite, działa bez restartu)
 
 Test obciążeniowy (upload/download) wymaga **osobnego serwera iperf3** w tej samej sieci (np. `iperf3 -s` na innym urządzeniu) — kontener zawiera już klienta `iperf3`, ale nie uruchamia własnego serwera.
 
@@ -172,16 +172,24 @@ Zanim surowe wyniki sond (`probe_results`) zostaną usunięte, są agregowane go
 | Surowe dane testu obciążeniowego (`load_tests.raw_json`) | 90 dni | `retention_load_test_raw_days` |
 | Diagnostyka (`diagnostics`) | 365 dni | `retention_diagnostics_days` |
 
+> **Uwaga do tabeli:** próg usuwania danych surowych jest zaokrąglany w dół do początku doby UTC, żeby kubełek agregatu nigdy nie stracił części swoich wierszy surowych. W praktyce surowe wiersze żyją do ok. 24 h **dłużej** niż `retention_raw_days` (nigdy krócej) — 14 dni to gwarantowane minimum, nie twarda granica.
+
 Zadanie retencji uruchamia się co godzinę (pierwszy raz 60 s po starcie aplikacji). Bieżący stan i szacowany wzrost bazy zwraca `GET /api/quality/retention`.
 
 **Rząd wielkości:** jeden cel pomiarowy pingowany co 1 s to ok. 86 400 wierszy `probe_results` dziennie. Realny przyrost w bajtach na dzień (zależny od liczby aktywnych celów i ich interwałów) zwraca pole `estimated_raw_bytes_per_day` w `GET /api/quality/retention`, razem z projekcją na cały okres retencji (`estimated_raw_bytes_at_retention`).
 
 ### Eksport i raport
 
-- `GET /api/report/quality?from=...&to=...` — raport jakości łącza za wskazany zakres
-- Eksporty CSV — patrz sekcja **API** niżej
+- `GET /api/quality/report.html?from=...&to=...` — **raport do druku/PDF dla dostawcy** (ten sam, do którego prowadzi przycisk w panelu): pokrycie danych, dostępność, statystyki per cel, incydenty, wykresy i lista ograniczeń pomiaru
+- `GET /api/report/quality?from=...&to=...` — starszy raport jakości łącza w JSON (zachowany dla zgodności)
+- `GET /api/quality/export/probes.csv?from=...&to=...[&target_id=...]` — surowe wyniki sond
+- `GET /api/quality/export/incidents.csv?from=...&to=...` — incydenty
+- `GET /api/quality/export/aggregates.csv?from=...&to=...&bucket=1h|1d` — agregaty
+- `GET /api/quality/export/load-tests.csv?from=...&to=...` — testy obciążeniowe
 
 Dla zakresów starszych niż `retention_raw_days` surowe dane nie są już dostępne — raport i eksport CSV sygnalizują to zamiast pokazywać niekompletne dane bez ostrzeżenia.
+
+**Limit zakresu danych surowych:** widoki oparte na surowych wierszach (`/api/quality/stats`, `/api/quality/timeline`, raport i `probes.csv`) obsługują zakres do **31 dni** (`raw_range_max_days` w `GET /api/quality/status`). Szerszy zakres liczony jest z agregatów i jest tak oznaczony (`data_source: "aggregates"`), a `probes.csv` odpowiada wtedy `422` — jeden klik nie może zająć całej pamięci NAS-a. Dłuższe okresy eksportuje się przez `aggregates.csv`.
 
 ### Weryfikacja na NAS-ie (do wykonania)
 
@@ -191,6 +199,8 @@ To wydanie **nie zostało jeszcze zweryfikowane na prawdziwym Synology NAS**. Pr
 - [ ] czy `GATEWAY_HOST` wskazuje faktyczną bramę domową, a nie domyślną trasę kontenera
 - [ ] zużycie CPU/RAM/dysku podczas kilkudniowego pilotażu (kilka celów pingowanych co 1 s to ciągły, ale niewielki, narzut)
 - [ ] realny rozmiar `app.db` po kilku dniach w porównaniu z szacunkiem z `GET /api/quality/retention`
+- [ ] zużycie pamięci (RSS kontenera) w trakcie eksportu `probes.csv` dla pełnego, 31-dniowego zakresu
+- [ ] czy kopia zapasowa z `docs/operations.md` wykonuje się w obrazie (`sqlite3` albo wariant z `python -c`)
 
 ## Uruchomienie lokalnie
 
@@ -251,11 +261,15 @@ docker run -d --name r4vk-speedtest \
 - `GET /api/status`
 - `GET /api/speed?from=...&to=...`
 - `GET /api/outages?from=...&to=...`
-- `GET /api/report/quality?from=...&to=...`
+- `GET /api/report/quality?from=...&to=...` — starszy raport jakości (JSON)
+- `GET /api/quality/report.html?from=...&to=...` — raport do druku/PDF dla dostawcy
 - `GET /api/pings?from=...&to=...`
+- `GET /api/targets`, `POST /api/targets`, `PUT /api/targets/{id}`, `DELETE /api/targets/{id}` — cele pomiarowe
+- `GET /api/quality/status` — stan monitoringu (w tym `raw_range_max_days`)
 - `GET /api/quality/retention` — ustawienia retencji + szacowany wzrost bazy
 - `GET /api/export/speed.csv?from=...&to=...`
 - `GET /api/export/outages.csv?from=...&to=...`
 - `GET /api/export/pings.csv?from=...&to=...`
+- `GET /api/quality/export/{probes,incidents,aggregates,load-tests}.csv?from=...&to=...`
 
 Daty: ISO-8601, np. `2026-01-28T00:00:00Z`.

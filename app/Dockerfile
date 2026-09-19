@@ -21,7 +21,8 @@ RUN set -eux; \
       nmap \
       iproute2 \
       iputils-ping \
-      iperf3; \
+      iperf3 \
+      sqlite3; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/*; \
     rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* /usr/share/locale/*
 RUN pip install --no-cache-dir --no-compile -r /app/requirements.txt
