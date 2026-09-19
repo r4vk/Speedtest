@@ -105,6 +105,38 @@ def test_status_lists_open_incidents_in_local_time(client) -> None:
     assert not incident["started_at"].endswith("Z")
 
 
+def test_status_fields_win_over_whatever_the_engine_reports(client) -> None:
+    """finding 9: `**status` is spread first, so it can never override `now`/
+
+    `tz`/`session`/`coverage_24h_pct` — an engine that happened to return a
+    key of the same name must not be able to forge them.
+    """
+    client.app.state.quality_engine = SimpleNamespace(
+        status=lambda: {
+            "availability": "up",
+            "quality": "ok",
+            "lan_degraded": False,
+            "icmp_method": "raw",
+            "open_incidents": [],
+            "blocked_reason": None,
+            "scheduler": {"buffered_rows": 0, "dropped_rows": 0, "skipped_ticks": {}},
+            "targets": [],
+            "now": "not-a-real-time",
+            "tz": "NOWHERE",
+            "session": "forged",
+            "coverage_24h_pct": -1,
+        }
+    )
+    payload = client.get("/api/quality/status").json()
+    assert payload["now"] != "not-a-real-time"
+    assert payload["tz"] != "NOWHERE"
+    assert payload["session"] != "forged"
+    assert payload["coverage_24h_pct"] != -1
+    # the engine's own fields still come through
+    assert payload["availability"] == "up"
+    assert payload["quality"] == "ok"
+
+
 # ---------------------------------------------------------------------------
 # stats
 # ---------------------------------------------------------------------------
@@ -193,6 +225,120 @@ def test_legacy_tcp_is_null_without_history(client) -> None:
 
 
 # ---------------------------------------------------------------------------
+# aggregate fallback once raw rows are gone (finding 2)
+# ---------------------------------------------------------------------------
+
+def _hour_aggregate(db_path: str, target_id: int, bucket_start, attempts: int) -> None:
+    quality_db.upsert_aggregate(
+        db_path,
+        {
+            "target_id": target_id,
+            "protocol": "icmp",
+            "bucket": "1h",
+            "bucket_start": to_iso_z(bucket_start),
+            "attempts": attempts,
+            "ok_count": attempts,
+            "timeout_count": 0,
+            "error_count": 0,
+            "loss_pct": 0.0,
+            "rtt_p95_ms": 20.0,
+            "percentiles_from_raw": 0,
+            "computed_at": to_iso_z(utc_now()),
+        },
+    )
+
+
+def test_stats_aggregate_fallback_never_reports_a_sub_hour_range_as_the_whole_hour(client) -> None:
+    """`?from=10:00&to=10:30` used to pool the whole hourly bucket (finding 2)."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="agg-sub-hour")
+    hour_start = utc_now().replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
+    _hour_aggregate(db_path, target.id, hour_start, attempts=100)
+
+    payload = client.get(
+        "/api/quality/stats",
+        params={"from": to_iso_z(hour_start), "to": to_iso_z(hour_start + timedelta(minutes=30))},
+    ).json()
+    entry = next(t for t in payload["targets"] if t["target"]["id"] == target.id)
+
+    assert entry["data_source"] == "none"
+    assert entry["stats"]["attempts"] == 0
+    assert entry["covered_from"] is None
+    assert entry["covered_to"] is None
+
+
+def test_stats_aggregate_fallback_never_pools_a_bucket_the_range_only_touches(client) -> None:
+    """`?from=10:20&to=11:00` used to be able to grab the next, unrelated hour
+
+    because the old filter only checked ``bucket_start <= to`` (finding 2):
+    a bucket_start exactly at `to` would qualify even though the range never
+    overlaps that hour by more than an instant.
+    """
+    db_path = client.app_db_path
+    target = _target(db_path, name="agg-boundary")
+    hour_start = utc_now().replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
+    _hour_aggregate(db_path, target.id, hour_start, attempts=100)
+    _hour_aggregate(db_path, target.id, hour_start + timedelta(hours=1), attempts=999)
+
+    payload = client.get(
+        "/api/quality/stats",
+        params={
+            "from": to_iso_z(hour_start + timedelta(minutes=20)),
+            "to": to_iso_z(hour_start + timedelta(hours=1)),
+        },
+    ).json()
+    entry = next(t for t in payload["targets"] if t["target"]["id"] == target.id)
+
+    assert entry["data_source"] == "none"
+    assert entry["stats"]["attempts"] == 0
+
+
+def test_stats_aggregate_fallback_pools_only_fully_contained_buckets(client) -> None:
+    db_path = client.app_db_path
+    target = _target(db_path, name="agg-wide")
+    hour_start = utc_now().replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
+    _hour_aggregate(db_path, target.id, hour_start, attempts=100)
+    _hour_aggregate(db_path, target.id, hour_start + timedelta(hours=1), attempts=50)
+
+    payload = client.get(
+        "/api/quality/stats",
+        params={
+            "from": to_iso_z(hour_start - timedelta(minutes=10)),
+            "to": to_iso_z(hour_start + timedelta(hours=2)),
+        },
+    ).json()
+    entry = next(t for t in payload["targets"] if t["target"]["id"] == target.id)
+
+    assert entry["data_source"] == "aggregates"
+    assert entry["stats"]["attempts"] == 150
+    assert entry["covered_from"] == api_quality.local_iso(hour_start)
+    assert entry["covered_to"] == api_quality.local_iso(hour_start + timedelta(hours=2))
+
+
+def test_timeline_falls_back_to_aggregates_when_raw_rows_are_gone(client) -> None:
+    """finding 2c: the chart is not empty under a populated counter."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="agg-timeline")
+    hour_start = utc_now().replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
+    _hour_aggregate(db_path, target.id, hour_start, attempts=100)
+    _hour_aggregate(db_path, target.id, hour_start + timedelta(hours=1), attempts=50)
+
+    payload = client.get(
+        "/api/quality/timeline",
+        params={
+            "from": to_iso_z(hour_start),
+            "to": to_iso_z(hour_start + timedelta(hours=2)),
+            "bucket_seconds": 60,
+        },
+    ).json()
+    series = next(t for t in payload["targets"] if t["target"]["id"] == target.id)
+
+    assert series["data_source"] == "aggregates"
+    assert [point["attempts"] for point in series["points"]] == [100, 50]
+    assert sum(point["attempts"] for point in series["points"]) == 150
+
+
+# ---------------------------------------------------------------------------
 # timeline
 # ---------------------------------------------------------------------------
 
@@ -208,8 +354,13 @@ def test_timeline_clamps_the_bucket_and_caps_the_points(client) -> None:
         params={"from": to_iso_z(start), "to": to_iso_z(end), "bucket_seconds": 1},
     ).json()
     assert fine["bucket_seconds"] == 10  # the 10 s floor of the spec
-    points = next(t for t in fine["targets"] if t["target"]["id"] == target.id)["points"]
-    assert len(points) == 12
+    fine_series = next(t for t in fine["targets"] if t["target"]["id"] == target.id)
+    points = fine_series["points"]
+    assert fine_series["data_source"] == "raw"
+    # 12 complete 10 s windows plus the closing partial point at `to` (finding
+    # 1): the range divides evenly, but a row could still sit exactly on `to`.
+    assert len(points) == 13
+    assert [point["partial"] for point in points] == [False] * 12 + [True]
     assert sum(point["attempts"] for point in points) == 12
     assert fine["last_complete_bucket"] is not None
 
@@ -490,3 +641,18 @@ def test_every_quality_response_states_the_zone(client) -> None:
     for path in paths:
         payload = client.get(path).json()
         assert payload.get("tz"), path
+
+
+# ---------------------------------------------------------------------------
+# range parsing (finding 8)
+# ---------------------------------------------------------------------------
+
+def test_an_unparsable_range_is_a_422_not_a_500(client) -> None:
+    """`parse_dt` raises `ValueError` on garbage input; the shared `get_range`
+
+    dependency turns that into a 422 for every quality endpoint instead of
+    letting it become an unhandled 500.
+    """
+    for path in ("/api/quality/stats", "/api/quality/timeline", "/api/quality/incidents"):
+        response = client.get(path, params={"from": "not-a-date"})
+        assert response.status_code == 422, path

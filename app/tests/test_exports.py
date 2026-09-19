@@ -72,7 +72,8 @@ def _seed_range(db_path: str) -> tuple[int, str, str]:
 
 
 def _csv_rows(text: str) -> list[list[str]]:
-    return [row for row in csv.reader(io.StringIO(text)) if row]
+    """Data rows only: every export now opens with comment lines (tz, retention)."""
+    return [row for row in csv.reader(io.StringIO(text)) if row and not row[0].startswith("#")]
 
 
 def test_probes_csv_has_local_and_utc_columns(client) -> None:
@@ -121,8 +122,12 @@ def test_probes_csv_notes_pruned_raw_data(client) -> None:
         params={"from": to_iso_z(old), "to": to_iso_z(utc_now())},
     )
     assert response.status_code == 200
-    first_line = response.text.splitlines()[0]
-    assert first_line.startswith("# surowe dane niedostepne (retencja) przed ")
+    lines = response.text.splitlines()
+    comment_lines = [line for line in lines if line.startswith("#")]
+    assert comment_lines[0].startswith("# strefa czasowa: ")
+    assert any(
+        line.startswith("# surowe dane niedostepne (retencja) przed ") for line in comment_lines
+    )
 
 
 def test_incidents_csv_lists_the_range(client) -> None:
@@ -278,8 +283,14 @@ def test_stats_timeline_csv_and_report_agree_on_the_same_range(client) -> None:
     assert csv_count == entry["stats"]["attempts"]
     assert model_entry["stats"]["attempts"] == entry["stats"]["attempts"]
     assert model_entry["stats"]["ok"] == entry["stats"]["ok"]
-    # the timeline drops the in-flight trailing bucket, so it holds the row at
-    # `start` but not the one exactly at `end`
-    assert summed["attempts"] == entry["stats"]["attempts"] - 1
+    # Finding 1: the timeline covers the whole `[from, to]` via a closing
+    # partial bucket, so it sums to exactly the same counts as stats/CSV/the
+    # report — including the row sitting exactly on the `to` boundary.
+    assert summed == {
+        "attempts": entry["stats"]["attempts"],
+        "ok": entry["stats"]["ok"],
+        "timeouts": entry["stats"]["timeouts"],
+        "errors": entry["stats"]["errors"],
+    }
     assert timeline["bucket_seconds"] >= 10
     assert timeline["last_complete_bucket"] is not None

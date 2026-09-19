@@ -11,24 +11,35 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from . import quality_db
-from .api_quality import (
+from .quality_views import (
     AGGREGATE_BUCKETS,
     db_path_of,
+    get_range,
     load_test_summaries,
     retention_cutoff,
     target_names,
+    tz_name,
 )
 from .csv_utils import csv_response
-from .time_utils import parse_dt, parse_range, to_iso_z, to_local_display, utc_now
+from .time_utils import ParsedRange, parse_dt, to_iso_z, to_local_display, utc_now
 
 router = APIRouter(prefix="/api", tags=["quality-export"])
 
 #: Comment line put at the top of an export whose range reaches behind the raw
 #: retention (spec §14). ASCII on purpose: it travels in a CSV.
 RETENTION_CSV_COMMENT = "# surowe dane niedostepne (retencja) przed {when}"
+
+#: First comment line of every quality export (finding 10): every timestamp
+#: column in these files is local time, and the report/panel state the same
+#: zone, so the CSV has to say which one it is instead of leaving it implicit.
+TIMEZONE_CSV_COMMENT = "# strefa czasowa: {tz}"
+
+
+def _timezone_comment() -> str:
+    return TIMEZONE_CSV_COMMENT.format(tz=tz_name())
 
 
 def _retention_comments(db_path: str, start: datetime, now: datetime) -> list[str]:
@@ -41,12 +52,10 @@ def _retention_comments(db_path: str, start: datetime, now: datetime) -> list[st
 @router.get("/quality/export/probes.csv")
 def export_probes_csv(
     request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
+    pr: ParsedRange = Depends(get_range),
     target_id: int | None = Query(default=None),
 ):
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     names = target_names(db_path)
     rows: list[list[Any]] = [
         [
@@ -85,19 +94,13 @@ def export_probes_csv(
                 row["load_test_id"] if row["load_test_id"] is not None else "",
             ]
         )
-    return csv_response(
-        "probes.csv", rows, comment_lines=_retention_comments(db_path, pr.start, utc_now())
-    )
+    comments = [_timezone_comment(), *_retention_comments(db_path, pr.start, utc_now())]
+    return csv_response("probes.csv", rows, comment_lines=comments)
 
 
 @router.get("/quality/export/incidents.csv")
-def export_incidents_csv(
-    request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
-):
+def export_incidents_csv(request: Request, pr: ParsedRange = Depends(get_range)):
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     names = target_names(db_path)
     rows: list[list[Any]] = [
         [
@@ -138,20 +141,18 @@ def export_incidents_csv(
                 row["windows_degraded"],
             ]
         )
-    return csv_response("incidents.csv", rows)
+    return csv_response("incidents.csv", rows, comment_lines=[_timezone_comment()])
 
 
 @router.get("/quality/export/aggregates.csv")
 def export_aggregates_csv(
     request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
+    pr: ParsedRange = Depends(get_range),
     bucket: str = Query(default="1h"),
 ):
     if bucket not in AGGREGATE_BUCKETS:
         raise HTTPException(status_code=422, detail="bucket musi być 1h albo 1d")
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     names = target_names(db_path)
     columns = (
         "attempts",
@@ -183,17 +184,12 @@ def export_aggregates_csv(
                 *[row[column] if row[column] is not None else "" for column in columns],
             ]
         )
-    return csv_response("aggregates.csv", rows)
+    return csv_response("aggregates.csv", rows, comment_lines=[_timezone_comment()])
 
 
 @router.get("/quality/export/load-tests.csv")
-def export_load_tests_csv(
-    request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
-):
+def export_load_tests_csv(request: Request, pr: ParsedRange = Depends(get_range)):
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     rows: list[list[Any]] = [
         [
             "id",
@@ -232,4 +228,4 @@ def export_load_tests_csv(
                     summary.get("mbps") if summary.get("mbps") is not None else "",
                 ]
             )
-    return csv_response("load-tests.csv", rows)
+    return csv_response("load-tests.csv", rows, comment_lines=[_timezone_comment()])

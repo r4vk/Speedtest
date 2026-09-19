@@ -16,328 +16,48 @@ Two rules are visible all over this module:
 from __future__ import annotations
 
 import inspect
-import json
 import logging
-import math
 import sqlite3
-import time
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Literal, Mapping, Sequence
+from typing import Any, Literal, Mapping
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from . import quality_db
+from . import quality_db, report
 from .coverage import coverage
-from .db import TimeRange, query_connectivity_checks
-from .iperf_udp import LoadTestResult, summarize_for_report
 from .network_tools import _validate_hostname
-from .probe_types import ProbeTarget
 from .quality_settings import read_quality_settings
-from .stats import ProbeStats, bucket_rows, compute_stats, merge_counters
-from .time_utils import local_tz, parse_dt, parse_range, to_iso_z, to_local_iso, utc_now
+from .quality_views import (
+    MEASURED_FROM,
+    _loads,
+    _stats_from_aggregates,
+    db_path_of,
+    fully_contained_aggregates,
+    get_range,
+    incident_payload,
+    incident_span,
+    incident_windows,
+    load_test_payload,
+    local_iso,
+    localized,
+    legacy_tcp_counters,
+    range_payload,
+    stats_payload,
+    target_names,
+    target_payload,
+    target_stats_entries,
+    timeline_bucket_seconds,
+    tz_name,
+)
+from .stats import bucket_rows
+from .time_utils import ParsedRange, parse_dt, to_iso_z, utc_now
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["quality"])
-
-#: Where these measurements were taken (spec §12); shown on every view.
-MEASURED_FROM = "NAS (kabel)"
-
-#: What a loss figure means for each protocol — the label is part of the
-#: measurement, because ICMP loss and TCP failures are not the same thing.
-PROTOCOL_NOTES: dict[str, str] = {
-    "icmp": "Utrata odpowiedzi ICMP echo",
-    "tcp": "Nieudane zestawienia TCP",
-    "dns": "Błędy/timeouty zapytań DNS",
-    "https": "Błędy/timeouty HTTPS (DNS, TCP, TLS, HTTP)",
-}
-
-#: Timeline resolution limits (spec §12): never finer than 10 s, never more
-#: than 2000 points per target.
-MIN_BUCKET_SECONDS = 10
-MAX_TIMELINE_POINTS = 2000
-
-#: Buckets the aggregate fallback and the aggregates export understand.
-AGGREGATE_BUCKETS = ("1h", "1d")
-
-
-# ---------------------------------------------------------------------------
-# shared helpers (also used by report.py)
-# ---------------------------------------------------------------------------
-
-def db_path_of(request: Request) -> str:
-    """The database this app instance serves."""
-    path = getattr(request.app.state, "db_path", None)
-    if path:
-        return str(path)
-    from .config import AppConfig  # deferred: tests reload the config module
-
-    return AppConfig().db_path
-
-
-def tz_name() -> str:
-    """Name of the local zone, e.g. ``CEST`` — every response states it."""
-    return local_tz().tzname(None) or time.tzname[0]
-
-
-def local_iso(value: str | datetime | None) -> str | None:
-    """Local ISO time of a stored UTC timestamp; ``None`` stays ``None``."""
-    if value is None or value == "":
-        return None
-    moment = value if isinstance(value, datetime) else parse_dt(str(value))
-    return to_local_iso(moment)
-
-
-def localized(row: Mapping[str, Any], keys: Iterable[str]) -> dict[str, Any]:
-    """A copy of ``row`` with the given timestamp columns in local time."""
-    out = dict(row)
-    for key in keys:
-        if key in out:
-            out[key] = local_iso(out[key])
-    return out
-
-
-def target_payload(target: ProbeTarget) -> dict[str, Any]:
-    """A probe target as the API and the report show it."""
-    return {
-        "id": target.id,
-        "name": target.name,
-        "kind": target.kind,
-        "protocol": str(target.protocol),
-        "host": target.host,
-        "port": target.port,
-        "interval_seconds": target.interval_seconds,
-        "timeout_ms": target.timeout_ms,
-        "enabled": target.enabled,
-        "family_pref": target.family_pref,
-        "extra": target.extra,
-    }
-
-
-def stats_payload(stats: ProbeStats) -> dict[str, Any]:
-    """``ProbeStats`` with its two timestamps in local time."""
-    payload = stats.as_dict()
-    payload["first_at"] = local_iso(payload["first_at"])
-    payload["last_at"] = local_iso(payload["last_at"])
-    return payload
-
-
-def error_kinds_histogram(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
-    """How often each `error_kind` was seen — errors are never loss (spec §1)."""
-    histogram: dict[str, int] = {}
-    for row in rows:
-        kind = row.get("error_kind")
-        if kind:
-            histogram[str(kind)] = histogram.get(str(kind), 0) + 1
-    return dict(sorted(histogram.items()))
-
-
-def _stats_from_aggregates(rows: Sequence[Mapping[str, Any]]) -> ProbeStats:
-    """Pool aggregate buckets: counters only, percentiles stay unknown (spec §6)."""
-    parts = [
-        ProbeStats(
-            attempts=int(row["attempts"]),
-            ok=int(row["ok_count"]),
-            timeouts=int(row["timeout_count"]),
-            errors=int(row["error_count"]),
-            loss_pct=row.get("loss_pct"),
-            longest_fail_streak=int(row.get("longest_fail_streak") or 0),
-            first_at=row["bucket_start"],
-            last_at=row["bucket_start"],
-        )
-        for row in rows
-    ]
-    return merge_counters(parts)
-
-
-def target_stats_entries(
-    db_path: str,
-    start: datetime,
-    end: datetime,
-    targets: Sequence[ProbeTarget] | None = None,
-) -> list[dict[str, Any]]:
-    """Per-target counters and statistics for the range, enabled targets included.
-
-    Raw rows are the source whenever the range still holds any; when they have
-    been pruned (spec §14) the hourly aggregates are pooled instead and
-    ``data_source`` says so, so a reader can tell a measurement from a
-    reconstruction. A target with neither is ``none`` — never a silent zero.
-    """
-    start_iso, end_iso = to_iso_z(start), to_iso_z(end)
-    entries: list[dict[str, Any]] = []
-    for target in targets if targets is not None else quality_db.list_targets(db_path):
-        rows = quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
-        if rows:
-            stats, source = compute_stats(rows), "raw"
-        else:
-            aggregates = quality_db.query_aggregates(db_path, "1h", start_iso, end_iso, target_id=target.id)
-            if aggregates:
-                stats, source = _stats_from_aggregates(aggregates), "aggregates"
-            else:
-                stats, source = ProbeStats(), "none"
-        entries.append(
-            {
-                "target": target_payload(target),
-                "stats": stats_payload(stats),
-                "note": PROTOCOL_NOTES.get(str(target.protocol), ""),
-                "error_kinds": error_kinds_histogram(rows),
-                "data_source": source,
-            }
-        )
-    return entries
-
-
-def legacy_tcp_counters(db_path: str, start: datetime, end: datetime) -> dict[str, int] | None:
-    """Legacy TCP history: attempts and failures only — never a loss percentage.
-
-    ``None`` when the range holds no legacy row at all, so the panel can hide
-    the table instead of showing zeros (spec §1).
-    """
-    rows = query_connectivity_checks(
-        db_path, TimeRange(start_iso=to_iso_z(start), end_iso=to_iso_z(end))
-    )
-    if not rows:
-        return None
-    failures = sum(1 for row in rows if not row["is_up"])
-    return {"attempts": len(rows), "failures": failures}
-
-
-def retention_cutoff(db_path: str, now: datetime, settings: Mapping[str, Any] | None = None) -> datetime:
-    """Instant before which raw probe rows may already have been pruned."""
-    values = settings if settings is not None else read_quality_settings(db_path)
-    return now - timedelta(days=int(values["retention_raw_days"]))
-
-
-def _load_test_runs(row: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Every direction of one load test row, whatever shape `result_json` has.
-
-    A row can hold one run, a mapping of direction -> run or a list of runs;
-    a row without a usable result still yields one entry per requested
-    direction so that a failed or skipped test stays visible.
-    """
-    raw = row.get("result_json")
-    parsed: Any = None
-    if raw:
-        try:
-            parsed = json.loads(raw)
-        except (TypeError, ValueError):
-            parsed = None
-
-    runs: list[dict[str, Any]] = []
-    if isinstance(parsed, Mapping):
-        if "receiver" in parsed:
-            runs = [dict(parsed)]
-        else:
-            runs = [
-                {**value, "direction": value.get("direction", key)}
-                for key, value in parsed.items()
-                if isinstance(value, Mapping)
-            ]
-    elif isinstance(parsed, list):
-        runs = [dict(item) for item in parsed if isinstance(item, Mapping)]
-
-    if runs:
-        return runs
-    directions = ["upload", "download"] if row.get("direction") == "both" else [row.get("direction")]
-    return [{"direction": direction} for direction in directions]
-
-
-def load_test_summaries(row: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """One summary per direction, with loss recomputed from the receiver counters."""
-    summaries: list[dict[str, Any]] = []
-    for run in _load_test_runs(row):
-        receiver = run.get("receiver") if isinstance(run.get("receiver"), Mapping) else {}
-        result = LoadTestResult(
-            kind=str(run.get("kind") or row.get("kind") or ""),
-            direction=str(run.get("direction") or row.get("direction") or ""),
-            receiver=dict(receiver),
-            sender=dict(run.get("sender") or {}),
-            intervals=[],
-            duration_seconds=float(run.get("duration_seconds") or 0.0),
-            protocol=str(run.get("protocol") or ""),
-            version=run.get("version"),
-        )
-        summaries.append(summarize_for_report(result))
-    return summaries
-
-
-def load_test_payload(row: Mapping[str, Any], *, with_raw: bool = False) -> dict[str, Any]:
-    """A load test row for the API: parsed params/result plus per-direction summaries."""
-    payload = localized(row, ("started_at", "ended_at"))
-    payload["params"] = _loads(row.get("params_json"))
-    payload["result"] = _loads(row.get("result_json"))
-    payload["summaries"] = load_test_summaries(row)
-    payload.pop("params_json", None)
-    payload.pop("result_json", None)
-    if with_raw:
-        payload["raw_json"] = row.get("raw_json")
-    else:
-        payload.pop("raw_json", None)
-    return payload
-
-
-def _loads(raw: Any) -> Any:
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def incident_windows(row: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The window verdict sequence stored in `summary_json` (spec §7)."""
-    parsed = _loads(row.get("summary_json"))
-    if not isinstance(parsed, list):
-        return []
-    windows: list[dict[str, Any]] = []
-    for item in parsed:
-        if not isinstance(item, (list, tuple)) or not item:
-            continue
-        values = list(item) + [None] * (4 - len(item))
-        windows.append(
-            {
-                "window_start": local_iso(values[0]),
-                "verdict": values[1],
-                "loss_pct": values[2],
-                "p95": values[3],
-            }
-        )
-    return windows
-
-
-def incident_payload(row: Mapping[str, Any], names: Mapping[int, str]) -> dict[str, Any]:
-    """An incident row for the API: local times, target name, no raw JSON blob."""
-    payload = localized(row, ("started_at", "ended_at", "closed_at"))
-    payload["target_name"] = names.get(int(row["target_id"]))
-    payload["windows_count"] = len(incident_windows(row))
-    payload.pop("summary_json", None)
-    return payload
-
-
-def incident_span(row: Mapping[str, Any], now: datetime) -> tuple[datetime, datetime]:
-    """`[started_at, ended_at or closed_at or now]` — the incident's own range."""
-    start = parse_dt(str(row["started_at"]))
-    end_raw = row.get("ended_at") or row.get("closed_at")
-    return start, parse_dt(str(end_raw)) if end_raw else now
-
-
-def target_names(db_path: str) -> dict[int, str]:
-    return {target.id: target.name for target in quality_db.list_targets(db_path)}
-
-
-def timeline_bucket_seconds(requested: float, start: datetime, end: datetime) -> float:
-    """Bucket width honouring the 10 s floor and the 2000 point cap (spec §12)."""
-    span = max(0.0, (end - start).total_seconds())
-    needed = math.ceil(span / MAX_TIMELINE_POINTS) if span > 0 else 0
-    return float(max(MIN_BUCKET_SECONDS, math.ceil(requested), needed))
-
-
-def range_payload(start: datetime, end: datetime) -> dict[str, Any]:
-    return {"from": local_iso(start), "to": local_iso(end)}
 
 
 # ---------------------------------------------------------------------------
@@ -533,25 +253,23 @@ def api_quality_status(request: Request) -> dict[str, Any]:
         incident_payload(row, names) for row in status.get("open_incidents", [])
     ]
     coverage_24h = coverage(db_path, now - timedelta(hours=24), now)
+    # `**status` first: nothing the engine reports can override the fields
+    # this endpoint itself computes (finding 9) — an engine that happened to
+    # return a "now"/"tz"/"session"/"coverage_24h_pct" key must never win.
     return {
+        **status,
         "now": local_iso(now),
         "tz": tz_name(),
         "measured_from": MEASURED_FROM,
         "session": _latest_session(db_path),
         "coverage_24h_pct": coverage_24h["coverage_pct"],
         "coverage_known": coverage_24h["coverage_known"],
-        **status,
     }
 
 
 @router.get("/quality/stats")
-def api_quality_stats(
-    request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
-) -> dict[str, Any]:
+def api_quality_stats(request: Request, pr: ParsedRange = Depends(get_range)) -> dict[str, Any]:
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     return {
         "range": range_payload(pr.start, pr.end),
         "tz": tz_name(),
@@ -567,21 +285,53 @@ def _coverage_payload(db_path: str, start: datetime, end: datetime) -> dict[str,
     return result
 
 
+def _aggregate_timeline_points(db_path: str, target_id: int, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """Hourly aggregates mapped to the timeline shape (spec §14, finding 2c).
+
+    Only buckets that fit completely inside ``[start, end]`` are used — the
+    same set `target_stats_entries` pools — so a target's timeline always
+    sums to its own stats total, aggregate fallback or not.
+    """
+    rows = fully_contained_aggregates(db_path, "1h", start, end, target_id)
+    points: list[dict[str, Any]] = []
+    for row in rows:
+        stats = _stats_from_aggregates([row])
+        points.append(
+            {
+                "t": local_iso(row["bucket_start"]),
+                "attempts": stats.attempts,
+                "ok": stats.ok,
+                "timeouts": stats.timeouts,
+                "errors": stats.errors,
+                "loss_pct": stats.loss_pct,
+                "p50": None,
+                "p95": None,
+                "max": None,
+                "partial": False,
+            }
+        )
+    return points
+
+
 @router.get("/quality/timeline")
 def api_quality_timeline(
     request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
+    pr: ParsedRange = Depends(get_range),
     bucket_seconds: float = Query(default=60.0, gt=0, le=86400),
 ) -> dict[str, Any]:
     """Bucketed points per target plus everything drawn on the shared axis.
 
-    The trailing, still-filling bucket is not returned (it would look like a
-    quiet period), so the response states `bucket_seconds` and the end of the
-    last complete bucket: a live view can tell "not measured yet" from a gap.
+    Every point of a `raw`-backed series covers `[from, to]` exactly (the
+    trailing bucket is included, closed at `to`, per finding 1), so the sum of
+    a target's points equals its own `/api/quality/stats` counters. Once raw
+    rows for the range are gone (spec §14), the series falls back to the same
+    hourly aggregates `target_stats_entries` pools, so the chart is not empty
+    under a populated counter (finding 2c); `data_source` says which one a
+    series is drawing on, and `last_complete_bucket` only ever reflects `raw`
+    coverage — the live panel's "not measured yet" signal has no equivalent
+    once the data is a historical rollup.
     """
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     bucket = timeline_bucket_seconds(bucket_seconds, pr.start, pr.end)
     start_iso, end_iso = to_iso_z(pr.start), to_iso_z(pr.end)
 
@@ -590,12 +340,19 @@ def api_quality_timeline(
     complete_buckets = 0
     for target in targets:
         rows = quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
-        points = bucket_rows(rows, bucket, pr.start, pr.end)
-        complete_buckets = max(complete_buckets, len(points))
+        if rows:
+            raw_points = bucket_rows(rows, bucket, pr.start, pr.end, include_partial=True)
+            points = [{**point, "t": local_iso(point["t"])} for point in raw_points]
+            complete_buckets = max(complete_buckets, sum(1 for p in raw_points if not p["partial"]))
+            source = "raw"
+        else:
+            points = _aggregate_timeline_points(db_path, target.id, pr.start, pr.end)
+            source = "aggregates" if points else "none"
         series.append(
             {
                 "target": target_payload(target),
-                "points": [{**point, "t": local_iso(point["t"])} for point in points],
+                "data_source": source,
+                "points": points,
             }
         )
 
@@ -629,12 +386,10 @@ def api_quality_timeline(
 @router.get("/quality/incidents")
 def api_incidents(
     request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
+    pr: ParsedRange = Depends(get_range),
     target_id: int | None = Query(default=None),
 ) -> dict[str, Any]:
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     names = target_names(db_path)
     rows = quality_db.query_incidents(
         db_path, to_iso_z(pr.start), to_iso_z(pr.end), target_id=target_id
@@ -726,13 +481,8 @@ def api_delete_annotation(request: Request, annotation_id: int) -> dict[str, Any
 
 
 @router.get("/quality/coverage")
-def api_coverage(
-    request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
-) -> dict[str, Any]:
+def api_coverage(request: Request, pr: ParsedRange = Depends(get_range)) -> dict[str, Any]:
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     return {
         "range": range_payload(pr.start, pr.end),
         "tz": tz_name(),
@@ -745,13 +495,8 @@ def api_coverage(
 # ---------------------------------------------------------------------------
 
 @router.get("/quality/load-tests")
-def api_load_tests(
-    request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
-) -> dict[str, Any]:
+def api_load_tests(request: Request, pr: ParsedRange = Depends(get_range)) -> dict[str, Any]:
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     rows = quality_db.query_load_tests(db_path, to_iso_z(pr.start), to_iso_z(pr.end))
     return {
         "range": range_payload(pr.start, pr.end),
@@ -788,12 +533,10 @@ def api_load_test_detail(request: Request, load_test_id: int) -> dict[str, Any]:
 @router.get("/quality/diagnostics")
 def api_diagnostics(
     request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
+    pr: ParsedRange = Depends(get_range),
     incident_id: int | None = Query(default=None),
 ) -> dict[str, Any]:
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
     rows = quality_db.query_diagnostics(
         db_path, to_iso_z(pr.start), to_iso_z(pr.end), incident_id=incident_id
     )
@@ -815,22 +558,13 @@ def api_diagnostics(
 # ---------------------------------------------------------------------------
 
 @router.get("/quality/report.html", response_class=HTMLResponse)
-def api_report_html(
-    request: Request,
-    from_: str | None = Query(default=None, alias="from"),
-    to: str | None = Query(default=None),
-) -> HTMLResponse:
-    # Deferred: report.py reads this module's shared helpers, so importing it
-    # at module level would close the loop.
-    from . import report as report_module
-
+def api_report_html(request: Request, pr: ParsedRange = Depends(get_range)) -> HTMLResponse:
     db_path = db_path_of(request)
-    pr = parse_range(from_, to)
-    model = report_module.build_report_model(
+    model = report.build_report_model(
         db_path,
         pr.start,
         pr.end,
         app_version=str(getattr(request.app, "version", "dev")),
         now=utc_now(),
     )
-    return HTMLResponse(report_module.render_report(model))
+    return HTMLResponse(report.render_report(model))

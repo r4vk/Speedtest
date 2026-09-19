@@ -1,7 +1,7 @@
 """The printable report for the ISP (design spec §13).
 
 Every number here comes from the functions that serve `/api/quality/*`
-(`api_quality.target_stats_entries`, `stats.bucket_rows`, `coverage.coverage`,
+(`quality_views.target_stats_entries`, `stats.bucket_rows`, `coverage.coverage`,
 the `quality_db` queries), so the report cannot drift from the panel or the
 CSV exports. The page is self-contained: inline CSS, inline SVG, no CDN, no
 script — it has to survive being printed to PDF and mailed to an operator.
@@ -19,7 +19,10 @@ from typing import Any, Mapping, Sequence
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from . import quality_db
-from .api_quality import (
+from .coverage import clip_to_observed, coverage, observed_intervals
+from .db import TimeRange, query_connectivity_periods
+from .quality_settings import INCIDENT_THRESHOLD_KEYS, parse_settings, read_quality_settings
+from .quality_views import (
     MEASURED_FROM,
     MIN_BUCKET_SECONDS,
     incident_span,
@@ -33,9 +36,6 @@ from .api_quality import (
     target_stats_entries,
     tz_name,
 )
-from .coverage import clip_to_observed, coverage, observed_intervals
-from .db import TimeRange, query_connectivity_periods
-from .quality_settings import INCIDENT_THRESHOLD_KEYS, parse_settings, read_quality_settings
 from .stats import bucket_rows, compute_stats
 from .time_utils import parse_dt, to_iso_z, to_local_display
 
@@ -222,6 +222,17 @@ def _chart_bucket_seconds(start: datetime, end: datetime) -> float:
     return float(max(MIN_BUCKET_SECONDS, needed))
 
 
+def _chart_label(dt: datetime, *, include_date: bool) -> str:
+    """``HH:MM``, or ``MM-DD HH:MM`` once the span exceeds 24 h (finding 6):
+
+    a bare time is ambiguous once a chart's x axis crosses midnight more than
+    once, and the report is exactly the document that gets printed and read
+    without the page it came from.
+    """
+    text = to_local_display(dt)  # "YYYY-MM-DD HH:MM:SS"
+    return text[5:16] if include_date else text[11:16]
+
+
 def _chart_series(
     db_path: str,
     start: datetime,
@@ -230,14 +241,18 @@ def _chart_series(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
     """Loss and p95 series per target, from the timeline's own bucket function."""
     bucket = _chart_bucket_seconds(start, end)
+    include_date = (end - start) > timedelta(hours=24)
     loss: list[dict[str, Any]] = []
     p95: list[dict[str, Any]] = []
     for target in targets:
         rows = quality_db.query_probe_results(
             db_path, to_iso_z(start), to_iso_z(end), target_id=target.id
         )
-        points = bucket_rows(rows, bucket, start, end)
-        labels = [to_local_display(parse_dt(point["t"]))[11:16] for point in points]
+        # `include_partial=True`: the chart covers the whole `[start, end]`
+        # exactly like the stats and the timeline (finding 1), so a reader
+        # comparing the picture with the numbers above it sees the same range.
+        points = bucket_rows(rows, bucket, start, end, include_partial=True)
+        labels = [_chart_label(parse_dt(point["t"]), include_date=include_date) for point in points]
         loss.append(
             {
                 "label": target.name,
@@ -338,6 +353,10 @@ def _latency_under_load(db_path: str, row: Mapping[str, Any], targets: Sequence[
     start = parse_dt(str(row["started_at"]))
     end = parse_dt(str(row["ended_at"])) if row.get("ended_at") else start
     baseline_start = start - timedelta(seconds=LOAD_TEST_BASELINE_SECONDS)
+    # `query_probe_results` is inclusive on both ends, so ending the baseline
+    # exactly at `start` would count a probe sitting on that instant in both
+    # windows (finding 5): pull the baseline's end back by one millisecond.
+    baseline_end = start - timedelta(milliseconds=1)
     comparison: list[dict[str, Any]] = []
     for target in targets:
         if str(target.protocol) != "icmp":
@@ -347,7 +366,7 @@ def _latency_under_load(db_path: str, row: Mapping[str, Any], targets: Sequence[
         )
         before = compute_stats(
             quality_db.query_probe_results(
-                db_path, to_iso_z(baseline_start), to_iso_z(start), target_id=target.id
+                db_path, to_iso_z(baseline_start), to_iso_z(baseline_end), target_id=target.id
             )
         )
         if during.attempts == 0 and before.attempts == 0:

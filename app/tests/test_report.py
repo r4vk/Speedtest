@@ -182,6 +182,48 @@ def test_report_falls_back_to_aggregates_when_raw_rows_are_gone(client) -> None:
     assert entry["stats"]["ok"] == 3500
 
 
+def test_report_matches_the_stats_endpoint_for_a_pruned_range(client) -> None:
+    """finding 2: the aggregate fallback must agree between the API and the report."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="agg-parity")
+    now = utc_now()
+    bucket_start = (now - timedelta(days=20)).replace(minute=0, second=0, microsecond=0)
+    quality_db.upsert_aggregate(
+        db_path,
+        {
+            "target_id": target.id,
+            "protocol": "icmp",
+            "bucket": "1h",
+            "bucket_start": to_iso_z(bucket_start),
+            "attempts": 3600,
+            "ok_count": 3500,
+            "timeout_count": 100,
+            "error_count": 0,
+            "loss_pct": 100 * 100 / 3600,
+            "rtt_p95_ms": 30.0,
+            "percentiles_from_raw": 0,
+            "computed_at": to_iso_z(now),
+        },
+    )
+    start = bucket_start - timedelta(hours=1)
+    end = bucket_start + timedelta(hours=2)
+
+    api = client.get(
+        "/api/quality/stats", params={"from": to_iso_z(start), "to": to_iso_z(end)}
+    ).json()
+    model = report.build_report_model(
+        db_path, start, end, app_version="1.0.0", now=now
+    )
+
+    api_entry = next(t for t in api["targets"] if t["target"]["id"] == target.id)
+    model_entry = next(t for t in model["targets"] if t["target"]["id"] == target.id)
+
+    assert model_entry["data_source"] == api_entry["data_source"] == "aggregates"
+    assert model_entry["stats"] == api_entry["stats"]
+    assert model_entry["covered_from"] == api_entry["covered_from"]
+    assert model_entry["covered_to"] == api_entry["covered_to"]
+
+
 @pytest.mark.parametrize("y_max", [None, 100.0])
 def test_svg_line_chart_breaks_the_line_on_missing_points(y_max) -> None:
     svg = report.svg_line_chart(
