@@ -36,6 +36,7 @@ def test_defaults_are_seeded_and_served(client) -> None:
     assert payload["load_test_duration_seconds"] == 10
     assert payload["load_test_datagram_len"] == 1200
     assert payload["load_test_directions"] == "both"
+    assert payload["diagnostics_enabled"] is True
     assert payload["diagnostics_min_interval_seconds"] == 300
     assert payload["diagnostics_max_per_incident"] == 3
     assert payload["retention_raw_days"] == 14
@@ -94,9 +95,20 @@ def test_update_persists_the_quality_fields(client) -> None:
 def test_out_of_range_values_are_refused(client) -> None:
     cases = [
         {"incident_window_seconds": 1},
-        {"incident_window_seconds": 3601},
+        {"incident_window_seconds": 301},  # bound is `le=300`, not far beyond it
         {"incident_loss_pct_threshold": 101},
+        {"incident_outage_loss_pct": 101},
         {"incident_min_samples": 0},
+        {"incident_rtt_p95_ms_threshold": 10001},
+        {"incident_rtt_p95_ms_threshold": 0},
+        {"incident_fail_streak_threshold": 1001},
+        {"incident_fail_streak_threshold": 0},
+        {"incident_open_windows": 101},
+        {"incident_open_windows": 0},
+        {"incident_stabilization_seconds": 86401},
+        {"incident_stabilization_seconds": -1},
+        {"incident_no_data_close_seconds": 86401},
+        {"incident_no_data_close_seconds": -1},
         {"availability_eval_seconds": 0},
         {"availability_window_seconds": 4},
         {"load_test_interval_seconds": 10},

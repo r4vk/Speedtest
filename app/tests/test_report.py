@@ -123,6 +123,25 @@ def test_rendered_report_is_self_contained_and_complete(client) -> None:
     assert "url(http" not in html
 
 
+def test_rendered_report_escapes_an_annotation_label(client) -> None:
+    """finding 12: a hostile annotation label must never reach the page raw."""
+    db_path = client.app_db_path
+    target = _target(db_path)
+    start = utc_now().replace(microsecond=0) - timedelta(minutes=30)
+    end = start + timedelta(minutes=5)
+    _seed(db_path, target.id, start)
+    quality_db.insert_annotation(
+        db_path, to_iso_z(start + timedelta(minutes=1)), "<script>alert(1)</script>"
+    )
+
+    html = client.get(
+        "/api/quality/report.html", params={"from": to_iso_z(start), "to": to_iso_z(end)}
+    ).text
+
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
 def test_report_says_brak_danych_for_an_empty_range(client) -> None:
     db_path = client.app_db_path
     _target(db_path)
