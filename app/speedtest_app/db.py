@@ -536,6 +536,22 @@ def get_current_connectivity_period(db_path: str):
         return dict(row) if row else None
 
 
+def end_current_connectivity_period(db_path: str, now_iso: str | None = None) -> bool:
+    """Close the open availability period, if there is one. Returns True if closed.
+
+    Used when availability becomes unknown (spec §8): time nobody measured must
+    not be attributed to the previous state, so the period ends instead of
+    silently growing.
+    """
+    now_iso = now_iso or _utc_now_iso()
+    with db_conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE connectivity_periods SET ended_at = ? WHERE ended_at IS NULL",
+            (now_iso,),
+        )
+        return cur.rowcount > 0
+
+
 def record_connectivity(db_path: str, is_up: bool, now_iso: str | None = None) -> None:
     now_iso = now_iso or _utc_now_iso()
     with db_conn(db_path) as conn:
