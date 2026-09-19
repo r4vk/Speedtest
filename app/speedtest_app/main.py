@@ -446,6 +446,12 @@ def api_get_config():
 
 @app.put("/api/config", response_model=ConfigResponse)
 def api_update_config(update: ConfigUpdate):
+    # Validate before writing anything: a bad `gateway_host` used to be
+    # checked last (it is the last key of `QUALITY_SETTING_SPECS`), so a 422
+    # on it still left every other field of the same request written.
+    if update.gateway_host is not None and update.gateway_host.strip():
+        api_quality.validate_host("icmp", update.gateway_host.strip())
+
     now_iso = to_iso_z(utc_now())
     if update.connect_target is not None:
         set_setting(cfg.db_path, "connect_target", update.connect_target.strip(), now_iso=now_iso)

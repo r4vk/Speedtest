@@ -137,3 +137,21 @@ def test_gateway_host_is_validated(client) -> None:
     response = client.put("/api/config", json={"gateway_host": "nie jest hostem"})
     assert response.status_code == 422
     assert _gateway(client.app_db_path).enabled is False
+
+
+def test_invalid_gateway_host_leaves_other_fields_of_the_same_request_untouched(client) -> None:
+    """finding 7: `gateway_host` is validated before anything is written, so a
+
+    422 on it must not leave a partial update behind (it used to be validated
+    last, being the last key of QUALITY_SETTING_SPECS).
+    """
+    response = client.put(
+        "/api/config",
+        json={"incident_window_seconds": 30, "gateway_host": "nie jest hostem"},
+    )
+    assert response.status_code == 422
+
+    payload = client.get("/api/config").json()
+    assert payload["incident_window_seconds"] == 10
+    assert payload["gateway_host"] == ""
+    assert _gateway(client.app_db_path).enabled is False
