@@ -1,14 +1,27 @@
+"""SQLite schema, migrations, legacy accessors, settings and the config change log.
+
+Schema v1 is the legacy monitoring database (connectivity checks + speed tests);
+schema v2 adds the network quality model (design spec §3). ``ensure_db`` creates
+the v1 tables and then migrates forward idempotently.
+"""
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterator
+from typing import Any, Iterator
+
+from . import connectivity
+from .config import AppConfig
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+#: Version created by the legacy DDL below; everything above it is a migration.
+LEGACY_SCHEMA_VERSION = 1
 
 
 def _utc_now_iso() -> str:
@@ -117,8 +130,9 @@ def ensure_db(db_path: str) -> None:
         )
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
+            (str(LEGACY_SCHEMA_VERSION),),
         )
+        _migrate(conn)
 
 
 def _ensure_speed_tests_columns(conn: sqlite3.Connection) -> None:
@@ -157,6 +171,299 @@ def _ensure_blocked_periods_table(conn: sqlite3.Connection) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Schema v2 — network quality model (design spec §3)
+# ---------------------------------------------------------------------------
+
+SCHEMA_V2_DDL: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS probe_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('gateway','internet','dns','https','tcp')),
+      protocol TEXT NOT NULL CHECK (protocol IN ('icmp','tcp','dns','https')),
+      host TEXT NOT NULL,
+      port INTEGER NULL,
+      interval_seconds REAL NOT NULL,
+      timeout_ms INTEGER NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+      family_pref TEXT NOT NULL DEFAULT 'auto' CHECK (family_pref IN ('auto','ipv4','ipv6')),
+      extra_json TEXT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS probe_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL DEFAULT 'nas',
+      target_id INTEGER NOT NULL REFERENCES probe_targets(id) ON DELETE CASCADE,
+      protocol TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      duration_ms REAL NOT NULL,
+      outcome TEXT NOT NULL CHECK (outcome IN ('ok','timeout','error')),
+      rtt_ms REAL NULL,
+      timeout_ms INTEGER NOT NULL,
+      resolved_ip TEXT NULL,
+      ip_family INTEGER NULL CHECK (ip_family IN (4,6)),
+      error_kind TEXT NULL,
+      error_detail TEXT NULL,
+      stages_json TEXT NULL,
+      load_test_id INTEGER NULL,
+      external_id TEXT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_probe_results_target_time ON probe_results(target_id, started_at)",
+    "CREATE INDEX IF NOT EXISTS idx_probe_results_time ON probe_results(started_at)",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_probe_results_external ON probe_results(device_id, external_id)
+      WHERE external_id IS NOT NULL
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS monitor_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL DEFAULT 'nas',
+      started_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      ended_at TEXT NULL,
+      end_reason TEXT NULL CHECK (end_reason IN ('shutdown','unclean')),
+      app_version TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS config_changes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      changed_at TEXT NOT NULL,
+      key TEXT NOT NULL,
+      old_value TEXT NULL,
+      new_value TEXT NULL,
+      source TEXT NOT NULL CHECK (source IN ('ui','env','migration','api'))
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS incidents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      target_id INTEGER NOT NULL REFERENCES probe_targets(id) ON DELETE CASCADE,
+      protocol TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('outage','degraded')),
+      started_at TEXT NOT NULL,
+      ended_at TEXT NULL,
+      closed_at TEXT NULL,
+      close_reason TEXT NULL CHECK (close_reason IN ('recovered','no_data','shutdown')),
+      window_seconds INTEGER NOT NULL,
+      probe_interval_seconds REAL NOT NULL,
+      peak_loss_pct REAL NULL,
+      peak_p95_rtt_ms REAL NULL,
+      longest_fail_streak INTEGER NULL,
+      windows_degraded INTEGER NOT NULL DEFAULT 0,
+      summary_json TEXT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_incidents_time ON incidents(started_at)",
+    """
+    CREATE TABLE IF NOT EXISTS probe_aggregates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      target_id INTEGER NOT NULL REFERENCES probe_targets(id) ON DELETE CASCADE,
+      protocol TEXT NOT NULL,
+      bucket TEXT NOT NULL CHECK (bucket IN ('1h','1d')),
+      bucket_start TEXT NOT NULL,
+      attempts INTEGER NOT NULL,
+      ok_count INTEGER NOT NULL,
+      timeout_count INTEGER NOT NULL,
+      error_count INTEGER NOT NULL,
+      loss_pct REAL NULL,
+      rtt_min_ms REAL NULL, rtt_p50_ms REAL NULL, rtt_p95_ms REAL NULL, rtt_p99_ms REAL NULL,
+      rtt_max_ms REAL NULL, rtt_mean_ms REAL NULL, rtt_variation_ms REAL NULL,
+      longest_fail_streak INTEGER NULL,
+      percentiles_from_raw INTEGER NOT NULL DEFAULT 1,
+      computed_at TEXT NOT NULL,
+      UNIQUE(target_id, bucket, bucket_start)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS annotations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL,
+      at TEXT NOT NULL,
+      label TEXT NOT NULL,
+      note TEXT NULL,
+      incident_id INTEGER NULL REFERENCES incidents(id) ON DELETE SET NULL,
+      source TEXT NOT NULL DEFAULT 'user'
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS load_tests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      started_at TEXT NOT NULL,
+      ended_at TEXT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('iperf_udp','iperf_tcp','speedtest')),
+      direction TEXT NOT NULL CHECK (direction IN ('upload','download','both')),
+      server TEXT NULL,
+      params_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('running','ok','error','skipped')),
+      error TEXT NULL,
+      result_json TEXT NULL,
+      raw_json TEXT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS diagnostics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      incident_id INTEGER NULL REFERENCES incidents(id) ON DELETE SET NULL,
+      target_id INTEGER NULL REFERENCES probe_targets(id) ON DELETE SET NULL,
+      tool TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      duration_ms REAL NULL,
+      status TEXT NOT NULL CHECK (status IN ('ok','error','timeout')),
+      error TEXT NULL,
+      result_json TEXT NULL,
+      raw_output TEXT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS devices (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('nas','macos','other')),
+      token_hash TEXT NULL,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NULL,
+      last_skew_ms REAL NULL
+    )
+    """,
+)
+
+
+def _read_schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    if row is None:
+        return LEGACY_SCHEMA_VERSION
+    try:
+        return int(str(row["value"]).strip())
+    except ValueError:
+        return LEGACY_SCHEMA_VERSION
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply pending migrations; each one runs in a single transaction."""
+    version = _read_schema_version(conn)
+    if version >= SCHEMA_VERSION:
+        return
+    if version < 2:
+        conn.execute("BEGIN")
+        try:
+            _migrate_1_to_2(conn)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def _migrate_1_to_2(conn: sqlite3.Connection) -> None:
+    now_iso = _utc_now_iso()
+    for statement in SCHEMA_V2_DDL:
+        conn.execute(statement)
+    conn.execute(
+        "INSERT OR IGNORE INTO devices(id, name, kind, created_at) VALUES ('nas','NAS (kabel)','nas',?)",
+        (now_iso,),
+    )
+    _seed_probe_targets(conn, now_iso)
+    conn.execute(
+        """
+        INSERT INTO config_changes(changed_at, key, old_value, new_value, source)
+        VALUES (?,?,?,?,?)
+        """,
+        (now_iso, "schema_version", "1", "2", "migration"),
+    )
+    conn.execute(
+        """
+        INSERT INTO meta(key, value) VALUES ('schema_version','2')
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """
+    )
+
+
+def _float_or(raw: str | None, fallback: float) -> float:
+    try:
+        return float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _int_or(raw: str | None, fallback: int) -> int:
+    try:
+        return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _seed_probe_targets(conn: sqlite3.Connection, now_iso: str) -> None:
+    """Seed the default targets of spec §3.1 — only when the table is empty."""
+    if conn.execute("SELECT 1 FROM probe_targets LIMIT 1").fetchone() is not None:
+        return
+
+    cfg = AppConfig()
+    settings = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings").fetchall()}
+    gateway_host = (os.getenv("GATEWAY_HOST") or "").strip()
+    legacy_host, legacy_port = connectivity.resolve_target(
+        settings.get("connect_target", cfg.connect_target), cfg.connect_default_port
+    )
+    legacy_interval = _float_or(settings.get("connect_interval_seconds"), cfg.connect_interval_seconds)
+    legacy_timeout = _int_or(settings.get("ping_timeout_ms"), cfg.ping_timeout_ms)
+
+    rows: list[tuple[Any, ...]] = [
+        ("gateway", "gateway", "icmp", gateway_host, None, 1.0, 1000, 1 if gateway_host else 0, None),
+        ("cloudflare-dns", "internet", "icmp", "1.1.1.1", None, 1.0, 1000, 1, None),
+        ("google-dns", "internet", "icmp", "8.8.8.8", None, 1.0, 1000, 1, None),
+        ("quad9-dns", "internet", "icmp", "9.9.9.9", None, 1.0, 1000, 1, None),
+        ("legacy-tcp", "tcp", "tcp", legacy_host, legacy_port, legacy_interval, legacy_timeout, 1, None),
+        (
+            "dns-system",
+            "dns",
+            "dns",
+            "example.com",
+            None,
+            30.0,
+            2000,
+            1,
+            json.dumps({"qname": "example.com", "resolver": "system"}),
+        ),
+        (
+            "https-cloudflare",
+            "https",
+            "https",
+            "https://cloudflare.com/cdn-cgi/trace",
+            443,
+            60.0,
+            5000,
+            1,
+            None,
+        ),
+        (
+            "https-google",
+            "https",
+            "https",
+            "https://www.google.com/generate_204",
+            443,
+            60.0,
+            5000,
+            1,
+            None,
+        ),
+    ]
+    conn.executemany(
+        """
+        INSERT INTO probe_targets(
+          name, kind, protocol, host, port, interval_seconds, timeout_ms, enabled,
+          extra_json, family_pref, created_at, updated_at
+        )
+        VALUES (?,?,?,?,?,?,?,?,?,'auto',?,?)
+        """,
+        [row + (now_iso, now_iso) for row in rows],
+    )
+
+
 def get_settings(db_path: str, keys: list[str]) -> dict[str, str]:
     if not keys:
         return {}
@@ -169,17 +476,40 @@ def get_settings(db_path: str, keys: list[str]) -> dict[str, str]:
         return {r["key"]: r["value"] for r in rows}
 
 
-def set_setting(db_path: str, key: str, value: str, now_iso: str | None = None) -> None:
+def set_setting(
+    db_path: str,
+    key: str,
+    value: str,
+    now_iso: str | None = None,
+    source: str = "ui",
+) -> None:
+    """Store a setting and append a `config_changes` row when the value changes."""
     now_iso = now_iso or _utc_now_iso()
     with db_conn(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO settings(key, value, updated_at)
-            VALUES (?,?,?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-            """,
-            (key, value, now_iso),
-        )
+        conn.execute("BEGIN")
+        try:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+            old_value = row["value"] if row is not None else None
+            conn.execute(
+                """
+                INSERT INTO settings(key, value, updated_at)
+                VALUES (?,?,?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (key, value, now_iso),
+            )
+            if old_value != value:
+                conn.execute(
+                    """
+                    INSERT INTO config_changes(changed_at, key, old_value, new_value, source)
+                    VALUES (?,?,?,?,?)
+                    """,
+                    (now_iso, key, old_value, value, source),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def ensure_default_setting(db_path: str, key: str, value: str) -> None:
@@ -187,7 +517,7 @@ def ensure_default_setting(db_path: str, key: str, value: str) -> None:
         row = conn.execute("SELECT 1 FROM settings WHERE key = ? LIMIT 1", (key,)).fetchone()
         if row:
             return
-    set_setting(db_path, key, value)
+    set_setting(db_path, key, value, source="env")
 
 
 def get_current_connectivity_period(db_path: str):
