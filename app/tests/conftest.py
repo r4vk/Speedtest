@@ -48,13 +48,21 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     # AppConfig reads the environment at class definition time, so the config
     # module has to be reloaded before main.py picks the class up.
     config_module = importlib.import_module("speedtest_app.config")
+    db_module = importlib.import_module("speedtest_app.db")
     importlib.reload(config_module)
     main_module = importlib.import_module("speedtest_app.main")
     importlib.reload(main_module)
 
-    with TestClient(main_module.app) as test_client:
-        test_client.app_db_path = app_db_path
-        yield test_client
+    try:
+        with TestClient(main_module.app) as test_client:
+            test_client.app_db_path = app_db_path
+            yield test_client
+    finally:
+        # Restore the environment snapshot the reloaded modules captured, so
+        # tests running after this one see the original configuration.
+        monkeypatch.undo()
+        importlib.reload(config_module)
+        importlib.reload(db_module)
 
 
 @pytest.fixture

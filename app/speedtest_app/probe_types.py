@@ -146,7 +146,7 @@ class ProbeResult:
             ip_family=int(ip_family) if ip_family is not None else None,
             error_kind=data.get("error_kind"),
             error_detail=data.get("error_detail"),
-            stages={k: float(v) for k, v in stages.items()} if stages else None,
+            stages={k: float(v) for k, v in stages.items()} if stages is not None else None,
             device_id=data.get("device_id") or "nas",
             load_test_id=int(load_test_id) if load_test_id is not None else None,
             external_id=data.get("external_id"),

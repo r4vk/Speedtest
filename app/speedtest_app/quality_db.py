@@ -460,13 +460,17 @@ def upsert_aggregate(db_path: str, row: Mapping[str, Any]) -> None:
     columns = list(row)
     placeholders = ",".join(["?"] * len(columns))
     updatable = [c for c in columns if c not in {"target_id", "bucket", "bucket_start"}]
-    assignments = ",".join(f"{c} = excluded.{c}" for c in updatable)
+    on_conflict = (
+        f"DO UPDATE SET {','.join(f'{c} = excluded.{c}' for c in updatable)}"
+        if updatable
+        else "DO NOTHING"
+    )
     with db_conn(db_path) as conn:
         conn.execute(
             f"""
             INSERT INTO probe_aggregates({','.join(columns)})
             VALUES ({placeholders})
-            ON CONFLICT(target_id, bucket, bucket_start) DO UPDATE SET {assignments}
+            ON CONFLICT(target_id, bucket, bucket_start) {on_conflict}
             """,
             tuple(row[c] for c in columns),
         )

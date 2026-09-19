@@ -1,6 +1,12 @@
 """`/api/report/quality` reports observed time, not wall-clock guesses (spec §9)."""
 from __future__ import annotations
 
+import asyncio
+import importlib
+import logging
+import os
+import sqlite3
+
 import pytest
 
 from speedtest_app import quality_db
@@ -116,6 +122,26 @@ def test_disabled_monitor_inside_an_outage_is_excluded(client, utc_iso):
     assert [g["reason"] for g in data["gaps"]] == ["disabled"]
 
 
+async def test_heartbeat_loop_survives_a_failing_heartbeat(client, caplog):
+    main_module = importlib.import_module("speedtest_app.main")
+    state = main_module.RunningState(stop=asyncio.Event())
+    attempts: list[str] = []
+
+    class FlakyTracker:
+        def heartbeat(self, now_iso: str) -> None:
+            attempts.append(now_iso)
+            if len(attempts) == 1:
+                raise sqlite3.OperationalError("database is locked")
+            state.stop.set()
+
+    with caplog.at_level(logging.WARNING):
+        await main_module._session_heartbeat_loop(FlakyTracker(), state, interval_seconds=0.001)
+
+    # the first heartbeat failed loudly, the loop kept going and beat again
+    assert len(attempts) == 2
+    assert "heartbeat failed" in caplog.text.lower()
+
+
 def test_range_partially_without_data_has_coverage_below_100(client, utc_iso):
     db_path = client.app_db_path
     _add_session(db_path, utc_iso(-2 * HOUR), utc_iso(-1 * HOUR))
@@ -126,3 +152,13 @@ def test_range_partially_without_data_has_coverage_below_100(client, utc_iso):
     assert data["coverage_pct"] == pytest.approx(50.0)
     assert data["observed_seconds"] == pytest.approx(HOUR)
     assert [g["reason"] for g in data["gaps"]] == ["not_running"]
+
+
+def test_client_fixture_restores_the_reloaded_modules():
+    # Runs after the `client` tests of this module: their teardown must have put
+    # the config snapshot (and db's reference to it) back.
+    config_module = importlib.import_module("speedtest_app.config")
+    db_module = importlib.import_module("speedtest_app.db")
+
+    assert config_module.AppConfig().data_dir == os.getenv("DATA_DIR", "/data")
+    assert db_module.AppConfig is config_module.AppConfig

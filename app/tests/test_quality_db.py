@@ -1,6 +1,8 @@
 """Accessors for the schema v2 tables."""
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from speedtest_app import quality_db
@@ -62,13 +64,28 @@ def test_probe_result_round_trip(db_path, utc_iso):
         stages={"dns_ms": 3.5, "connect_ms": 7.75},
     )
 
-    assert quality_db.insert_probe_results(db_path, [result]) == 1
+    empty_stages = ProbeResult(
+        target_id=target.id,
+        protocol=Protocol.ICMP,
+        started_at=utc_iso(1),
+        duration_ms=2.0,
+        outcome=Outcome.TIMEOUT,
+        timeout_ms=1000,
+        stages={},
+    )
+
+    assert quality_db.insert_probe_results(db_path, [result, empty_stages]) == 2
 
     rows = quality_db.query_probe_results(db_path, utc_iso(-60), utc_iso(60))
-    assert len(rows) == 1
+    assert len(rows) == 2
     assert ProbeResult.from_row(rows[0]) == result
-    assert quality_db.count_probe_results(db_path, utc_iso(-60), utc_iso(60)) == 1
-    assert quality_db.last_result_per_target(db_path)[target.id]["rtt_ms"] == 11.25
+    # an empty stage map must survive as {}, not collapse into None
+    assert ProbeResult.from_row(rows[1]) == empty_stages
+    assert ProbeResult.from_row(rows[1]).stages == {}
+    assert quality_db.count_probe_results(db_path, utc_iso(-60), utc_iso(60)) == 2
+    last = quality_db.last_result_per_target(db_path)[target.id]
+    assert last["started_at"] == utc_iso(1)
+    assert last["rtt_ms"] is None
 
 
 def test_probe_results_are_ordered_and_filtered(db_path, utc_iso):
@@ -170,6 +187,17 @@ def test_aggregate_upsert_replaces_conflicting_bucket(db_path, utc_iso):
     assert stored[0]["attempts"] == 200
     assert stored[0]["loss_pct"] == 5.0
     assert stored[0]["computed_at"] == utc_iso(60)
+
+    # A row with nothing but the key columns must not build an empty "DO UPDATE SET".
+    # It is still rejected, but by the table's NOT NULL constraints — not by broken SQL.
+    with pytest.raises(sqlite3.IntegrityError):
+        quality_db.upsert_aggregate(
+            db_path,
+            {"target_id": target.id, "bucket": "1h", "bucket_start": "2026-01-10T10:00:00.000Z"},
+        )
+    stored = quality_db.query_aggregates(db_path, "1h", "2026-01-10T00:00:00.000Z", "2026-01-11T00:00:00.000Z")
+    assert len(stored) == 1
+    assert stored[0]["attempts"] == 200
 
     assert quality_db.mark_aggregates_not_from_raw(
         db_path, target.id, "1h", "2026-01-10T00:00:00.000Z", "2026-01-11T00:00:00.000Z"

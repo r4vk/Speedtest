@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import logging
 import os
 import uuid
 from datetime import datetime
@@ -34,6 +35,8 @@ from .scheduler import RunningState, connectivity_loop, run_speedtest_once, spee
 from .telemetry import active_heartbeat_loop, send_startup_event
 from .time_utils import parse_dt, parse_range, to_iso_z, to_local_display, to_local_iso, utc_now
 
+
+log = logging.getLogger(__name__)
 
 DEFAULT_SPEEDTEST_MODE = "speedtest.net"
 #: Measuring device of this instance (spec §3: `devices` is seeded with 'nas').
@@ -91,14 +94,29 @@ def api_version():
     return {"version": APP_VERSION}
 
 
-async def _session_heartbeat_loop(tracker: SessionTracker, state: RunningState) -> None:
+def _heartbeat_once(tracker: SessionTracker) -> bool:
+    """One heartbeat. A failure costs one heartbeat, never the whole loop."""
+    try:
+        tracker.heartbeat(to_iso_z(utc_now()))
+        return True
+    except Exception:
+        log.warning("Monitor session heartbeat failed", exc_info=True)
+        return False
+
+
+async def _session_heartbeat_loop(
+    tracker: SessionTracker,
+    state: RunningState,
+    interval_seconds: float = SESSION_HEARTBEAT_SECONDS,
+) -> None:
     """Keep `last_seen_at` fresh so that coverage knows the monitor was alive."""
     while not state.stop.is_set():
         try:
-            await asyncio.wait_for(state.stop.wait(), timeout=SESSION_HEARTBEAT_SECONDS)
+            await asyncio.wait_for(state.stop.wait(), timeout=interval_seconds)
             return
         except asyncio.TimeoutError:
-            tracker.heartbeat(to_iso_z(utc_now()))
+            pass
+        _heartbeat_once(tracker)
 
 
 @app.on_event("startup")
