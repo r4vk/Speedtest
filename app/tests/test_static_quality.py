@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from speedtest_app.quality_settings import QUALITY_SETTING_SPECS
+
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 APP_JS = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
@@ -86,6 +88,128 @@ def test_every_id_quality_js_looks_up_exists_in_index_html():
     html_ids = _html_ids(INDEX_HTML)
     missing = sorted(referenced - html_ids)
     assert not missing, f"quality.js references ids missing from index.html: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# settings dialog: an empty field still shows its default, every load-test /
+# diagnostics / retention field explains itself (user-visible UX complaint:
+# "pola ustawień ... powinny mieć wartości domyślne i informacje co i jak
+# ustawiać")
+# ---------------------------------------------------------------------------
+
+#: The same `["q-cfg-…", "klucz"]` shape `_ID_PATTERNS` matches, but keeping
+#: the key too so a placeholder can be checked against its spec default.
+_ID_KEY_PATTERN = re.compile(r'\[\s*"(q-cfg-[a-zA-Z0-9-]+)"\s*,\s*"([a-zA-Z0-9_]+)"')
+
+
+def _config_id_key_pairs(source: str) -> dict[str, str]:
+    return dict(_ID_KEY_PATTERN.findall(source))
+
+
+def _input_tag(input_id: str, html: str) -> str | None:
+    match = re.search(r'<input\b[^>]*\bid="' + re.escape(input_id) + r'"[^>]*>', html)
+    return match.group(0) if match else None
+
+
+def _is_select(input_id: str, html: str) -> bool:
+    return re.search(r'<select\b[^>]*\bid="' + re.escape(input_id) + r'"', html) is not None
+
+
+def _placeholder_default_str(kind: type, default: object) -> str:
+    """Render a `QUALITY_SETTING_SPECS` default the way a placeholder shows it.
+
+    Every numeric default in the table is a whole number (see
+    `quality_settings.py`), so this renders `20.0` as `"20"` the way an
+    `<input type="number">` would, not Python's `"20.0"`.
+    """
+    if kind in (int, float):
+        return str(int(default))
+    return str(default)
+
+
+def test_every_number_or_text_config_input_has_a_placeholder_matching_its_default():
+    """A field left empty must still tell the operator what will be used.
+
+    Reads the expected value straight from `QUALITY_SETTING_SPECS` — the
+    single source of truth for every quality setting's default — instead of
+    hardcoding numbers here, so a future change to a default is caught as a
+    stale placeholder instead of silently drifting from what the UI promises.
+    """
+    id_key_pairs = _config_id_key_pairs(QUALITY_JS)
+    # Guards the extraction pattern itself: a rewrite that stops matching
+    # anything must not make the loop below vacuously pass.
+    assert len(id_key_pairs) >= 25
+
+    checked: list[str] = []
+    for input_id, key in id_key_pairs.items():
+        spec = QUALITY_SETTING_SPECS.get(key)
+        if spec is None:
+            continue
+        kind, default = spec
+        if kind is bool:
+            continue  # checkboxes: a placeholder has no meaning here
+        if _is_select(input_id, INDEX_HTML):
+            continue  # <select>: its <option> order already encodes the default
+        if kind is str and default == "":
+            continue  # nothing useful to promise; keeps its illustrative example instead
+        tag = _input_tag(input_id, INDEX_HTML)
+        assert tag is not None, f'{input_id}: no matching <input id="{input_id}"> in index.html'
+        expected = _placeholder_default_str(kind, default)
+        assert f'placeholder="{expected}"' in tag, (
+            f"{input_id} (key={key!r}): expected placeholder={expected!r}, got {tag!r}"
+        )
+        checked.append(input_id)
+
+    # Guards against every candidate being skipped by the exemptions above.
+    assert len(checked) >= 20
+
+
+_HINTED_SECTION_IDS: dict[str, str] = {
+    "q-loadtest-section": "Testy obciążeniowe",
+    "q-diagnostics-section": "Diagnostyka",
+    "q-retention-section": "Retencja",
+}
+
+
+def _section_html(section_id: str, html: str) -> str:
+    """The inner HTML of one `.settings-section`, up to the next section."""
+    start_match = re.search(
+        r'<div class="settings-section"[^>]*\bid="' + re.escape(section_id) + r'"[^>]*>', html
+    )
+    assert start_match, f"section id={section_id!r} not found in index.html"
+    start = start_match.end()
+    end_match = re.search(r'<!--\s*Sekcja:|<div class="modal-actions"', html[start:])
+    end = start + end_match.start() if end_match else len(html)
+    return html[start:end]
+
+
+def test_every_field_in_loadtest_diagnostics_and_retention_has_a_hint():
+    """Every q-cfg-* field in these three sections explains itself.
+
+    The header enable/disable toggle of each section is exempt: it is
+    covered by the section-level `<p class="hint">` note instead (the same
+    pattern "Cele pomiarowe" already uses for "Tryb diagnostyczny"), which
+    this test also requires to exist.
+    """
+    checked_ids: set[str] = set()
+    for section_id, title in _HINTED_SECTION_IDS.items():
+        section_html = _section_html(section_id, INDEX_HTML)
+        assert '<p class="hint">' in section_html, f"section {title!r} has no section-level note"
+        labels = re.findall(r"<label\b.*?</label>", section_html, re.S)
+        assert labels, f"section {title!r}: no <label> blocks found"
+        for label in labels:
+            if "toggle-switch" in label:
+                continue  # header enable/disable toggle: covered by the section note above
+            ids_in_label = re.findall(r'id="(q-cfg-[a-zA-Z0-9-]+)"', label)
+            if not ids_in_label:
+                continue
+            assert "hint-inline" in label, (
+                f"{title!r}: field(s) {ids_in_label} have no hint-inline: {label!r}"
+            )
+            checked_ids.update(ids_in_label)
+
+    # 8 (load test) + 5 (diagnostics) + 5 (retention) fields, minus some slack.
+    assert len(checked_ids) >= 15
 
 
 # ---------------------------------------------------------------------------
