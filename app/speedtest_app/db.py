@@ -16,6 +16,7 @@ from typing import Any, Iterator
 
 from . import connectivity
 from .config import AppConfig
+from .time_utils import to_iso_z
 
 
 SCHEMA_VERSION = 2
@@ -25,7 +26,8 @@ LEGACY_SCHEMA_VERSION = 1
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    """Current UTC time in the single storage format of spec §1 (millisecond ISO-Z)."""
+    return to_iso_z(datetime.now(timezone.utc))
 
 
 def _parse_utc_iso(value: str) -> datetime:

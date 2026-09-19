@@ -30,9 +30,15 @@ def local_tz():
 
 
 def to_iso_z(dt: datetime) -> str:
+    """UTC ISO-8601 with a `Z` suffix and exactly millisecond precision.
+
+    The fixed width matters: stored timestamps are compared as strings, so
+    `...:00.500Z` must sort after `...:00.000Z` (design spec §1).
+    """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    utc = dt.astimezone(timezone.utc)
+    return f"{utc.strftime('%Y-%m-%dT%H:%M:%S')}.{utc.microsecond // 1000:03d}Z"
 
 
 def to_local_iso(dt: datetime) -> str:
