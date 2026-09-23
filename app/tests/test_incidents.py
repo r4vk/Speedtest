@@ -450,7 +450,16 @@ def test_incident_row_from_state_only_uses_real_incident_columns():
 
     row = incidents.incident_row_from_state(state, 1, "icmp", settings, 1.0)
 
-    assert set(row) == quality_db.INCIDENT_COLUMNS
+    # A subset, not an equality: the engine describes what it measured, and the
+    # table also carries columns nobody measures — `expected*` is decided when
+    # the incident closes, by rules this module knows nothing about. What must
+    # hold is that the engine invents no column of its own.
+    assert set(row) <= quality_db.INCIDENT_COLUMNS
+    assert set(row) >= quality_db.INCIDENT_COLUMNS - {
+        "expected",
+        "expected_source",
+        "expected_rule_id",
+    }
     assert row["target_id"] == 1
     assert row["protocol"] == "icmp"
     assert row["kind"] == "degraded"
