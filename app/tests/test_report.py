@@ -6,6 +6,7 @@ first test compares the model with `/api/quality/stats` field by field.
 from __future__ import annotations
 
 import json
+import re
 from datetime import timedelta
 
 import pytest
@@ -489,3 +490,109 @@ def test_report_separates_expected_downtime(client) -> None:
         params={"from": "2026-09-21T00:00:00.000Z", "to": "2026-09-21T05:00:00.000Z"},
     ).text
     assert "spodziewane" in html
+
+
+# ---------------------------------------------------------------------------
+# a hand-written verdict is printed as it was written (review finding: the
+# report branched on `expected_source` alone, so a row a person had cleared
+# printed as "tak (ręcznie)" — the opposite of what the person recorded)
+# ---------------------------------------------------------------------------
+
+#: Spelled in UTC: `parse_dt` reads a naked `2026-09-21T00:00` as *local*, so a
+#: wall-clock range would slide off the fixtures on any machine but UTC+0.
+VERDICT_RANGE = {"from": "2026-09-21T00:00:00.000Z", "to": "2026-09-21T05:00:00.000Z"}
+
+
+def _expected_column(html: str, heading: str) -> list[str]:
+    """The last cell of every data row of the first table under `heading`.
+
+    The flag column is the last one in both tables, and reading it out of the
+    rendered page is the point: the model has been right all along — it is the
+    template that spoke for it.
+    """
+    section = html[html.index(heading) :]
+    table = section[section.index("<table>") : section.index("</table>")]
+    rows = re.findall(r"<tr>(.*?)</tr>", table, re.S)[1:]
+    return [re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)[-1].strip() for row in rows]
+
+
+def test_report_availability_table_prints_the_verdict_a_person_wrote(client) -> None:
+    """Four outages, four different verdicts, four different labels (§6).
+
+    "Nobody has looked" and "a person looked and this was real" are different
+    facts — that difference is the whole reason `expected_source` is stored
+    for an `expected = 0` row, and the report is where it has to show.
+    """
+    db_path = client.app_db_path
+    for hour in (1, 2, 3, 4):
+        db.record_connectivity(db_path, is_up=False, now_iso=f"2026-09-21T0{hour}:00:00.000Z")
+        db.record_connectivity(db_path, is_up=True, now_iso=f"2026-09-21T0{hour}:05:00.000Z")
+    db.mark_connectivity_period_expected(
+        db_path,
+        started_at_iso="2026-09-21T01:00:00.000Z",
+        expected=True,
+        source="rule",
+        rule_id=None,
+    )
+    ids = [item["id"] for item in client.get("/api/outages", params=VERDICT_RANGE).json()["items"]]
+    assert client.patch(f"/api/outages/{ids[1]}/expected", json={"expected": True}).status_code == 200
+    assert client.patch(f"/api/outages/{ids[2]}/expected", json={"expected": False}).status_code == 200
+
+    html = client.get("/api/quality/report.html", params=VERDICT_RANGE).text
+
+    assert _expected_column(html, "<h2>Dostępność</h2>") == [
+        "tak",
+        "tak (ręcznie)",
+        "nie (ręcznie)",
+        "—",
+    ]
+
+
+def test_report_incident_table_prints_the_verdict_a_person_wrote(client) -> None:
+    """The same ladder in the incidents table, which had the same bug."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="verdict-report")
+    for hour, fields in (
+        (1, {"expected": 1, "expected_source": "rule"}),
+        (2, {}),
+        (3, {}),
+        (4, {}),
+    ):
+        quality_db.insert_incident(
+            db_path,
+            target_id=target.id,
+            protocol="icmp",
+            kind="outage",
+            started_at=f"2026-09-21T0{hour}:00:00.000Z",
+            ended_at=f"2026-09-21T0{hour}:04:00.000Z",
+            closed_at=f"2026-09-21T0{hour}:05:00.000Z",
+            close_reason="recovered",
+            window_seconds=10,
+            probe_interval_seconds=1.0,
+            **fields,
+        )
+    ids = [
+        incident["id"]
+        for incident in client.get("/api/quality/incidents", params=VERDICT_RANGE).json()["items"]
+    ]
+    assert (
+        client.patch(
+            f"/api/quality/incidents/{ids[1]}/expected", json={"expected": True}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.patch(
+            f"/api/quality/incidents/{ids[2]}/expected", json={"expected": False}
+        ).status_code
+        == 200
+    )
+
+    html = client.get("/api/quality/report.html", params=VERDICT_RANGE).text
+
+    assert _expected_column(html, "<h2>Incydenty</h2>") == [
+        "tak",
+        "tak (ręcznie)",
+        "nie (ręcznie)",
+        "—",
+    ]

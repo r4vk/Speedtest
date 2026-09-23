@@ -41,6 +41,20 @@
 </head>
 <body>
 
+{#- The verdict on one outage, as a person or a rule left it (design spec §6).
+    `expected` is asked first and the source only qualifies the answer: reading
+    the source alone printed a row somebody had cleared by hand as "tak
+    (ręcznie)", telling an ISP the outage was planned when the person recorded
+    the opposite. A cleared row says so instead of showing the "—" of a row
+    nobody has looked at — that difference is why the column exists. -#}
+{%- macro expected_label(expected, source) -%}
+{%- if expected -%}
+{{ "tak (ręcznie)" if source == "manual" else "tak" }}
+{%- else -%}
+{{ "nie (ręcznie)" if source == "manual" else "—" }}
+{%- endif -%}
+{%- endmacro %}
+
 <h1>Raport jakości łącza</h1>
 <p class="meta">
   <span><strong>Zakres:</strong> {{ range["from"] }} … {{ range["to"] }} ({{ tz }})</span>
@@ -136,7 +150,7 @@
     <td>{{ period["started_at"] }}</td>
     <td>{{ period["ended_at"] or "trwa" }}</td>
     <td class="num">{{ period["observed_seconds"] | seconds }}</td>
-    <td>{{ "tak (ręcznie)" if period["expected_source"] == "manual" else ("tak" if period["expected"] else "—") }}</td>
+    <td>{{ expected_label(period["expected"], period["expected_source"]) }}</td>
   </tr>
   {% else %}
   <tr><td colspan="4" class="empty">brak zarejestrowanych przerw</td></tr>
@@ -213,7 +227,7 @@
     <td class="num">{{ incident["peak_p95_rtt_ms"] | number }}</td>
     <td class="num">{{ incident["longest_fail_streak"] if incident["longest_fail_streak"] is not none else "—" }}</td>
     <td class="num">{{ incident["windows_degraded"] }}</td>
-    <td>{{ "tak (ręcznie)" if incident["expected_source"] == "manual" else ("tak" if incident["expected"] else "—") }}</td>
+    <td>{{ expected_label(incident["expected"], incident["expected_source"]) }}</td>
   </tr>
   {% else %}
   <tr><td colspan="10" class="empty">brak danych</td></tr>
