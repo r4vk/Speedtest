@@ -51,7 +51,14 @@ INCIDENT_COLUMNS = frozenset(
         "longest_fail_streak",
         "windows_degraded",
         "summary_json",
+        "expected",
+        "expected_source",
+        "expected_rule_id",
     }
+)
+#: Columns writable on an `expected_windows` rule row (design spec §7).
+EXPECTED_WINDOW_COLUMNS = frozenset(
+    {"name", "time_from", "time_to", "days", "target_id", "enabled", "note", "created_at"}
 )
 AGGREGATE_COLUMNS = frozenset(
     {
@@ -259,18 +266,30 @@ def insert_probe_results(db_path: str, rows: Sequence[ProbeResult]) -> int:
         return conn.total_changes - before
 
 
+#: The only columns `stats.compute_stats`, `stats.bucket_rows` and
+#: `quality_views.error_kinds_histogram` read. Everything that turns raw rows
+#: into numbers goes through those three, so the analytics endpoints select
+#: this projection instead of the whole row: a probe row carries
+#: `stages_json`, `error_detail` and eleven more columns that no statistic
+#: looks at, and the panel materialises a full day of them per target, twice
+#: per refresh. Only `probes.csv` needs the complete row, and it streams.
+METRIC_COLUMNS = ("started_at", "outcome", "rtt_ms", "error_kind")
+
+
 def _probe_results_query(
     start_iso: str,
     end_iso: str,
     target_id: int | None,
     protocol: str | None,
     device_id: str | None,
+    columns: Sequence[str] = ("*",),
 ) -> tuple[str, tuple[Any, ...]]:
-    """The one SELECT behind both the list and the streaming accessor.
+    """The one SELECT behind the list, the narrow and the streaming accessors.
 
-    `query_probe_results` and `iter_probe_results` must return exactly the
-    same rows in exactly the same order, or a CSV export and the statistics
-    built from the same range would disagree.
+    `query_probe_results`, `query_probe_metrics` and `iter_probe_results` must
+    return exactly the same rows in exactly the same order, or a CSV export
+    and the statistics built from the same range would disagree. Only the
+    projection differs.
     """
     where = ["started_at >= ?", "started_at <= ?"]
     params: list[Any] = [start_iso, end_iso]
@@ -284,7 +303,7 @@ def _probe_results_query(
         where.append("device_id = ?")
         params.append(str(device_id))
     sql = (
-        f"SELECT * FROM probe_results WHERE {' AND '.join(where)} "
+        f"SELECT {', '.join(columns)} FROM probe_results WHERE {' AND '.join(where)} "
         "ORDER BY started_at ASC, id ASC"
     )
     return sql, tuple(params)
@@ -306,6 +325,28 @@ def query_probe_results(
     served from raw rows at all (`quality_views.RAW_RANGE_MAX_DAYS`).
     """
     sql, params = _probe_results_query(start_iso, end_iso, target_id, protocol, device_id)
+    with db_conn(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return _dicts(rows)
+
+
+def query_probe_metrics(
+    db_path: str,
+    start_iso: str,
+    end_iso: str,
+    target_id: int | None = None,
+    protocol: str | None = None,
+    device_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """`query_probe_results` narrowed to :data:`METRIC_COLUMNS`.
+
+    The same rows in the same order — only the columns no statistic reads are
+    left in the database. Callers that need a whole row (the CSV export, which
+    reproduces what was stored) must keep using the wide accessors.
+    """
+    sql, params = _probe_results_query(
+        start_iso, end_iso, target_id, protocol, device_id, columns=METRIC_COLUMNS
+    )
     with db_conn(db_path) as conn:
         rows = conn.execute(sql, params).fetchall()
     return _dicts(rows)
@@ -349,24 +390,41 @@ def iter_probe_results(
             cursor.close()
 
 
+#: One seek per target on `idx_probe_results_target_time`, which is ordered
+#: `(target_id, started_at)` — exactly the shape this asks for. The previous
+#: `ROW_NUMBER() OVER (PARTITION BY target_id ...)` over the bare table had no
+#: `WHERE` at all, so `/api/targets` read and sorted every probe ever written:
+#: ~10 s on a fortnight of one-second probes, and growing with the archive
+#: rather than with the number of targets.
+_LAST_RESULT_SQL = (
+    "SELECT * FROM probe_results WHERE target_id = ? "
+    "ORDER BY started_at DESC, id DESC LIMIT 1"
+)
+
+
+def last_result_plans(db_path: str) -> list[tuple[str, tuple[Any, ...]]]:
+    """The statements `last_result_per_target` runs, for `EXPLAIN QUERY PLAN`.
+
+    Exposed so the test suite can assert the plan stays a per-target index
+    seek; nothing in the application calls it.
+    """
+    return [(_LAST_RESULT_SQL, (target.id,)) for target in list_targets(db_path)]
+
+
 def last_result_per_target(db_path: str) -> dict[int, dict[str, Any]]:
-    with db_conn(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM (
-              SELECT *, ROW_NUMBER() OVER (
-                       PARTITION BY target_id ORDER BY started_at DESC, id DESC
-                     ) AS rn
-              FROM probe_results
-            )
-            WHERE rn = 1
-            """
-        ).fetchall()
+    """The newest row of each target, keyed by target id.
+
+    Targets that never produced a row are absent, as before.
+    """
     out: dict[int, dict[str, Any]] = {}
-    for row in rows:
-        data = dict(row)
-        data.pop("rn", None)
-        out[int(data["target_id"])] = data
+    with db_conn(db_path) as conn:
+        target_ids = [
+            int(row["id"]) for row in conn.execute("SELECT id FROM probe_targets ORDER BY id")
+        ]
+        for target_id in target_ids:
+            row = conn.execute(_LAST_RESULT_SQL, (target_id,)).fetchone()
+            if row is not None:
+                out[target_id] = dict(row)
     return out
 
 
@@ -487,14 +545,32 @@ def get_incident(db_path: str, incident_id: int) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+#: `expected` query modes shared by the incident and connectivity queries.
+EXPECTED_FILTERS = {"all", "exclude", "only"}
+
+
+def expected_clause(expected: str) -> str | None:
+    """SQL fragment for an `expected` filter, or `None` for "no filter"."""
+    if expected == "exclude":
+        return "expected = 0"
+    if expected == "only":
+        return "expected = 1"
+    return None
+
+
 def query_incidents(
     db_path: str,
     start_iso: str,
     end_iso: str,
     target_id: int | None = None,
     open_only: bool = False,
+    expected: str = "all",
 ) -> list[dict[str, Any]]:
-    """Incidents overlapping the range (an incident is open until `closed_at`)."""
+    """Incidents overlapping the range (an incident is open until `closed_at`).
+
+    `expected` is `all` (default), `exclude` or `only`; an unknown value is
+    read as `all`, so a typo in a query string can never hide an outage.
+    """
     where = ["started_at < ?", "(ended_at IS NULL OR ended_at > ?)"]
     params: list[Any] = [end_iso, start_iso]
     if target_id is not None:
@@ -502,6 +578,9 @@ def query_incidents(
         params.append(target_id)
     if open_only:
         where.append("closed_at IS NULL")
+    clause = expected_clause(expected)
+    if clause is not None:
+        where.append(clause)
     with db_conn(db_path) as conn:
         rows = conn.execute(
             f"SELECT * FROM incidents WHERE {' AND '.join(where)} ORDER BY started_at ASC, id ASC",
@@ -747,3 +826,43 @@ def upsert_device(
         )
         row = conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
     return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# expected_windows (design spec §7): recurring maintenance rules.
+#
+# A rule is configuration, not a measurement: `retention.py` never touches
+# this table (spec §11), and nothing here recomputes past `incidents` or
+# `connectivity_periods` rows — the verdict a rule produced at close time is
+# permanent (spec's "no retroactive rewrite").
+# ---------------------------------------------------------------------------
+
+def list_expected_windows(db_path: str, enabled_only: bool = False) -> list[dict[str, Any]]:
+    where = " WHERE enabled = 1" if enabled_only else ""
+    with db_conn(db_path) as conn:
+        rows = conn.execute(f"SELECT * FROM expected_windows{where} ORDER BY id").fetchall()
+    return _dicts(rows)
+
+
+def get_expected_window(db_path: str, window_id: int) -> dict[str, Any] | None:
+    with db_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM expected_windows WHERE id = ?", (window_id,)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def insert_expected_window(db_path: str, now_iso: str | None = None, **fields: Any) -> int:
+    fields.setdefault("created_at", now_iso or _now_iso())
+    fields.setdefault("enabled", 1)
+    with db_conn(db_path) as conn:
+        return _insert(conn, "expected_windows", fields, EXPECTED_WINDOW_COLUMNS)
+
+
+def update_expected_window(db_path: str, window_id: int, **fields: Any) -> int:
+    with db_conn(db_path) as conn:
+        return _update(conn, "expected_windows", window_id, fields, EXPECTED_WINDOW_COLUMNS)
+
+
+def delete_expected_window(db_path: str, window_id: int) -> bool:
+    with db_conn(db_path) as conn:
+        cur = conn.execute("DELETE FROM expected_windows WHERE id = ?", (window_id,))
+    return cur.rowcount > 0

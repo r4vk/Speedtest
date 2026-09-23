@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import inspect
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
-from speedtest_app import db, quality_db
+from speedtest_app import db, quality_db, retention
 from speedtest_app.probe_types import Outcome, ProbeResult, ProbeTarget, Protocol
 
 
@@ -383,3 +384,163 @@ def test_iter_probe_results_closes_its_connection(db_path, utc_iso, monkeypatch)
     assert len(drained) == 6
     with pytest.raises(sqlite3.ProgrammingError):
         opened[-1].execute("PRAGMA user_version")
+
+
+def test_last_result_per_target_uses_the_index_instead_of_scanning(db_path, utc_iso):
+    """`/api/targets` must not pay for the whole table to learn eight last rows.
+
+    The window-function form (`ROW_NUMBER() OVER (PARTITION BY target_id …)`)
+    reads and sorts every `probe_results` row ever written, so the panel's
+    target table got slower every day it ran — ten seconds on a fortnight of
+    one-second probes, whatever range the operator asked for. The plan must
+    stay a per-target seek on `idx_probe_results_target_time`.
+    """
+    target = _make_target(db_path)
+    other = _make_target(db_path, name="second-target")
+    common = dict(duration_ms=1.0, outcome=Outcome.TIMEOUT, timeout_ms=1000)
+    quality_db.insert_probe_results(
+        db_path,
+        [
+            ProbeResult(target_id=target.id, protocol=Protocol.ICMP, started_at=utc_iso(10), **common),
+            ProbeResult(target_id=target.id, protocol=Protocol.ICMP, started_at=utc_iso(30), **common),
+            ProbeResult(target_id=other.id, protocol=Protocol.ICMP, started_at=utc_iso(20), **common),
+        ],
+    )
+
+    last = quality_db.last_result_per_target(db_path)
+    assert last[target.id]["started_at"] == utc_iso(30)
+    assert last[other.id]["started_at"] == utc_iso(20)
+    assert "rn" not in last[target.id]
+
+    with db.db_conn(db_path) as conn:
+        plans = [
+            " ".join(str(part) for part in row)
+            for statement, params in quality_db.last_result_plans(db_path)
+            for row in conn.execute(f"EXPLAIN QUERY PLAN {statement}", params)
+        ]
+    assert plans, "no statement to explain"
+    for plan in plans:
+        assert "SCAN probe_results" not in plan, plan
+        assert "TEMP B-TREE" not in plan, plan
+        assert "idx_probe_results_target_time" in plan, plan
+
+
+def test_query_probe_metrics_is_the_narrow_twin_of_query_probe_results(db_path, utc_iso):
+    """Same rows, same order, only the four columns the statistics read.
+
+    `compute_stats`, `bucket_rows` and `error_kinds_histogram` touch
+    `started_at`, `outcome`, `rtt_ms` and `error_kind` and nothing else, but
+    the panel used to pull all sixteen columns — `stages_json` and
+    `error_detail` included — for every row of the range, twice per refresh
+    (once for `/api/quality/stats`, once for `/api/quality/timeline`). Only
+    `probes.csv` needs the whole row, and it streams.
+    """
+    target = _make_target(db_path)
+    other = _make_target(db_path, name="metrics-other")
+    quality_db.insert_probe_results(
+        db_path,
+        [
+            ProbeResult(
+                target_id=target.id, protocol=Protocol.ICMP, started_at=utc_iso(20),
+                duration_ms=1.0, outcome=Outcome.OK, timeout_ms=1000, rtt_ms=7.5,
+                stages={"dns_ms": 1.0},
+            ),
+            ProbeResult(
+                target_id=target.id, protocol=Protocol.ICMP, started_at=utc_iso(10),
+                duration_ms=1.0, outcome=Outcome.ERROR, timeout_ms=1000,
+                error_kind="dns", error_detail="NXDOMAIN, at length",
+            ),
+            ProbeResult(
+                target_id=other.id, protocol=Protocol.ICMP, started_at=utc_iso(15),
+                duration_ms=1.0, outcome=Outcome.TIMEOUT, timeout_ms=1000,
+            ),
+        ],
+    )
+
+    wide = quality_db.query_probe_results(db_path, utc_iso(0), utc_iso(60))
+    narrow = quality_db.query_probe_metrics(db_path, utc_iso(0), utc_iso(60))
+
+    assert set(narrow[0]) == {"started_at", "outcome", "rtt_ms", "error_kind"}
+    assert [row["started_at"] for row in narrow] == [row["started_at"] for row in wide]
+    assert [row["outcome"] for row in narrow] == [row["outcome"] for row in wide]
+    assert [row["rtt_ms"] for row in narrow] == [row["rtt_ms"] for row in wide]
+    assert [row["error_kind"] for row in narrow] == [row["error_kind"] for row in wide]
+
+    only_target = quality_db.query_probe_metrics(db_path, utc_iso(0), utc_iso(60), target_id=target.id)
+    assert [row["started_at"] for row in only_target] == [utc_iso(10), utc_iso(20)]
+
+
+# ---------------------------------------------------------------------------
+# expected_windows (design spec §7/§11) and the incident `expected` filter
+# ---------------------------------------------------------------------------
+
+
+def test_expected_window_crud(db_path):
+    window_id = quality_db.insert_expected_window(
+        db_path, name="restart routera", time_from="02:55", time_to="03:15",
+        days="[0,1,2,3,4,5,6]", note="codzienny",
+    )
+    rows = quality_db.list_expected_windows(db_path)
+    assert [r["name"] for r in rows] == ["restart routera"]
+    assert rows[0]["enabled"] == 1 and rows[0]["created_at"]
+
+    assert quality_db.update_expected_window(db_path, window_id, enabled=0) == 1
+    assert quality_db.list_expected_windows(db_path, enabled_only=True) == []
+
+    assert quality_db.delete_expected_window(db_path, window_id) is True
+    assert quality_db.delete_expected_window(db_path, window_id) is False
+
+
+def test_expected_window_rejects_unknown_column(db_path):
+    with pytest.raises(ValueError):
+        quality_db.insert_expected_window(db_path, name="x", nonsense=1)
+
+
+def test_incident_expected_columns_round_trip(db_path):
+    target = quality_db.list_targets(db_path)[0]
+    incident_id = quality_db.insert_incident(
+        db_path, target_id=target.id, protocol="icmp", kind="outage",
+        started_at="2026-09-21T01:00:00.000Z", window_seconds=10, probe_interval_seconds=1.0,
+    )
+    quality_db.update_incident(
+        db_path, incident_id, expected=1, expected_source="rule", expected_rule_id=None
+    )
+    row = quality_db.get_incident(db_path, incident_id)
+    assert (row["expected"], row["expected_source"]) == (1, "rule")
+
+
+def test_query_incidents_expected_filter(db_path):
+    target = quality_db.list_targets(db_path)[0]
+    common = dict(target_id=target.id, protocol="icmp", kind="outage",
+                  window_seconds=10, probe_interval_seconds=1.0)
+    plain = quality_db.insert_incident(db_path, started_at="2026-09-21T01:00:00.000Z", **common)
+    planned = quality_db.insert_incident(db_path, started_at="2026-09-21T02:00:00.000Z", **common)
+    quality_db.update_incident(db_path, planned, expected=1, expected_source="rule")
+
+    start, end = "2026-09-21T00:00:00.000Z", "2026-09-21T23:00:00.000Z"
+
+    def ids(mode):
+        return [r["id"] for r in quality_db.query_incidents(db_path, start, end, expected=mode)]
+
+    assert ids("all") == [plain, planned]
+    assert ids("exclude") == [plain]
+    assert ids("only") == [planned]
+    assert ids("nonsense") == [plain, planned]      # unknown value falls back to "all"
+
+
+def test_retention_never_deletes_expected_windows(db_path):
+    """Rules are configuration, not measurements (spec §11).
+
+    `retention.py`'s real entry point takes explicit settings/targets rather
+    than reading the `settings` table itself (see `test_retention.py`), so
+    this drives it directly instead of the plan's placeholder `set_setting` +
+    bare `run_retention(db_path)` call.
+    """
+    quality_db.insert_expected_window(
+        db_path, name="restart routera", time_from="02:55", time_to="03:15", days="[0]"
+    )
+    settings = retention.RetentionSettings(
+        raw_days=1, aggregate_days=1, incident_days=1, load_test_raw_days=1, diagnostics_days=1,
+    )
+    retention.run_retention(db_path, settings, now=datetime(2026, 9, 21, tzinfo=timezone.utc), targets=[])
+    assert len(quality_db.list_expected_windows(db_path)) == 1
