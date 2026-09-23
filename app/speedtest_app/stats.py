@@ -22,7 +22,8 @@ import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from math import fsum
-from typing import Any, Iterable, Mapping
+from collections.abc import Mapping
+from typing import Any, Iterable, Sequence
 
 from .time_utils import parse_dt, to_iso_z
 
@@ -62,7 +63,14 @@ class ProbeStats:
 
 
 def _field(row: Any, name: str) -> Any:
-    """Read ``name`` from a mapping row or from a dataclass row."""
+    """Read ``name`` from a mapping row or from a dataclass row.
+
+    ``dict`` is tried first: rows come from ``sqlite3`` as plain dicts by the
+    hundreds of thousands, and an ``isinstance`` against the abstract
+    ``Mapping`` costs a full ABC subclass check every time.
+    """
+    if type(row) is dict:
+        return row.get(name)
     if isinstance(row, Mapping):
         return row.get(name)
     return getattr(row, name, None)
@@ -84,8 +92,17 @@ def _as_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _timed(rows: Iterable[Any]) -> list[tuple[datetime | None, Any]]:
-    """Rows paired with their parsed ``started_at``, in chronological order."""
+#: A row paired with its parsed ``started_at`` (``None`` when unparsable).
+Timed = tuple[datetime | None, Any]
+
+
+def _timed(rows: Iterable[Any]) -> list[Timed]:
+    """Rows paired with their parsed ``started_at``, in chronological order.
+
+    Call this **once** per row set and pass the result down: the internal
+    ``_from_timed`` helpers take these pairs so a bucketed view parses and
+    sorts each timestamp a single time, however many buckets it splits into.
+    """
     pairs = [(_parse_ts(_field(row, "started_at")), row) for row in rows]
     pairs.sort(key=lambda pair: pair[0] or _UNKNOWN_TS)
     return pairs
@@ -113,7 +130,16 @@ def compute_stats(rows: Iterable[Any], *, min_samples: int = 1) -> ProbeStats:
     stay ``None`` (1 for reporting; incident thresholds pass their own value).
     Counters and ``loss_pct`` are always reported, whatever ``min_samples`` is.
     """
-    ordered = _timed(rows)
+    return _stats_from_timed(_timed(rows), min_samples=min_samples)
+
+
+def _stats_from_timed(ordered: Sequence[Timed], *, min_samples: int = 1) -> ProbeStats:
+    """:func:`compute_stats` over rows already paired with their timestamps.
+
+    ``ordered`` must be chronological — :func:`_timed` output, or a contiguous
+    slice of it. Taking pairs instead of raw rows is what lets a bucketed view
+    parse each ``started_at`` once for the whole range.
+    """
     attempts = len(ordered)
     ok = timeouts = errors = 0
     ok_rtts: list[float] = []
@@ -218,8 +244,8 @@ def window(
     """Statistics of the half-open window ``[end_at - window_seconds, end_at)``."""
     end = _as_utc(end_at)
     start = end - timedelta(seconds=window_seconds)
-    selected = [row for ts, row in _timed(rows) if ts is not None and start <= ts < end]
-    return compute_stats(selected, min_samples=min_samples)
+    selected = [pair for pair in _timed(rows) if pair[0] is not None and start <= pair[0] < end]
+    return _stats_from_timed(selected, min_samples=min_samples)
 
 
 def tumbling_windows(
@@ -237,6 +263,25 @@ def tumbling_windows(
     ``[start_at, end_at)`` completely is **excluded**: a partial window would
     otherwise look like a quiet one.
     """
+    return _tumbling_from_timed(
+        _timed(rows), window_seconds, start_at, end_at, min_samples=min_samples
+    )
+
+
+def _tumbling_from_timed(
+    ordered: Sequence[Timed],
+    window_seconds: float,
+    start_at: datetime,
+    end_at: datetime,
+    *,
+    min_samples: int = 1,
+) -> list[tuple[datetime, datetime, ProbeStats]]:
+    """:func:`tumbling_windows` over rows already paired with their timestamps.
+
+    Each bucket keeps the pairs, so the slice handed to ``_stats_from_timed``
+    is already chronological and no bucket re-parses or re-sorts what the one
+    ``_timed`` call at the top of the range has done once.
+    """
     if window_seconds <= 0:
         raise ValueError("window_seconds must be positive")
     start = _as_utc(start_at)
@@ -244,18 +289,21 @@ def tumbling_windows(
     width = timedelta(seconds=window_seconds)
     count = max(int((end - start) // width), 0)
 
-    buckets: list[list[Any]] = [[] for _ in range(count)]
-    for ts, row in _timed(rows):
+    buckets: list[list[Timed]] = [[] for _ in range(count)]
+    for pair in ordered:
+        ts = pair[0]
         if ts is None or ts < start:
             continue
         index = int((ts - start) // width)
         if 0 <= index < count:
-            buckets[index].append(row)
+            buckets[index].append(pair)
 
     result: list[tuple[datetime, datetime, ProbeStats]] = []
     for index, bucket in enumerate(buckets):
         window_start = start + width * index
-        result.append((window_start, window_start + width, compute_stats(bucket, min_samples=min_samples)))
+        result.append(
+            (window_start, window_start + width, _stats_from_timed(bucket, min_samples=min_samples))
+        )
     return result
 
 
@@ -297,7 +345,8 @@ def bucket_rows(
     and the CSV exports report; incident evaluation keeps the plain tumbling
     windows, where a half-filled window must not be judged.
     """
-    windows = tumbling_windows(rows, bucket_seconds, start_at, end_at)
+    ordered = _timed(rows)
+    windows = _tumbling_from_timed(ordered, bucket_seconds, start_at, end_at)
     points = [
         _bucket_point(window_start, bucket, partial=False)
         for window_start, _window_end, bucket in windows
@@ -310,12 +359,12 @@ def bucket_rows(
     tail_start = start + timedelta(seconds=bucket_seconds) * len(windows)
     if tail_start > end:
         return points
-    tail = [row for ts, row in _timed(rows) if ts is not None and tail_start <= ts <= end]
+    tail = [pair for pair in ordered if pair[0] is not None and tail_start <= pair[0] <= end]
     if tail_start == end and not tail:
         # A zero-width closing point cannot mean "no data": there is no time in
         # it for a measurement to have happened. It is still emitted when a row
         # sits exactly on `end_at` — `query_probe_results` is inclusive there,
         # so dropping it would stop the buckets summing to the statistics.
         return points
-    points.append(_bucket_point(tail_start, compute_stats(tail), partial=True))
+    points.append(_bucket_point(tail_start, _stats_from_timed(tail), partial=True))
     return points

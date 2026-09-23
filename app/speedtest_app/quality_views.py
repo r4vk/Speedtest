@@ -32,7 +32,7 @@ from .stats import ProbeStats, compute_stats, merge_counters
 from .time_utils import ParsedRange, local_tz, parse_dt, parse_range, to_iso_z, to_local_iso
 
 #: Where these measurements were taken (spec §12); shown on every view.
-MEASURED_FROM = "NAS (kabel)"
+MEASURED_FROM = "urządzenie, na którym działa kontener"
 
 #: What a loss figure means for each protocol — the label is part of the
 #: measurement, because ICMP loss and TCP failures are not the same thing.
@@ -273,7 +273,7 @@ def raw_rows_by_target(
         return {target.id: [] for target in targets}
     start_iso, end_iso = to_iso_z(start), to_iso_z(end)
     return {
-        target.id: quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
+        target.id: quality_db.query_probe_metrics(db_path, start_iso, end_iso, target_id=target.id)
         for target in targets
     }
 
@@ -312,7 +312,7 @@ def target_stats_entries(
         if raw_rows is not None:
             rows: Sequence[Mapping[str, Any]] = raw_rows.get(target.id) or ()
         elif allow_raw:
-            rows = quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
+            rows = quality_db.query_probe_metrics(db_path, start_iso, end_iso, target_id=target.id)
         else:
             rows = ()
         covered_from: datetime | None

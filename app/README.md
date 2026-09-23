@@ -119,7 +119,7 @@ Oprócz prostego "up/down" aplikacja mierzy jakość łącza kilkoma niezależny
 
 Każdy protokół ma własne, osobne metryki (strata pakietów, RTT p50/p95/p99, długość serii błędów) — nie są one uśredniane między sobą.
 
-> **Uwaga — pomiar z NAS-a po kablu:** wszystkie pomiary wykonuje kontener na NAS-ie podłączonym kablem do routera. Nie mierzą one Wi-Fi ani innych urządzeń w sieci domowej — problem z Wi-Fi może nie być widoczny w tych danych.
+> **Uwaga — skąd pochodzą pomiary:** wszystkie pomiary wykonuje kontener z poziomu urządzenia, na którym go uruchomiono, i opisują ścieżkę to urządzenie → router → internet. Nie mierzą Wi-Fi ani innych urządzeń w sieci domowej — problem z Wi-Fi laptopa może nie być widoczny w tych danych. Aplikacja nie wykrywa, na czym stoi ani czy jest po kablu, więc nigdzie tego nie twierdzi.
 
 ### Konfiguracja monitoringu
 

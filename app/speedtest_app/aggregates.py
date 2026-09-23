@@ -109,7 +109,7 @@ def _raw_rows(
     end: datetime,
 ) -> list[Mapping[str, Any]]:
     """Raw rows of ``[start, end)`` for one target and protocol."""
-    rows = quality_db.query_probe_results(
+    rows = quality_db.query_probe_metrics(
         db_path,
         to_iso_z(start - _QUERY_GUARD),
         to_iso_z(end + _QUERY_GUARD),

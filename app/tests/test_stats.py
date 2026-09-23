@@ -420,3 +420,40 @@ def test_a_zero_width_tail_is_emitted_only_for_a_row_sitting_on_the_end():
     ragged = stats.bucket_rows(inside, 10.0, BASE, end + timedelta(seconds=3), include_partial=True)
     assert ragged[-1]["partial"] is True
     assert ragged[-1]["attempts"] == 0
+
+
+def test_bucket_rows_parses_each_timestamp_once(monkeypatch):
+    """One `parse_dt` per row, not three (timeline/stats hot path).
+
+    `bucket_rows` used to call `_timed` over the whole range, then again
+    inside every bucket's `compute_stats`, then a third time to pick the
+    trailing partial bucket — so a 24 h timeline parsed and re-sorted 86 400
+    timestamps per target three times over. The rows already arrive ordered
+    from `ORDER BY started_at ASC, id ASC`; re-deriving that order for every
+    bucket was the bulk of the endpoint's CPU time.
+    """
+    calls = 0
+    real = stats.parse_dt
+
+    def counting(value):
+        nonlocal calls
+        calls += 1
+        return real(value)
+
+    monkeypatch.setattr(stats, "parse_dt", counting)
+
+    rows = [_row(i, Outcome.OK, rtt_ms=float(i)) for i in range(120)]
+    points = stats.bucket_rows(rows, 30.0, BASE, BASE + timedelta(seconds=120), include_partial=True)
+
+    assert sum(point["attempts"] for point in points) == len(rows)
+    assert calls == len(rows), f"expected one parse per row, got {calls}"
+
+
+def test_bucket_rows_still_orders_unsorted_input():
+    """Reordering stays the caller's guarantee, not the caller's duty."""
+    rows = [_row(90, Outcome.OK, rtt_ms=9.0), _row(5, Outcome.TIMEOUT), _row(35, Outcome.OK, rtt_ms=1.0)]
+    points = stats.bucket_rows(rows, 30.0, BASE, BASE + timedelta(seconds=120))
+
+    assert [point["attempts"] for point in points] == [1, 1, 0, 1]
+    assert stats.compute_stats(rows).first_at == _at(5)
+    assert stats.compute_stats(rows).last_at == _at(90)

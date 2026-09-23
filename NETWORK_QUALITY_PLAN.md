@@ -112,7 +112,7 @@ Kryterium ukończenia: incydent posiada powiązane pomiary i diagnostykę, a dł
 
 Podstawowy zakres tego etapu realizuj już po etapie 3; kolejne metryki udostępniaj wraz z implementacją etapów 4–6.
 
-- [x] Dodaj osobny status dostępności i jakości oraz podpis „pomiar z NAS-a po kablu”. (panel: pasek statusu, `static/quality.js`)
+- [x] Dodaj osobny status dostępności i jakości. (panel: pasek statusu, `static/quality.js`) Podpisu „pomiar z NAS-a po kablu” nie ma: kontener nie wie, na jakim urządzeniu i po jakim łączu działa, a raport mówi ogólnie o urządzeniu z kontenerem.
 - [x] Dodaj wykresy strat i opóźnień per cel, wspólną oś incydentów, przerw i testów obciążeniowych. (panel “Jakość łącza”)
 - [x] Dodaj szczegóły incydentu i ręczne oznaczenie objawu, np. „zacięcie TV”; oznaczenie użytkownika odróżniaj od pomiaru. (tabela `annotations`, odznaka “zgłoszenie użytkownika”)
 - [x] Przygotuj raport HTML do druku/PDF za wybrany okres oraz CSV z danymi źródłowymi. (`/api/quality/report.html`, `/api/quality/export/*.csv`)
