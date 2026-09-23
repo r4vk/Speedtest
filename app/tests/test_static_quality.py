@@ -91,6 +91,43 @@ def test_every_id_quality_js_looks_up_exists_in_index_html():
 
 
 # ---------------------------------------------------------------------------
+# settings dialog: expected maintenance windows (Task 10, design spec §7)
+# ---------------------------------------------------------------------------
+
+
+def test_expected_window_settings_markup_exists():
+    for element_id in (
+        "q-expected-windows-tbody", "q-expected-window-form", "q-expected-window-name",
+        "q-expected-window-from", "q-expected-window-to", "q-expected-window-days",
+        "q-expected-window-target", "q-expected-window-note", "q-expected-window-add",
+    ):
+        assert f'id="{element_id}"' in INDEX_HTML
+
+
+def test_expected_window_settings_are_wired():
+    assert "/api/quality/expected-windows" in QUALITY_JS
+    for element_id in ("q-expected-windows-tbody", "q-expected-window-add"):
+        assert element_id in QUALITY_JS
+
+
+def test_expected_window_help_text_explains_containment():
+    assert "w całości" in INDEX_HTML        # the containment rule, stated to the user
+
+
+def test_expected_window_day_checkboxes_use_monday_zero():
+    """The rule editor must speak the same weekday dialect as the schedule
+    editor in `app.js` (`DAYS = ["Pn", ...]`, 0 = Monday), or a rule saved on
+    "Pn" would fire on Sunday."""
+    block = INDEX_HTML[INDEX_HTML.index('id="q-expected-window-days"'):]
+    block = block[: block.index("</div>")]
+    values = re.findall(r'value="(\d)"', block)
+    labels = re.findall(r"</label>", block)
+    assert values == ["0", "1", "2", "3", "4", "5", "6"]
+    assert len(labels) == 7
+    assert "Pn" in block and "Nd" in block
+
+
+# ---------------------------------------------------------------------------
 # settings dialog: an empty field still shows its default, every load-test /
 # diagnostics / retention field explains itself (user-visible UX complaint:
 # "pola ustawień ... powinny mieć wartości domyślne i informacje co i jak
@@ -234,11 +271,16 @@ def test_app_js_is_syntactically_valid():
 # ---------------------------------------------------------------------------
 
 
-def test_served_page_mentions_measurement_source_and_panel_title(client):
+def test_served_page_has_panel_title_and_claims_no_measurement_host(client):
+    """The panel must not name the machine it runs on: nothing detects it.
+
+    The old status strip signed every reading "pomiar z NAS-a po kablu" even
+    when the container ran on a laptop over Wi-Fi.
+    """
     resp = client.get("/")
     assert resp.status_code == 200
     body = resp.text
-    assert "pomiar z NAS-a po kablu" in body
+    assert "NAS" not in body
     assert "Jakość łącza" in body
 
 
@@ -338,7 +380,7 @@ def test_scheduler_warnings_report_dropped_rows_and_loop_restarts():
     assert result.returncode == 0, result.stderr
     warnings = json.loads(result.stdout.strip())
     assert warnings["lost"] == "utracone pomiary: 7 (błędy zapisu: 2)"
-    assert warnings["loops"] == "pominięte ticki: 7 · restarty pętli: 1"
+    assert warnings["loops"] == "niewykonane pomiary: 7 · wznowienia sondy: 1"
 
 
 @requires_node

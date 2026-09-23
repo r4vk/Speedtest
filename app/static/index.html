@@ -24,12 +24,12 @@
             <span id="q-badge-availability" class="badge badge-gray">Dostępność: -</span>
             <span id="q-badge-quality" class="badge badge-gray">Jakość: -</span>
             <span id="q-badge-lan" class="badge badge-bad" style="display:none;">LAN: pogorszona</span>
-            <span class="q-hint">pomiar z NAS-a po kablu</span>
             <span id="q-icmp-hint" class="q-hint q-hint-warn" style="display:none;"></span>
             <span id="q-blocked-hint" class="q-hint q-hint-warn" style="display:none;"></span>
             <span id="q-coverage-24h" class="q-hint">pokrycie danych 24h: – %</span>
             <span id="q-lost-rows" class="badge badge-bad" style="display:none;"></span>
-            <span id="q-loop-hint" class="q-hint" style="display:none;"></span>
+            <span id="q-loop-hint" class="q-hint" style="display:none;"
+                  title="Niewykonany pomiar: sonda pominęła zaplanowany moment, bo poprzednia próba trwała dłużej niż interwał. Wznowienie sondy: pętla pomiarowa celu przestała działać i została uruchomiona ponownie."></span>
           </div>
         </div>
       </header>
@@ -240,6 +240,50 @@
                 <button id="q-target-add" type="button" class="btn-small">+ Dodaj cel</button>
               </div>
               <span id="q-targets-msg" class="cfgmsg"></span>
+            </div>
+
+            <!-- Sekcja: Okna serwisowe (spodziewane awarie) -->
+            <div class="settings-section" id="q-expected-windows-section">
+              <div class="section-header">
+                <h4>Okna serwisowe</h4>
+              </div>
+              <p class="hint">Cykliczne okno, w którym awaria jest spodziewana — np. nocny restart routera. Awaria w takim oknie nie wysyła maila i nie liczy się do niedostępności. Godziny są czasem lokalnym, dni tygodnia liczone od poniedziałku. Awaria liczy się jako spodziewana tylko wtedy, gdy zmieści się w oknie w całości. Reguła działa od zapisania — nie zmienia awarii, które już się zakończyły.</p>
+              <div class="q-table-wrap">
+                <table class="tool-table" id="q-expected-windows-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Nazwa</th>
+                      <th scope="col">Od</th>
+                      <th scope="col">Do</th>
+                      <th scope="col">Dni</th>
+                      <th scope="col">Cel</th>
+                      <th scope="col">Notatka</th>
+                      <th scope="col">Akcje</th>
+                    </tr>
+                  </thead>
+                  <tbody id="q-expected-windows-tbody"></tbody>
+                </table>
+              </div>
+              <form id="q-expected-window-form" class="q-target-add-row">
+                <input id="q-expected-window-name" type="text" placeholder="nazwa (np. restart routera)" aria-label="Nazwa nowego okna serwisowego" />
+                <input id="q-expected-window-from" type="time" value="02:55" aria-label="Początek okna serwisowego" />
+                <input id="q-expected-window-to" type="time" value="03:15" aria-label="Koniec okna serwisowego" />
+                <div id="q-expected-window-days" class="days-select" role="group" aria-label="Dni tygodnia okna serwisowego">
+                  <label class="radio"><input type="checkbox" value="0" /> Pn</label>
+                  <label class="radio"><input type="checkbox" value="1" /> Wt</label>
+                  <label class="radio"><input type="checkbox" value="2" /> Śr</label>
+                  <label class="radio"><input type="checkbox" value="3" /> Cz</label>
+                  <label class="radio"><input type="checkbox" value="4" /> Pt</label>
+                  <label class="radio"><input type="checkbox" value="5" /> So</label>
+                  <label class="radio"><input type="checkbox" value="6" /> Nd</label>
+                </div>
+                <select id="q-expected-window-target" aria-label="Cel okna serwisowego">
+                  <option value="">wszystkie cele</option>
+                </select>
+                <input id="q-expected-window-note" type="text" placeholder="notatka (opcjonalnie)" aria-label="Notatka nowego okna serwisowego" />
+                <button id="q-expected-window-add" type="submit" class="btn-small">+ Dodaj okno</button>
+              </form>
+              <span id="q-expected-windows-msg" class="cfgmsg"></span>
             </div>
 
             <!-- Sekcja: Progi incydentów i dostępności -->

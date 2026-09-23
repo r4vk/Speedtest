@@ -151,7 +151,7 @@ const Quality = (() => {
         ? `utracone pomiary: ${dropped} (błędy zapisu: ${flushErrors})`
         : null,
       loops: skipped > 0 || restarts > 0
-        ? `pominięte ticki: ${skipped} · restarty pętli: ${restarts}`
+        ? `niewykonane pomiary: ${skipped} · wznowienia sondy: ${restarts}`
         : null,
     };
   }
@@ -944,6 +944,9 @@ const Quality = (() => {
     for (const t of targets) {
       tbody.appendChild(buildTargetRow(t));
     }
+    // Lista celów w formularzu okien serwisowych idzie za tabelą celów, żeby
+    // nowo dodany cel dało się wybrać bez ponownego otwierania ustawień.
+    renderExpectedWindowTargetOptions(targets);
   }
 
   async function refreshTargetsTable() {
@@ -1045,6 +1048,147 @@ const Quality = (() => {
       await refreshTargetsTable();
     } catch (err) {
       setMsg("q-targets-msg", `Błąd dodawania: ${err.message}`, false);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // okna serwisowe (spodziewane awarie)
+  // ---------------------------------------------------------------------
+
+  //: Te same etykiety i ta sama konwencja (0 = poniedziałek) co edytor
+  //: harmonogramu blokad w `app.js`. Powielone, a nie zaimportowane: ten plik
+  //: musi dać się wczytać bez `app.js` (testy node'owe czystych helperów).
+  const WEEKDAY_LABELS = ["Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd"];
+
+  function formatWindowDays(days) {
+    const list = Array.isArray(days) ? days.slice().sort((a, b) => a - b) : [];
+    if (list.length === 7) return "codziennie";
+    return list.map((d) => WEEKDAY_LABELS[d] || String(d)).join(", ");
+  }
+
+  function expectedWindowTargetName(targetId) {
+    if (targetId == null) return "wszystkie";
+    const target = targetsCache.find((t) => Number(t.id) === Number(targetId));
+    return target ? target.name || `#${targetId}` : `#${targetId}`;
+  }
+
+  function renderExpectedWindowTargetOptions(targets) {
+    const select = qs("q-expected-window-target");
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = '<option value="">wszystkie cele</option>';
+    for (const t of targets) {
+      const opt = document.createElement("option");
+      opt.value = String(t.id);
+      opt.textContent = t.name || `#${t.id}`;
+      select.appendChild(opt);
+    }
+    select.value = previous;
+  }
+
+  function renderExpectedWindows(windows) {
+    const tbody = qs("q-expected-windows-tbody");
+    if (!tbody) return;
+    if (!windows.length) {
+      tbody.innerHTML =
+        '<tr><td colspan="7" class="tool-muted" style="font-style:italic;text-align:center;">brak okien serwisowych</td></tr>';
+      return;
+    }
+    tbody.innerHTML = windows
+      .map(
+        (w) => `<tr data-window-id="${w.id}">
+        <td>${_escHtml(w.name || "")}</td>
+        <td>${_escHtml(w.time_from || "")}</td>
+        <td>${_escHtml(w.time_to || "")}</td>
+        <td>${_escHtml(formatWindowDays(w.days))}</td>
+        <td>${_escHtml(expectedWindowTargetName(w.target_id))}</td>
+        <td>${_escHtml(w.note || "")}</td>
+        <td><button type="button" class="btn-remove" data-action="delete" aria-label="Usuń okno ${_escHtml(w.name || "")}">×</button></td>
+      </tr>`
+      )
+      .join("");
+  }
+
+  async function refreshExpectedWindows() {
+    if (!qs("q-expected-windows-tbody")) return;
+    renderExpectedWindowTargetOptions(targetsCache);
+    try {
+      const data = await fetchJson("/api/quality/expected-windows");
+      renderExpectedWindows(data.windows || []);
+    } catch (err) {
+      setMsg("q-expected-windows-msg", `Błąd wczytywania okien serwisowych: ${err.message}`, false);
+    }
+  }
+
+  function selectedExpectedWindowDays() {
+    const box = qs("q-expected-window-days");
+    if (!box) return [];
+    return Array.from(box.querySelectorAll('input[type="checkbox"]'))
+      .filter((c) => c.checked)
+      .map((c) => Number(c.value));
+  }
+
+  async function onAddExpectedWindow(e) {
+    if (e) e.preventDefault();
+    const nameEl = qs("q-expected-window-name");
+    const fromEl = qs("q-expected-window-from");
+    const toEl = qs("q-expected-window-to");
+    const targetEl = qs("q-expected-window-target");
+    const noteEl = qs("q-expected-window-note");
+    const note = noteEl ? noteEl.value.trim() : "";
+    const payload = {
+      name: nameEl ? nameEl.value.trim() : "",
+      time_from: fromEl ? fromEl.value : "",
+      time_to: toEl ? toEl.value : "",
+      days: selectedExpectedWindowDays(),
+      target_id: targetEl && targetEl.value ? Number(targetEl.value) : null,
+      enabled: true,
+      note: note || null,
+    };
+    if (!payload.name || !payload.time_from || !payload.time_to) {
+      setMsg("q-expected-windows-msg", "Podaj nazwę oraz godziny okna.", false);
+      return;
+    }
+    if (!payload.days.length) {
+      setMsg("q-expected-windows-msg", "Zaznacz przynajmniej jeden dzień tygodnia.", false);
+      return;
+    }
+    const addBtn = qs("q-expected-window-add");
+    if (addBtn) addBtn.disabled = true;
+    try {
+      const resp = await fetch("/api/quality/expected-windows", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(await safeErrorText(resp));
+      setMsg("q-expected-windows-msg", "Dodano okno serwisowe.", true);
+      if (nameEl) nameEl.value = "";
+      if (noteEl) noteEl.value = "";
+      await refreshExpectedWindows();
+    } catch (err) {
+      setMsg("q-expected-windows-msg", `Błąd dodawania: ${err.message}`, false);
+    } finally {
+      if (addBtn) addBtn.disabled = false;
+    }
+  }
+
+  async function onExpectedWindowsTableClick(e) {
+    const btn = e.target.closest('button[data-action="delete"]');
+    if (!btn) return;
+    const tr = btn.closest("tr[data-window-id]");
+    if (!tr) return;
+    const id = Number(tr.dataset.windowId);
+    const nameCell = tr.querySelector("td");
+    const label = nameCell ? nameCell.textContent : String(id);
+    if (!confirm(`Usunąć okno serwisowe "${label}"?`)) return;
+    try {
+      const resp = await fetch(`/api/quality/expected-windows/${id}`, { method: "DELETE" });
+      if (!resp.ok) throw new Error(await safeErrorText(resp));
+      setMsg("q-expected-windows-msg", "Usunięto okno serwisowe.", true);
+      await refreshExpectedWindows();
+    } catch (err) {
+      setMsg("q-expected-windows-msg", `Błąd usuwania: ${err.message}`, false);
     }
   }
 
@@ -1280,6 +1424,11 @@ const Quality = (() => {
     qs("q-incident-annotation-form")?.addEventListener("submit", onIncidentAnnotationSubmit);
     qs("q-target-add")?.addEventListener("click", onAddTarget);
     qs("q-targets-tbody")?.addEventListener("click", onTargetsTableClick);
+    qs("q-expected-window-form")?.addEventListener("submit", onAddExpectedWindow);
+    qs("q-expected-windows-tbody")?.addEventListener("click", onExpectedWindowsTableClick);
+    // Reguły czyta się przy otwarciu ustawień, a nie przy każdym odświeżeniu
+    // panelu: zmieniają się rzadko, a widać je tylko w tym oknie.
+    qs("open-settings")?.addEventListener("click", refreshExpectedWindows);
     qs("q-run-loadtest")?.addEventListener("click", onRunLoadTest);
 
     const incidentsBody = qs("q-incidents-tbody");
@@ -1324,6 +1473,8 @@ const Quality = (() => {
     ensureConfigApplied,
     isDirty,
     refreshTargetsTable,
+    refreshExpectedWindows,
+    formatWindowDays,
     pickBucketSeconds,
     buildSumRow,
     lossValueForPoint,
