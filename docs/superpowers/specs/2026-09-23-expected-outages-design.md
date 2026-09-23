@@ -215,12 +215,18 @@ A single query parameter, `expected`, on the endpoints that list outages:
 | `exclude` | `WHERE expected = 0` |
 | `only` | `WHERE expected = 1` |
 
-Applied to: `/api/quality/incidents`, `/api/outages`, `/api/export/incidents.csv`,
-`/api/export/outages.csv`, and the report HTML. An unknown value falls back to `all`.
+Applied to: `/api/quality/incidents`, `/api/outages`, `/api/report/quality`,
+`/api/export/incidents.csv` and `/api/export/outages.csv`. An unknown value falls back to `all`.
 
-`/api/outages` recomputes `downtime_seconds` and `downtime_percent` from the filtered set, so
-"skip expected" moves the number the user is actually looking at. Both list endpoints state the
-filter used and the count suppressed, so a filtered view can never be mistaken for a clean night:
+**Not** the printable report (`/api/quality/report.html`). It is the copy handed to an ISP, and a
+total that silently omits rows is a total nobody can reconcile against the raw data. There an
+expected outage stays in both tables, labelled, with its own line in the summary (§9).
+
+The downtime figures live on `/api/report/quality`, not on `/api/outages` — that is where
+`q-downtime` and `q-percent` are filled from — and it recomputes them from the filtered set, so
+"pomiń spodziewane" moves the number the user is actually looking at. The list endpoints state
+the filter used and the count suppressed, so a filtered view can never be mistaken for a clean
+night:
 
 ```json
 {"range": {}, "expected_filter": "exclude", "expected_hidden": 7, "items": []}
@@ -233,9 +239,12 @@ comment line.
 
 ## 9. UI
 
-**Settings — "Okna serwisowe" (expected windows).** A table of rules with inline add/edit/delete:
-name, from, to, weekday checkboxes, target select (default "wszystkie"), note. Placed next to
-the existing schedule settings, whose weekday convention it shares.
+**Settings — "Okna serwisowe" (expected windows).** A table of rules with add, enable/disable and
+delete: name, from, to, weekday checkboxes, target select (default "wszystkie"), note. Placed next
+to the existing schedule settings, whose weekday convention it shares. A disabled rule is shown as
+disabled rather than silently doing nothing; changing a rule's hours is delete-and-add, which is
+honest about what it does to history — the rows already flagged keep the verdict the old rule gave
+them either way (§1).
 
 **Dashboard (`app.js`).** Outage rows carry a badge with the rule name (or "oznaczone ręcznie").
 A "pomiń spodziewane" checkbox drives `expected=exclude`; `q-downtime` and `q-percent` follow the
