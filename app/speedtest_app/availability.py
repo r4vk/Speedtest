@@ -19,13 +19,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal, Mapping, Sequence
 
+from . import quality_db
 from .config import AppConfig
 from .db import (
     end_current_connectivity_period,
     get_current_connectivity_period,
+    mark_connectivity_period_expected,
     record_connectivity,
 )
 from .email_notify import send_outage_notification
+from .expected_windows import ExpectedWindow
+from .expected_windows import match as match_expected_window
+from .expected_windows import parse_windows
 from .probe_types import Outcome, ProbeTarget
 from .time_utils import parse_dt, to_iso_z, to_local_display, utc_now
 
@@ -175,6 +180,9 @@ class AvailabilityTracker:
     The last state is adopted from the open ``connectivity_periods`` row at
     construction time, so a restart in the middle of an outage neither
     duplicates the period nor invents a recovery e-mail.
+
+    An outage that fits an expected window is flagged on the period and sent
+    no e-mail: it is the reboot somebody scheduled, not news (spec §4).
     """
 
     def __init__(
@@ -277,6 +285,25 @@ class AvailabilityTracker:
         ended_local = to_local_display(parse_dt(now_iso))
         started_local = to_local_display(parse_dt(started_at))
         log.info("Internet restored at %s", ended_local)
+        window = self._expected_window(started_at, now_iso)
+        if window is not None:
+            try:
+                mark_connectivity_period_expected(
+                    self._db_path,
+                    started_at_iso=started_at,
+                    expected=True,
+                    source="rule",
+                    rule_id=window.id,
+                )
+            except Exception:
+                log.warning("Could not flag the expected outage period", exc_info=True)
+            log.info(
+                "Outage %s–%s fits the expected window %r, no e-mail sent",
+                started_local,
+                ended_local,
+                window.name,
+            )
+            return
         if not self._cfg.smtp_enabled:
             return
         duration_seconds = (parse_dt(now_iso) - parse_dt(started_at)).total_seconds()
@@ -293,6 +320,33 @@ class AvailabilityTracker:
             self._cfg.smtp_min_outage_seconds,
         )
         self._dispatch(started_local, ended_local, duration_seconds)
+
+    def _expected_window(self, started_at: str, ended_at: str) -> ExpectedWindow | None:
+        """The rule covering this closed outage, or ``None`` (spec §4).
+
+        The rules are read here rather than cached with the settings: outages
+        end rarely, and a window saved a minute ago should already hold.
+
+        A failure to read them is treated as "no rules": the mail goes out and
+        the row stays unflagged. Losing the one message that says the internet
+        was down is worse than sending one nobody needed, and an unflagged
+        outage can still be marked by hand afterwards.
+
+        ``target_id=None`` because a connectivity period is a verdict about the
+        connection as a whole, so only an unscoped rule can cover it.
+        """
+        try:
+            windows = parse_windows(
+                quality_db.list_expected_windows(self._db_path, enabled_only=True)
+            )
+            if not windows:
+                return None
+            return match_expected_window(
+                windows, parse_dt(started_at), parse_dt(ended_at), target_id=None
+            )
+        except Exception:
+            log.warning("Could not evaluate the expected windows", exc_info=True)
+            return None
 
     # -- notification ------------------------------------------------------
 

@@ -6,11 +6,14 @@ and no clock is guessed.
 """
 from __future__ import annotations
 
+import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 import pytest
 
+from speedtest_app import quality_db
 from speedtest_app.availability import (
     AvailabilitySettings,
     AvailabilityTracker,
@@ -26,7 +29,7 @@ from speedtest_app.db import (
     record_connectivity,
 )
 from speedtest_app.probe_types import Outcome, ProbeResult, ProbeTarget, Protocol
-from speedtest_app.time_utils import to_iso_z
+from speedtest_app.time_utils import parse_dt, to_iso_z
 
 NOW = datetime(2026, 9, 19, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -530,3 +533,131 @@ def test_query_connectivity_periods_expected_filter(db_path: str) -> None:
     assert starts("exclude") == ["2026-09-21T01:00:00.000Z"]
     assert starts("only") == ["2026-09-21T03:00:00.000Z"]
     assert len(starts("all")) == 2
+
+
+# ---------------------------------------------------------------------------
+# tracker: expected windows (Task 6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def warsaw(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Pin the local zone: a rule is a wall clock, so it needs a known one.
+
+    Europe/Warsaw in September is UTC+2, which puts the 02:55–03:15 rule below
+    between 00:55Z and 01:15Z.
+    """
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def nightly_window(db_path: str) -> int:
+    """The daily 02:55–03:15 router reboot the spec uses as its example."""
+    return quality_db.insert_expected_window(
+        db_path,
+        name="restart routera",
+        time_from="02:55",
+        time_to="03:15",
+        days="[0,1,2,3,4,5,6]",
+    )
+
+
+def down_period(db_path: str, end_iso: str) -> dict[str, Any]:
+    tr = TimeRange(start_iso="2026-09-21T00:00:00.000Z", end_iso=end_iso)
+    return query_connectivity_periods(db_path, tr=tr, is_up=False)[0]
+
+
+async def test_outage_inside_an_expected_window_sends_no_mail(
+    db_path: str, tmp_path: Any, warsaw: None
+) -> None:
+    nightly_window(db_path)
+    notifier = FakeNotifier()
+    tracker = AvailabilityTracker(db_path, smtp_config(tmp_path), notifier=notifier)
+
+    tracker.apply("down", parse_dt("2026-09-21T01:00:00.000Z"))
+    tracker.apply("up", parse_dt("2026-09-21T01:04:00.000Z"))
+    await tracker.drain()
+
+    assert notifier.calls == []
+    down = down_period(db_path, "2026-09-21T02:00:00.000Z")
+    assert (down["expected"], down["expected_source"]) == (1, "rule")
+    assert down["expected_rule_id"] is not None
+
+
+async def test_outage_that_overruns_the_window_still_mails(
+    db_path: str, tmp_path: Any, warsaw: None
+) -> None:
+    nightly_window(db_path)
+    notifier = FakeNotifier()
+    tracker = AvailabilityTracker(db_path, smtp_config(tmp_path), notifier=notifier)
+
+    tracker.apply("down", parse_dt("2026-09-21T01:00:00.000Z"))
+    tracker.apply("up", parse_dt("2026-09-21T04:30:00.000Z"))
+    await tracker.drain()
+
+    assert len(notifier.calls) == 1
+    down = down_period(db_path, "2026-09-21T05:00:00.000Z")
+    assert (down["expected"], down["expected_source"]) == (0, None)
+
+
+async def test_an_expected_outage_is_flagged_without_smtp(
+    db_path: str, tmp_path: Any, warsaw: None
+) -> None:
+    """The flag is a fact about the outage, not a property of the mailer."""
+    nightly_window(db_path)
+    notifier = FakeNotifier()
+    tracker = AvailabilityTracker(db_path, make_config(tmp_path), notifier=notifier)
+
+    tracker.apply("down", parse_dt("2026-09-21T01:00:00.000Z"))
+    tracker.apply("up", parse_dt("2026-09-21T01:04:00.000Z"))
+    await tracker.drain()
+
+    assert notifier.calls == []
+    assert down_period(db_path, "2026-09-21T02:00:00.000Z")["expected"] == 1
+
+
+async def test_unreadable_rules_still_send_the_mail(
+    db_path: str, tmp_path: Any, warsaw: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus #1: a failed rule read must never swallow the outage mail.
+
+    The outage would fit the rule, so the only reason the mail survives is that
+    the read failure is read as "no rules". ``consulted`` keeps this honest: it
+    fails as long as nobody asks the rules at all, which is the state before
+    the feature exists.
+    """
+    nightly_window(db_path)
+    consulted: list[str] = []
+
+    def boom(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        consulted.append("read")
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(quality_db, "list_expected_windows", boom)
+    notifier = FakeNotifier()
+    tracker = AvailabilityTracker(db_path, smtp_config(tmp_path), notifier=notifier)
+
+    tracker.apply("down", parse_dt("2026-09-21T01:00:00.000Z"))
+    tracker.apply("up", parse_dt("2026-09-21T01:04:00.000Z"))
+    await tracker.drain()
+
+    assert consulted, "the tracker never consulted the expected windows"
+    assert len(notifier.calls) == 1
+    assert down_period(db_path, "2026-09-21T02:00:00.000Z")["expected"] == 0
+
+
+async def test_short_outage_keeps_its_existing_min_seconds_behaviour(
+    db_path: str, tmp_path: Any, warsaw: None
+) -> None:
+    """The expected check must not disturb the smtp_min_outage_seconds gate."""
+    notifier = FakeNotifier()
+    tracker = AvailabilityTracker(db_path, smtp_config(tmp_path), notifier=notifier)
+
+    tracker.apply("down", parse_dt("2026-09-21T01:00:00.000Z"))
+    tracker.apply("up", parse_dt("2026-09-21T01:00:10.000Z"))
+    await tracker.drain()
+
+    assert notifier.calls == []
