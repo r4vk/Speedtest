@@ -18,6 +18,7 @@ const Quality = (() => {
   let chart = null;
   let lastTimeline = null;
   let targetsCache = [];
+  let expectedWindowsCache = [];
   let currentIncidentId = null;
   let lastQualityConfig = null;
   //: Czy formularz ustawień jakości został już wypełniony z serwera. Chroni
@@ -1173,18 +1174,19 @@ const Quality = (() => {
     if (!tbody) return;
     if (!windows.length) {
       tbody.innerHTML =
-        '<tr><td colspan="7" class="tool-muted" style="font-style:italic;text-align:center;">brak okien serwisowych</td></tr>';
+        '<tr><td colspan="8" class="tool-muted" style="font-style:italic;text-align:center;">brak okien serwisowych</td></tr>';
       return;
     }
     tbody.innerHTML = windows
       .map(
-        (w) => `<tr data-window-id="${w.id}">
+        (w) => `<tr data-window-id="${w.id}"${w.enabled ? "" : ' style="opacity:.55;"'}>
         <td>${_escHtml(w.name || "")}</td>
         <td>${_escHtml(w.time_from || "")}</td>
         <td>${_escHtml(w.time_to || "")}</td>
         <td>${_escHtml(formatWindowDays(w.days))}</td>
         <td>${_escHtml(expectedWindowTargetName(w.target_id))}</td>
         <td>${_escHtml(w.note || "")}</td>
+        <td><button type="button" class="btn-small ${w.enabled ? "tool-ok" : "tool-bad"}" data-action="toggle" aria-label="${w.enabled ? "Wyłącz" : "Włącz"} okno ${_escHtml(w.name || "")}">${w.enabled ? "tak" : "nie"}</button></td>
         <td><button type="button" class="btn-remove" data-action="delete" aria-label="Usuń okno ${_escHtml(w.name || "")}">×</button></td>
       </tr>`
       )
@@ -1196,7 +1198,8 @@ const Quality = (() => {
     renderExpectedWindowTargetOptions(targetsCache);
     try {
       const data = await fetchJson("/api/quality/expected-windows");
-      renderExpectedWindows(data.windows || []);
+      expectedWindowsCache = data.windows || [];
+      renderExpectedWindows(expectedWindowsCache);
     } catch (err) {
       setMsg("q-expected-windows-msg", `Błąd wczytywania okien serwisowych: ${err.message}`, false);
     }
@@ -1256,6 +1259,46 @@ const Quality = (() => {
   }
 
   async function onExpectedWindowsTableClick(e) {
+    const toggleBtn = e.target.closest('button[data-action="toggle"]');
+    if (toggleBtn) {
+      const tr = toggleBtn.closest("tr[data-window-id]");
+      if (!tr) return;
+      const id = Number(tr.dataset.windowId);
+      const w = expectedWindowsCache.find((x) => Number(x.id) === id);
+      if (!w) return;
+      // PUT carries the whole rule, so resend it with just `enabled` flipped
+      // — never a partial body, or the API would happily save a rule
+      // stripped down to that one field.
+      const payload = {
+        name: w.name,
+        time_from: w.time_from,
+        time_to: w.time_to,
+        days: w.days,
+        target_id: w.target_id,
+        enabled: !w.enabled,
+        note: w.note,
+      };
+      toggleBtn.disabled = true;
+      try {
+        const resp = await fetch(`/api/quality/expected-windows/${id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!resp.ok) throw new Error(await safeErrorText(resp));
+        setMsg(
+          "q-expected-windows-msg",
+          payload.enabled ? "Włączono okno serwisowe." : "Wyłączono okno serwisowe.",
+          true
+        );
+        await refreshExpectedWindows();
+      } catch (err) {
+        setMsg("q-expected-windows-msg", `Błąd zapisu: ${err.message}`, false);
+        toggleBtn.disabled = false;
+      }
+      return;
+    }
+
     const btn = e.target.closest('button[data-action="delete"]');
     if (!btn) return;
     const tr = btn.closest("tr[data-window-id]");

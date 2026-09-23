@@ -128,6 +128,58 @@ def test_expected_window_day_checkboxes_use_monday_zero():
 
 
 # ---------------------------------------------------------------------------
+# settings dialog: expected windows can be switched off without being deleted
+# (review finding LOW — a rule can only be added or destroyed)
+# ---------------------------------------------------------------------------
+
+
+def test_expected_window_table_has_an_enabled_column_before_actions():
+    section = _section_html("q-expected-windows-section", INDEX_HTML)
+    thead_match = re.search(r"<thead>.*?</thead>", section, re.S)
+    assert thead_match, "no <thead> in the expected-windows table"
+    headers = re.findall(r'<th scope="col">([^<]+)</th>', thead_match.group(0))
+    assert "Włączone" in headers
+    assert headers.index("Włączone") < headers.index("Akcje")
+
+
+def test_expected_window_empty_row_colspan_matches_the_header_count():
+    """The empty-state placeholder row must span every column, not just the
+    original seven — a stale colspan would leave the message visually
+    misaligned once the new column exists."""
+    section = _section_html("q-expected-windows-section", INDEX_HTML)
+    thead_match = re.search(r"<thead>.*?</thead>", section, re.S)
+    header_count = len(re.findall(r'<th scope="col">', thead_match.group(0)))
+    match = re.search(r'colspan="(\d+)"[^>]*>brak okien serwisowych', QUALITY_JS)
+    assert match, "no colspan tied to the empty-state row found in quality.js"
+    assert int(match.group(1)) == header_count
+
+
+def test_expected_window_row_has_a_per_row_enabled_toggle():
+    match = re.search(r"function renderExpectedWindows\(windows\) \{.*?\n  \}", QUALITY_JS, re.S)
+    assert match, "renderExpectedWindows not found"
+    body = match.group(0)
+    assert 'data-action="toggle"' in body
+    # legible at a glance regardless of the exact styling chosen
+    assert "tak" in body and "nie" in body
+
+
+def test_toggling_a_window_puts_its_current_values_back_with_enabled_flipped():
+    """`PUT` takes the whole rule, so flipping `enabled` for one row must not
+    silently drop its other fields (the API would otherwise happily accept
+    a rule stripped down to just the flag, which is not what a click on a
+    toggle should mean)."""
+    match = re.search(r"async function onExpectedWindowsTableClick\(e\) \{.*?\n  \}", QUALITY_JS, re.S)
+    assert match, "onExpectedWindowsTableClick not found"
+    body = match.group(0)
+    assert 'data-action="toggle"' in body
+    assert '"PUT"' in body
+    assert "/api/quality/expected-windows/" in body
+    for field in ("time_from", "time_to", "days", "target_id", "note"):
+        assert field in body
+    assert "enabled: !" in body  # flips the existing value, never resends it as-is
+
+
+# ---------------------------------------------------------------------------
 # settings dialog: an empty field still shows its default, every load-test /
 # diagnostics / retention field explains itself (user-visible UX complaint:
 # "pola ustawień ... powinny mieć wartości domyślne i informacje co i jak
