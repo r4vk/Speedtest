@@ -565,6 +565,51 @@ def api_incident_detail(request: Request, incident_id: int) -> dict[str, Any]:
     }
 
 
+class ExpectedMark(BaseModel):
+    """One person's verdict on one closed outage — incident or period alike."""
+
+    expected: bool
+    note: str | None = Field(default=None, max_length=2000)
+
+
+@router.patch("/quality/incidents/{incident_id}/expected")
+def api_mark_incident_expected(
+    request: Request, incident_id: int, body: ExpectedMark
+) -> dict[str, Any]:
+    """A person's verdict on one closed incident; it outranks any rule (spec §6).
+
+    `expected_source` becomes `manual` for *both* answers, a `false` included:
+    a later reader has to be able to tell "somebody looked and said this was a
+    real outage" from "nobody has looked at it yet" (Review Focus #5). The
+    rule id goes with it, because the rule is no longer what decided this row.
+    """
+    db_path = db_path_of(request)
+    row = quality_db.get_incident(db_path, incident_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="nie ma takiego incydentu")
+    if not row.get("ended_at"):
+        # An outage still running has no end to weigh against a window, and the
+        # engine will judge it the moment it closes — a verdict written now
+        # would be overwritten there anyway.
+        raise HTTPException(status_code=409, detail="incydent jeszcze trwa")
+
+    quality_db.update_incident(
+        db_path,
+        incident_id,
+        expected=1 if body.expected else 0,
+        expected_source="manual",
+        expected_rule_id=None,
+    )
+    note = (body.note or "").strip()
+    if note:
+        quality_db.insert_annotation(
+            db_path, str(row["started_at"]), "expected", note=note, incident_id=incident_id
+        )
+    names = target_names(db_path)
+    updated = quality_db.get_incident(db_path, incident_id)
+    return {"tz": tz_name(), "incident": incident_payload(updated, names)}
+
+
 class AnnotationCreate(BaseModel):
     at: str | None = Field(default=None, max_length=64)
     label: str = Field(max_length=200)

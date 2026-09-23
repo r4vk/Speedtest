@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import api_quality, api_quality_exports, quality_db, retention
+from .api_quality import ExpectedMark
 from .api_retention import router as retention_router
 from .config import AppConfig
 from .coverage import SessionTracker, clip_to_observed, coverage, observed_intervals
@@ -23,10 +24,12 @@ from .db import (
     TimeRange,
     ensure_db,
     ensure_default_setting,
+    get_connectivity_period,
     get_current_connectivity_period,
     get_last_speed_test,
     get_last_success_speed_test,
     integrity_quick_check,
+    mark_connectivity_period_expected_by_id,
     query_connectivity_periods,
     query_connectivity_checks,
     query_speed_tests,
@@ -651,9 +654,59 @@ def api_outages(
     for r in rows:
         started_at = to_local_iso(parse_dt(r["started_at"]))
         ended_at = to_local_iso(parse_dt(r["ended_at"])) if r["ended_at"] else to_local_iso(utc_now())
-        items.append({"started_at": started_at, "ended_at": ended_at})
+        items.append(
+            {
+                # `id` is what the dashboard's mark/unmark button addresses, and
+                # the three `expected*` columns are what it renders as a badge.
+                "id": r["id"],
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "expected": r["expected"],
+                "expected_source": r["expected_source"],
+                "expected_rule_id": r["expected_rule_id"],
+            }
+        )
 
     return {"range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)}, "items": items}
+
+
+def _outage_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """One availability period in the shape `/api/outages` lists them in."""
+    return {
+        "id": row["id"],
+        "started_at": to_local_iso(parse_dt(row["started_at"])),
+        "ended_at": to_local_iso(parse_dt(row["ended_at"])) if row["ended_at"] else None,
+        "expected": row["expected"],
+        "expected_source": row["expected_source"],
+        "expected_rule_id": row["expected_rule_id"],
+    }
+
+
+@app.patch("/api/outages/{period_id}/expected")
+def api_mark_outage_expected(period_id: int, body: ExpectedMark) -> dict[str, Any]:
+    """A person's verdict on one closed outage period; it outranks any rule (§6).
+
+    The mirror of `PATCH /api/quality/incidents/{id}/expected`: `manual` is
+    written for a `false` too, so "somebody looked and this was real" stays
+    distinguishable from "nobody has looked" (Review Focus #5). An "up" period
+    is not an outage, so it answers 404 rather than pretending to mark it.
+    """
+    row = get_connectivity_period(cfg.db_path, period_id)
+    if row is None or bool(row["is_up"]):
+        raise HTTPException(status_code=404, detail="nie ma takiej awarii")
+    if not row["ended_at"]:
+        # Nothing to weigh against a window yet, and the tracker will judge it
+        # itself the moment connectivity returns.
+        raise HTTPException(status_code=409, detail="awaria jeszcze trwa")
+
+    mark_connectivity_period_expected_by_id(
+        cfg.db_path, period_id, expected=body.expected, source="manual", rule_id=None
+    )
+    note = (body.note or "").strip()
+    if note:
+        quality_db.insert_annotation(cfg.db_path, str(row["started_at"]), "expected", note=note)
+    updated = get_connectivity_period(cfg.db_path, period_id)
+    return {"outage": _outage_payload(updated)}
 
 
 @app.get("/api/pings")

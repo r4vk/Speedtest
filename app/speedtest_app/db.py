@@ -681,6 +681,26 @@ def get_current_connectivity_period(db_path: str):
         return dict(row) if row else None
 
 
+def get_connectivity_period(db_path: str, period_id: int):
+    """One availability period by id, carrying its expected-window verdict.
+
+    The hand-marking route has to tell three cases apart — no such row, an
+    "up" period, and an outage that is still running — so it reads the row
+    first instead of reading `mark_connectivity_period_expected_by_id`'s
+    rowcount, which collapses all three into a plain 0.
+    """
+    with db_conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, started_at, ended_at, is_up, expected, expected_source, expected_rule_id
+            FROM connectivity_periods
+            WHERE id = ?
+            """,
+            (period_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def end_current_connectivity_period(db_path: str, now_iso: str | None = None) -> bool:
     """Close the open availability period, if there is one. Returns True if closed.
 

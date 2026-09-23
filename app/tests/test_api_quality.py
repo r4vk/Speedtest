@@ -833,3 +833,81 @@ def test_expected_window_mutation_is_audited(client) -> None:
         client.app_db_path, "2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z"
     )
     assert any(c["key"].startswith("expected_window") for c in changes)
+
+
+# ---------------------------------------------------------------------------
+# marking one closed outage by hand (Task 8 — design spec §6)
+# ---------------------------------------------------------------------------
+
+def _closed_incident(client, started_at: str = "2026-09-21T01:00:00.000Z", **fields) -> int:
+    """A closed incident on the first seeded target, ready to be marked."""
+    db_path = client.app_db_path
+    target = quality_db.list_targets(db_path)[0]
+    fields.setdefault("ended_at", "2026-09-21T01:04:00.000Z")
+    fields.setdefault("closed_at", "2026-09-21T01:05:00.000Z")
+    fields.setdefault("close_reason", "recovered")
+    return quality_db.insert_incident(
+        db_path,
+        target_id=target.id,
+        protocol="icmp",
+        kind="outage",
+        started_at=started_at,
+        window_seconds=10,
+        probe_interval_seconds=1.0,
+        **fields,
+    )
+
+
+def _open_incident(client, started_at: str = "2026-09-21T01:00:00.000Z") -> int:
+    db_path = client.app_db_path
+    target = quality_db.list_targets(db_path)[0]
+    return quality_db.insert_incident(
+        db_path,
+        target_id=target.id,
+        protocol="icmp",
+        kind="outage",
+        started_at=started_at,
+        window_seconds=10,
+        probe_interval_seconds=1.0,
+    )
+
+
+def test_mark_incident_expected_by_hand(client) -> None:
+    incident_id = _closed_incident(client)
+    response = client.patch(
+        f"/api/quality/incidents/{incident_id}/expected",
+        json={"expected": True, "note": "restart routera"},
+    )
+    assert response.status_code == 200
+    assert response.json()["incident"]["expected"] == 1
+    assert response.json()["incident"]["expected_source"] == "manual"
+
+    detail = client.get(f"/api/quality/incidents/{incident_id}").json()
+    assert any(a["label"] == "expected" for a in detail["annotations"])
+
+
+def test_manual_unmark_records_that_a_person_looked(client) -> None:
+    """Review Focus #5: a manual `false` is not the same as "nobody looked"."""
+    incident_id = _closed_incident(client, expected=1, expected_source="rule")
+    response = client.patch(
+        f"/api/quality/incidents/{incident_id}/expected", json={"expected": False}
+    )
+    assert response.json()["incident"]["expected"] == 0
+    assert response.json()["incident"]["expected_source"] == "manual"
+
+
+def test_open_incident_cannot_be_marked(client) -> None:
+    incident_id = _open_incident(client)
+    assert (
+        client.patch(
+            f"/api/quality/incidents/{incident_id}/expected", json={"expected": True}
+        ).status_code
+        == 409
+    )
+
+
+def test_marking_an_unknown_incident_is_404(client) -> None:
+    assert (
+        client.patch("/api/quality/incidents/424242/expected", json={"expected": True}).status_code
+        == 404
+    )
