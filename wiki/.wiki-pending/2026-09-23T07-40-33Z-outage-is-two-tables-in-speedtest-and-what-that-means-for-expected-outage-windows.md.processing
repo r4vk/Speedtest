@@ -1,0 +1,71 @@
+---
+title: "Outage is two tables in Speedtest, and what that means for expected-outage windows"
+evidence: "conversation"
+evidence_type: "conversation"
+capture_kind: "chat-only"
+suggested_action: "create"
+suggested_pages: []
+captured_at: "2026-09-23T07-40-33Z"
+captured_by: "in-session-agent"
+propagated_from: null
+---
+
+## "Outage" is two tables in Speedtest, not one
+
+Any feature touching outages must handle both, or it will half-work:
+
+- `connectivity_periods` — legacy internet up/down, written by `AvailabilityTracker`
+  (`app/speedtest_app/availability.py`). Source of the dashboard outage list, `q-downtime`,
+  `q-percent`, `/api/outages`, `outages.csv` — **and of the recovery e-mail**, sent from
+  `_on_up()` via `send_outage_notification`, gated by `smtp_min_outage_seconds`.
+- `incidents` — per `(target_id, protocol)`, written by `QualityEngine`
+  (`quality_engine.py`) from the pure state machine in `incidents.py`. Surfaced in the quality
+  tab table/drawer, `incidents.csv`, report HTML.
+
+The e-mail does NOT come from `incidents`. Marking only incidents as "expected" would leave the
+dashboard downtime percentage and the mail untouched — the two things a user actually notices.
+
+## SQLite ALTER TABLE ADD COLUMN — verified capabilities (3.50.4)
+
+Tested in-memory, all three accepted and the CHECK is enforced on later inserts:
+
+```sql
+ALTER TABLE inc ADD COLUMN expected INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE inc ADD COLUMN expected_source TEXT NULL CHECK (expected_source IN ('rule','manual'));
+ALTER TABLE inc ADD COLUMN expected_rule_id INTEGER NULL REFERENCES w(id) ON DELETE SET NULL;
+```
+
+`CHECK constraint failed: expected_source IN ('rule','manual')` on a bad insert. So constraints
+can live in the schema instead of hand-rolled Python validation. Still forbidden in ADD COLUMN:
+PRIMARY KEY, UNIQUE, NOT NULL without a default.
+
+## Decisions taken for the expected-outages feature (2026-09-23)
+
+- **Flag stored on the row, not computed at read time.** Considered a rules table plus an
+  overrides table with the flag derived per query — that gives retroactive correctness for free.
+  Rejected by the user in favour of a denormalized `expected` column for query speed and an
+  explicit "no UPDATE of history" rule. Cost, written into the spec: a rule created at 03:02
+  mid-reboot does not mark that night's outage, and the engine caches rules for
+  `SETTINGS_REFRESH_SECONDS` (30 s).
+- **Containment, not overlap.** An outage matches a window only if it fits entirely inside it.
+  Start-in-window would let a genuine multi-hour failure beginning at 03:00 vanish as "planned".
+- **No filtering of raw probe samples.** Stats for older ranges come from hourly
+  `probe_aggregates`; a 20-minute window cannot honestly be subtracted from an hourly bucket, so
+  loss/RTT stay raw and only outage-derived numbers are filtered.
+
+## Gotcha: `_is_blocked_by_schedule` is not reusable for time-window matching
+
+`scheduler.py` matches schedules by comparing `"HH:MM"` **strings** against
+`datetime.now().astimezone()`. Impure (reads the clock inside), and string comparison has no
+notion of DST or of a window instance on a specific day. The new `expected_windows.py` builds
+concrete local intervals per day instead, and takes both timestamps from the caller.
+
+Related but different mechanism, already in the repo: `ping_schedules` / `speed_schedules`
+suppress probing entirely during a window and record `blocked_periods` rows with
+`reason IN ('disabled','schedule')` — that leaves a hole in the data, which is exactly what the
+expected-outages feature must not do.
+
+## Artifacts
+
+Spec: `docs/superpowers/specs/2026-09-23-expected-outages-design.md`, commit `87211be`,
+schema migration 2 → 3 (`SCHEMA_VERSION` bump, `_migrate_2_to_3`).

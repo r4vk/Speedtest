@@ -1,2 +1,35 @@
 2026-09-19T17:11:17Z INFO  spawned ingester: capture=2026-09-19T17-11-17Z-sqlite-wal-deferred-begin-fails-instantly-with-database-is-locked-when-it-reads-before-it-writes.md.processing pid=43319
 2026-09-19T17:12:10Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-19T17:24:25Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-20T07:57:56Z INFO  session-start: wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T06:44:42Z INFO  session-start: wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T06:46:56Z INFO  session-start: wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T06:48:20Z INFO  session-start: wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T06:49:54Z INFO  session-start: wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T06:50:34Z INFO  session-start: wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T06:50:42Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T06:51:59Z INFO  spawned ingester: capture=2026-09-23T06-51-59Z-kolumna-uwagi-w-tabeli-statystyki-celow-to-staly-opis-protokolu-nie-alert.md.processing pid=60178
+2026-09-23T06:52:13Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T06:54:17Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T07:09:34Z INFO  spawned ingester: capture=2026-09-23T07-09-34Z-sqlite-window-function-without-where-and-typing-mapping-isinstance-dominated-speedtest-panel-latency.md.processing pid=76719
+2026-09-23T07:19:46Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T07:28:12Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T07:30:14Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T07:40:33Z INFO  spawned ingester: capture=2026-09-23T07-40-33Z-outage-is-two-tables-in-speedtest-and-what-that-means-for-expected-outage-windows.md.processing pid=87600
+2026-09-23T07:41:15Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T07:58:15Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T07:59:47Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T07:59:50Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:02:28Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:03:47Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:08:16Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:10:00Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:16:56Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:16:58Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:21:25Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:42:22Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:44:49Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:48:31Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:48:33Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:50:08Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
+2026-09-23T08:50:10Z INFO  stop: session ended, wiki=/Users/rafalkawecki/ProjektyDev/r4vk.org/Speedtest
