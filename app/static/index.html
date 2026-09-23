@@ -539,6 +539,7 @@
 
         <div class="q-legend">
           <span><i class="q-swatch q-swatch-incident"></i> Incydent</span>
+          <span><i class="q-swatch" style="background:rgba(239,68,68,.16);"></i> Incydent spodziewany</span>
           <span><i class="q-swatch q-swatch-gap"></i> Brak danych (luka)</span>
           <span><i class="q-swatch q-swatch-loadtest"></i> Test obciążeniowy</span>
           <span><i class="q-swatch q-swatch-annotation"></i> Zgłoszenie użytkownika</span>
@@ -587,6 +588,11 @@
         </div>
 
         <h3>Incydenty</h3>
+        <label class="label-row" for="q-incidents-hide-expected">
+          <input type="checkbox" id="q-incidents-hide-expected" />
+          <span>Pomiń spodziewane incydenty</span>
+          <span id="q-incidents-expected-hidden" class="hint"></span>
+        </label>
         <div class="q-table-wrap">
           <table class="tool-table" id="q-incidents-table">
             <thead>
@@ -612,6 +618,12 @@
               <button id="q-incident-close" class="iconbtn" type="button" aria-label="Zamknij">×</button>
             </div>
             <div id="q-incident-body"></div>
+            <div class="modal-actions">
+              <button id="q-incident-expected-toggle" class="btn-small" type="button">
+                Oznacz jako spodziewany
+              </button>
+              <span id="q-incident-expected-msg" class="hint"></span>
+            </div>
             <form id="q-incident-annotation-form" class="q-annotation-form">
               <label>
                 Etykieta

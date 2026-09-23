@@ -387,6 +387,11 @@ const Quality = (() => {
     },
   };
 
+  const INCIDENT_BOX_COLOR = "rgba(239,68,68,0.20)";
+  //: Spodziewany incydent nadal się wydarzył, więc zostaje na osi — tylko
+  //: blednie. Wycięcie go zrobiłoby w obrazie dziurę, której nic nie tłumaczy.
+  const EXPECTED_INCIDENT_BOX_COLOR = "rgba(239,68,68,0.07)";
+
   function buildChartBoxes(timeline) {
     const boxes = [];
     for (const inc of timeline.incidents || []) {
@@ -395,7 +400,11 @@ const Quality = (() => {
       // Open incidents (no ended_at/closed_at yet) highlight through "now" —
       // never collapse to a zero-width box that would look invisible.
       const to = parseIsoToMs(inc.ended_at || inc.closed_at);
-      boxes.push({ from, to: to == null ? Date.now() : to, color: "rgba(239,68,68,0.20)" });
+      boxes.push({
+        from,
+        to: to == null ? Date.now() : to,
+        color: inc.expected ? EXPECTED_INCIDENT_BOX_COLOR : INCIDENT_BOX_COLOR,
+      });
     }
     for (const gap of timeline.gaps || []) {
       const from = parseIsoToMs(gap.from);
@@ -632,13 +641,40 @@ const Quality = (() => {
   const CLOSE_REASON_TEXT = { recovered: "odzyskano", no_data: "brak danych", shutdown: "zamknięcie monitora" };
   const VERDICT_COLOR = { ok: "#22c55e", degraded: "#f59e0b", outage: "#ef4444" };
 
-  function renderIncidents(items) {
+  /**
+   * Podpis plakietki „spodziewany” albo `null`.
+   *
+   * Rozróżnia werdykt reguły od ręcznego, bo to dwie różne rzeczy: okno
+   * serwisowe może kiedyś zniknąć, a decyzja człowieka zostaje.
+   */
+  function incidentExpectedBadge(inc) {
+    if (!inc || !inc.expected) return null;
+    return inc.expected_source === "manual" ? "oznaczone ręcznie" : "okno serwisowe";
+  }
+
+  function renderIncidentsHiddenNote(hidden) {
+    const el = qs("q-incidents-expected-hidden");
+    if (!el) return;
+    const count = Number(hidden) || 0;
+    el.textContent = count > 0 ? `(ukryto: ${count})` : "";
+  }
+
+  function renderIncidents(items, hidden) {
     const tbody = qs("q-incidents-tbody");
     const empty = qs("q-incidents-empty");
+    renderIncidentsHiddenNote(hidden);
     if (!tbody) return;
     tbody.innerHTML = "";
     if (!items || !items.length) {
-      if (empty) empty.style.display = "";
+      if (empty) {
+        // Pusta tabela przy włączonym filtrze znaczy „wszystko było
+        // zaplanowane”, a nie „nic się nie stało” — trzeba to powiedzieć.
+        empty.textContent =
+          Number(hidden) > 0
+            ? `Brak nieoczekiwanych incydentów w wybranym zakresie (ukryto spodziewane: ${Number(hidden)}).`
+            : "Brak incydentów w wybranym zakresie.";
+        empty.style.display = "";
+      }
       return;
     }
     if (empty) empty.style.display = "none";
@@ -647,11 +683,14 @@ const Quality = (() => {
       tr.dataset.incidentId = String(inc.id);
       tr.tabIndex = 0;
       tr.className = "q-incident-row";
+      const badge = incidentExpectedBadge(inc);
       tr.innerHTML = `
         <td>${_escHtml(inc.started_at || "")}</td>
         <td>${_escHtml(inc.ended_at || "otwarty")}</td>
         <td>${_escHtml(inc.target_name || String(inc.target_id ?? ""))}</td>
-        <td>${_escHtml(INCIDENT_KIND_TEXT[inc.kind] || inc.kind || "")}</td>
+        <td>${_escHtml(INCIDENT_KIND_TEXT[inc.kind] || inc.kind || "")}${
+          badge ? ` <span class="badge badge-gray">${_escHtml(badge)}</span>` : ""
+        }</td>
         <td>${fmtPct(inc.peak_loss_pct)}</td>
         <td>${fmtNum(inc.peak_p95_rtt_ms)}</td>
         <td>${_escHtml(CLOSE_REASON_TEXT[inc.close_reason] || inc.close_reason || "-")}</td>
@@ -760,6 +799,47 @@ const Quality = (() => {
     ].join("\n");
   }
 
+  /**
+   * Stan przycisku „spodziewany” w szufladzie.
+   *
+   * Otwarty incydent zostaje wyłączony, bo nie ma go jeszcze jak zważyć —
+   * API odpowiedziałoby 409 („incydent jeszcze trwa”).
+   */
+  function renderIncidentExpectedToggle(inc) {
+    const btn = qs("q-incident-expected-toggle");
+    if (!btn) return;
+    const isExpected = !!(inc && inc.expected);
+    btn.dataset.expected = isExpected ? "1" : "0";
+    btn.textContent = isExpected ? "To był prawdziwy incydent" : "Oznacz jako spodziewany";
+    btn.disabled = !(inc && inc.ended_at);
+  }
+
+  async function onIncidentExpectedToggle() {
+    if (currentIncidentId == null) return;
+    const btn = qs("q-incident-expected-toggle");
+    const expected = btn ? btn.dataset.expected !== "1" : true;
+    if (btn) btn.disabled = true;
+    try {
+      const resp = await fetch(`/api/quality/incidents/${currentIncidentId}/expected`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected }),
+      });
+      if (!resp.ok) throw new Error(await safeErrorText(resp));
+      setMsg(
+        "q-incident-expected-msg",
+        expected ? "Oznaczono jako spodziewany." : "Oznaczono jako prawdziwy.",
+        true
+      );
+      const openId = currentIncidentId;
+      await openIncidentDrawer(openId);
+      await refresh();
+    } catch (err) {
+      setMsg("q-incident-expected-msg", `Błąd: ${err.message}`, false);
+      if (btn) btn.disabled = false;
+    }
+  }
+
   async function openIncidentDrawer(id) {
     currentIncidentId = id;
     const dlg = qs("q-incident-drawer");
@@ -768,10 +848,12 @@ const Quality = (() => {
     if (!dlg || !body) return;
     if (title) title.textContent = `Incydent #${id}`;
     body.innerHTML = '<p class="hint">Wczytywanie…</p>';
+    renderIncidentExpectedToggle(null);
     showDialog(dlg);
     try {
       const data = await fetchJson(`/api/quality/incidents/${id}`);
       body.innerHTML = renderIncidentDetail(data);
+      renderIncidentExpectedToggle(data.incident || null);
     } catch (e) {
       body.innerHTML = `<p class="tool-error">Błąd wczytywania incydentu: ${_escHtml(e.message)}</p>`;
     }
@@ -1368,12 +1450,20 @@ const Quality = (() => {
     const bucket = computeBucketSeconds(params);
     const timelineParams = new URLSearchParams(params);
     timelineParams.set("bucket_seconds", String(bucket));
+    //: Filtr idzie na serwer, a nie chowa wierszy na miejscu — `expected_hidden`
+    //: i liczniki to odpowiedź serwera, nie coś, co panel sam sobie policzy.
+    //: `withExpectedFilter` jest globalną z `app.js`, tą samą, której używa
+    //: pulpit, żeby oba panele pisały parametr identycznie.
+    const incidentParams = withExpectedFilter(
+      params,
+      qs("q-incidents-hide-expected")?.checked === true
+    );
 
     const [statusResult, statsResult, timelineResult, incidentsResult, targetsResult] = await Promise.allSettled([
       fetchJson("/api/quality/status"),
       fetchJson(`/api/quality/stats?${params.toString()}`),
       fetchJson(`/api/quality/timeline?${timelineParams.toString()}`),
-      fetchJson(`/api/quality/incidents?${params.toString()}`),
+      fetchJson(`/api/quality/incidents?${incidentParams}`),
       fetchJson("/api/targets"),
     ]);
 
@@ -1406,7 +1496,7 @@ const Quality = (() => {
     }
 
     if (incidentsResult.status === "fulfilled") {
-      renderIncidents(incidentsResult.value.items || []);
+      renderIncidents(incidentsResult.value.items || [], incidentsResult.value.expected_hidden);
     } else {
       showRangeError(incidentsResult.reason);
     }
@@ -1422,6 +1512,10 @@ const Quality = (() => {
     wireConfigDirtyTracking();
     qs("q-annotation-form")?.addEventListener("submit", onAnnotationSubmit);
     qs("q-incident-annotation-form")?.addEventListener("submit", onIncidentAnnotationSubmit);
+    qs("q-incident-expected-toggle")?.addEventListener("click", onIncidentExpectedToggle);
+    qs("q-incidents-hide-expected")?.addEventListener("change", () => {
+      refresh().catch((err) => showRangeError(err));
+    });
     qs("q-target-add")?.addEventListener("click", onAddTarget);
     qs("q-targets-tbody")?.addEventListener("click", onTargetsTableClick);
     qs("q-expected-window-form")?.addEventListener("submit", onAddExpectedWindow);
@@ -1475,6 +1569,8 @@ const Quality = (() => {
     refreshTargetsTable,
     refreshExpectedWindows,
     formatWindowDays,
+    incidentExpectedBadge,
+    buildChartBoxes,
     pickBucketSeconds,
     buildSumRow,
     lossValueForPoint,

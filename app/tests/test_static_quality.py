@@ -578,3 +578,83 @@ def test_reapplying_the_pending_config_never_discards_what_the_user_typed():
     result = _run_node(program)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.strip()) == {"again": False, "port": "5301"}
+
+
+# ---------------------------------------------------------------------------
+# incydenty: plakietka, przełącznik i filtr spodziewanych (Task 12, spec §8)
+# ---------------------------------------------------------------------------
+
+
+def _alpha(color: str) -> float:
+    """Alpha channel of an `rgba(r,g,b,a)` string."""
+    match = re.search(r"rgba\([^)]*?,\s*([0-9.]+)\s*\)", color)
+    assert match, f"not an rgba colour: {color}"
+    return float(match.group(1))
+
+
+def test_incident_table_and_drawer_expose_the_flag():
+    assert 'id="q-incidents-hide-expected"' in INDEX_HTML
+    assert 'id="q-incident-expected-toggle"' in INDEX_HTML
+
+
+def test_quality_js_marks_and_filters_incidents():
+    assert "q-incident-expected-toggle" in QUALITY_JS
+    assert "expected=exclude" in APP_JS       # spelled once, in withExpectedFilter
+    assert "/expected" in QUALITY_JS
+
+
+def test_the_incident_list_asks_the_server_to_filter():
+    """The checkbox must reach `/api/quality/incidents`, not merely hide rows
+    locally — `expected_hidden` and the counters are the server's answer."""
+    match = re.search(r"async function refresh\(paramsInput\) \{.*?\n  \}", QUALITY_JS, re.S)
+    assert match, "refresh() not found in quality.js"
+    body = match.group(0)
+    assert "withExpectedFilter(" in body
+    assert "/api/quality/incidents?" in body
+
+
+@requires_node
+@pytest.mark.parametrize(
+    "incident, label",
+    [
+        ({"expected": 0, "expected_source": None}, ""),
+        ({"expected": 1, "expected_source": "manual"}, "oznaczone ręcznie"),
+        ({"expected": 1, "expected_source": "rule", "expected_rule_id": 4}, "okno serwisowe"),
+        # a row flagged before anybody recorded why still has to say so
+        ({"expected": 1, "expected_source": None}, "okno serwisowe"),
+    ],
+)
+def test_the_incident_badge_says_where_the_verdict_came_from(incident, label):
+    program = (
+        f"{QUALITY_JS}\n"
+        f"console.log(Quality.incidentExpectedBadge({json.dumps(incident)}) ?? '');"
+    )
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == label
+
+
+@requires_node
+def test_an_expected_incident_stays_on_the_timeline_but_fades():
+    """Dropping it would leave a hole in the picture that nothing explains;
+    the spec asks for a muted fill instead (Task 12)."""
+    timeline = {
+        "incidents": [
+            {"started_at": "2026-09-21T01:00:00.000Z", "ended_at": "2026-09-21T01:04:00.000Z",
+             "expected": 0},
+            {"started_at": "2026-09-21T03:00:00.000Z", "ended_at": "2026-09-21T03:04:00.000Z",
+             "expected": 1},
+        ]
+    }
+    program = (
+        "globalThis.parseIsoToMs = (s) => (s ? Date.parse(s) : null);\n"
+        f"{QUALITY_JS}\n"
+        f"console.log(JSON.stringify(Quality.buildChartBoxes({json.dumps(timeline)})));"
+    )
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    boxes = json.loads(result.stdout.strip())
+
+    assert len(boxes) == 2, boxes
+    plain, expected = boxes
+    assert _alpha(expected["color"]) < _alpha(plain["color"])
