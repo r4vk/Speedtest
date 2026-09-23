@@ -15,7 +15,7 @@ import logging
 import math
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from . import aggregates, dns_probe, https_probe, icmp_probe, quality_db, stats, tcp_probe
 from .availability import AvailabilitySettings, AvailabilityTracker, evaluate, quality_state
@@ -23,6 +23,8 @@ from .config import AppConfig
 from .db import end_blocked_period, get_settings, start_blocked_period
 from .diagnostics import SETTINGS_KEYS as DIAGNOSTICS_SETTINGS_KEYS
 from .diagnostics import DiagnosticsRunner, DiagnosticsSettings
+from .expected_windows import match as match_expected_window
+from .expected_windows import parse_windows
 from .incidents import (
     IncidentEngine,
     IncidentEvent,
@@ -35,7 +37,7 @@ from .probe_scheduler import ProbeFn, ProbeScheduler
 from .probe_types import ProbeResult, ProbeTarget, Protocol
 from .runtime import get_runtime
 from .scheduler import _is_blocked_by_schedule
-from .time_utils import to_iso_z, utc_now
+from .time_utils import parse_dt, to_iso_z, utc_now
 
 log = logging.getLogger(__name__)
 
@@ -431,20 +433,57 @@ class QualityEngine:
                 return
 
             fields = INCIDENT_CLOSE_FIELDS if event.type == "closed" else INCIDENT_UPDATE_FIELDS
-            quality_db.update_incident(
-                self._db_path, incident_id, **{name: row[name] for name in fields}
-            )
+            values: dict[str, Any] = {name: row[name] for name in fields}
+            if event.type == "closed":
+                # Only a closed incident has both ends, so only a close can be
+                # judged against the expected windows (spec §5).
+                values.update(self._expected_fields(row, event.target_id))
+            quality_db.update_incident(self._db_path, incident_id, **values)
             if event.type == "closed":
                 self._open_keys.discard(key)
                 log.info(
-                    "incident %s closed on target %s (%s), reason=%s",
+                    "incident %s closed on target %s (%s), reason=%s%s",
                     incident_id,
                     event.target_id,
                     event.protocol,
                     event.state.close_reason,
+                    (
+                        f", expected by rule {values['expected_rule_id']}"
+                        if values.get("expected")
+                        else ""
+                    ),
                 )
         except Exception:
             log.exception("Persisting the %s incident event failed", event.type)
+
+    def _expected_fields(self, row: Mapping[str, Any], target_id: int) -> dict[str, Any]:
+        """Verdict of the expected-window rules for a closing incident.
+
+        Read at close time rather than cached alongside the thresholds:
+        incidents close rarely, so this is one small query per closed incident,
+        and a rule saved a minute ago already holds. A failure here is logged
+        and read as "no rules" — an unflagged incident can be marked by hand,
+        a lost one cannot.
+        """
+        try:
+            windows = parse_windows(
+                quality_db.list_expected_windows(self._db_path, enabled_only=True)
+            )
+            if not windows:
+                return {}
+            started, ended = row.get("started_at"), row.get("ended_at")
+            window = match_expected_window(
+                windows,
+                parse_dt(str(started)) if started else None,
+                parse_dt(str(ended)) if ended else None,
+                target_id=target_id,
+            )
+        except Exception:
+            log.warning("Could not evaluate the expected windows", exc_info=True)
+            return {}
+        if window is None:
+            return {}
+        return {"expected": 1, "expected_source": "rule", "expected_rule_id": window.id}
 
     async def _notify(self, event: IncidentEvent, target: ProbeTarget | None) -> None:
         for callback in list(self._subscribers):

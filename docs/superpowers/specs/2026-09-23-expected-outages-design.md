@@ -153,15 +153,12 @@ Two write points, both on a path that is already issuing an `UPDATE`. No extra s
 extra transaction.
 
 **`quality_engine.py`, on a `closed` incident event.** The engine already writes
-`INCIDENT_CLOSE_FIELDS` in one `update_incident`. The rules (cached and refreshed alongside the
-other settings, `SETTINGS_REFRESH_SECONDS`) are matched against the incident's
-`started_at`/`ended_at` and its `target_id`, and `expected`, `expected_source='rule'`,
-`expected_rule_id` join that same field set when a rule matches. No match leaves the defaults.
-
-Because the rules are cached, a rule saved now applies to incidents closing up to
-`SETTINGS_REFRESH_SECONDS` later. That is the one place where "no retroactive rewrite" has a
-visible cost: a rule created at 03:02, mid-reboot, does not mark that night's outage. Marking it
-by hand is one click, and the rule holds from the next night on.
+`INCIDENT_CLOSE_FIELDS` in one `update_incident`. The rules are read at close time — one small
+query, not a cache refreshed with the thresholds, because incidents close rarely — and matched
+against the incident's `started_at`/`ended_at` and its `target_id`; `expected`,
+`expected_source='rule'` and `expected_rule_id` join that same field set when a rule matches. No
+match leaves the defaults. A rule therefore holds from the moment it is saved: one created at
+03:02, mid-reboot, still marks that night's outage when it closes.
 
 **`availability.py`, in `_on_up`.** The tracker knows `self._outage_started_at` and the recovery
 timestamp. Match with `target_id = None`; on a hit:
