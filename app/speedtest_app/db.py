@@ -851,25 +851,84 @@ def query_speed_tests(db_path: str, tr: TimeRange):
         return [dict(r) for r in rows]
 
 
-def query_connectivity_periods(db_path: str, tr: TimeRange, is_up: bool | None = None):
+def query_connectivity_periods(
+    db_path: str, tr: TimeRange, is_up: bool | None = None, expected: str = "all"
+):
+    """Periods overlapping `tr`, with the expected-window verdict alongside.
+
+    The projection carries `id` and the three `expected*` columns (schema 3)
+    so every consumer — report, CSV, `/api/outages` — can show or filter on
+    the flag instead of silently losing it (spec Review Focus #2). `expected`
+    is `all` (default), `exclude` or `only`; an unrecognised value falls back
+    to `all`, matching `query_incidents`'s `expected_clause`.
+    """
     where_is_up = ""
     params = [tr.end_iso, tr.start_iso]
     if is_up is not None:
         where_is_up = " AND is_up = ?"
         params.append(1 if is_up else 0)
+    where_expected = ""
+    if expected == "exclude":
+        where_expected = " AND expected = 0"
+    elif expected == "only":
+        where_expected = " AND expected = 1"
     with db_conn(db_path) as conn:
         rows = conn.execute(
             f"""
-            SELECT started_at, ended_at, is_up
+            SELECT id, started_at, ended_at, is_up, expected, expected_source, expected_rule_id
             FROM connectivity_periods
             WHERE started_at < ?
               AND (ended_at IS NULL OR ended_at > ?)
               {where_is_up}
+              {where_expected}
             ORDER BY started_at ASC
             """,
             tuple(params),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def mark_connectivity_period_expected(
+    db_path: str,
+    *,
+    started_at_iso: str,
+    expected: bool,
+    source: str,
+    rule_id: int | None = None,
+) -> int:
+    """Flag the *down* period that starts at `started_at_iso`.
+
+    Addressed by start time rather than id because the caller
+    (`AvailabilityTracker`) knows when the outage began but never held its row
+    id — `record_connectivity` closed the period on the way past. `is_up = 0`
+    keeps it off the "up" period that starts at the same instant.
+    """
+    with db_conn(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE connectivity_periods
+            SET expected = ?, expected_source = ?, expected_rule_id = ?
+            WHERE started_at = ? AND is_up = 0
+            """,
+            (1 if expected else 0, source, rule_id, started_at_iso),
+        )
+        return cur.rowcount
+
+
+def mark_connectivity_period_expected_by_id(
+    db_path: str, period_id: int, *, expected: bool, source: str, rule_id: int | None = None
+) -> int:
+    """Flag a specific down period by id — the hand-marking path (spec §9)."""
+    with db_conn(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE connectivity_periods
+            SET expected = ?, expected_source = ?, expected_rule_id = ?
+            WHERE id = ? AND is_up = 0
+            """,
+            (1 if expected else 0, source, rule_id, period_id),
+        )
+        return cur.rowcount
 
 
 def query_connectivity_checks(db_path: str, tr: TimeRange):

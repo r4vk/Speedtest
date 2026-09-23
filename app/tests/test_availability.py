@@ -18,7 +18,13 @@ from speedtest_app.availability import (
     quality_state,
 )
 from speedtest_app.config import AppConfig
-from speedtest_app.db import get_current_connectivity_period, record_connectivity
+from speedtest_app.db import (
+    TimeRange,
+    get_current_connectivity_period,
+    mark_connectivity_period_expected,
+    query_connectivity_periods,
+    record_connectivity,
+)
 from speedtest_app.probe_types import Outcome, ProbeResult, ProbeTarget, Protocol
 from speedtest_app.time_utils import to_iso_z
 
@@ -475,3 +481,52 @@ def _periods(db_path: str) -> list[dict[str, Any]]:
     finally:
         conn.close()
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# query_connectivity_periods / mark_connectivity_period_expected (Task 4)
+# ---------------------------------------------------------------------------
+
+
+def test_query_connectivity_periods_exposes_id_and_flag(db_path: str) -> None:
+    record_connectivity(db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
+    record_connectivity(db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
+    tr = TimeRange(start_iso="2026-09-21T00:00:00.000Z", end_iso="2026-09-21T02:00:00.000Z")
+    down = query_connectivity_periods(db_path, tr=tr, is_up=False)
+    assert set(down[0]) >= {"id", "started_at", "ended_at", "is_up",
+                            "expected", "expected_source", "expected_rule_id"}
+    assert down[0]["expected"] == 0
+
+
+def test_mark_connectivity_period_expected_targets_the_down_period(db_path: str) -> None:
+    record_connectivity(db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
+    record_connectivity(db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
+    updated = mark_connectivity_period_expected(
+        db_path, started_at_iso="2026-09-21T01:00:00.000Z",
+        expected=True, source="rule", rule_id=None,
+    )
+    assert updated == 1
+    tr = TimeRange(start_iso="2026-09-21T00:00:00.000Z", end_iso="2026-09-21T02:00:00.000Z")
+    assert query_connectivity_periods(db_path, tr=tr, is_up=False)[0]["expected"] == 1
+    # The "up" period that starts at the same instant must not be touched.
+    assert query_connectivity_periods(db_path, tr=tr, is_up=True)[0]["expected"] == 0
+
+
+def test_query_connectivity_periods_expected_filter(db_path: str) -> None:
+    record_connectivity(db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
+    record_connectivity(db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
+    record_connectivity(db_path, is_up=False, now_iso="2026-09-21T03:00:00.000Z")
+    record_connectivity(db_path, is_up=True, now_iso="2026-09-21T03:05:00.000Z")
+    mark_connectivity_period_expected(
+        db_path, started_at_iso="2026-09-21T03:00:00.000Z",
+        expected=True, source="rule", rule_id=None,
+    )
+    tr = TimeRange(start_iso="2026-09-21T00:00:00.000Z", end_iso="2026-09-21T04:00:00.000Z")
+
+    def starts(mode: str) -> list[str]:
+        return [r["started_at"] for r in
+                query_connectivity_periods(db_path, tr=tr, is_up=False, expected=mode)]
+
+    assert starts("exclude") == ["2026-09-21T01:00:00.000Z"]
+    assert starts("only") == ["2026-09-21T03:00:00.000Z"]
+    assert len(starts("all")) == 2
