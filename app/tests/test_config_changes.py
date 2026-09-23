@@ -45,10 +45,16 @@ def test_ensure_default_setting_logs_source_env(db_path, utc_iso):
     assert get_settings(db_path, ["ping_enabled"]) == {"ping_enabled": "true"}
 
 
-def test_migration_logs_the_schema_version_change(db_path, utc_iso):
+def test_migration_logs_every_schema_version_change(db_path, utc_iso):
+    """One audit row per migration step, chained — a fresh database walks them all.
+
+    `ensure_db` creates the legacy schema and then migrates forward, so a brand
+    new file logs the whole chain instead of landing on the current version out
+    of nowhere. A new migration adds a link here; having to update this list is
+    the point.
+    """
     rows = quality_db.query_config_changes(db_path, "1970-01-01T00:00:00.000Z", utc_iso(3600))
     schema_rows = [r for r in rows if r["key"] == "schema_version"]
 
-    assert len(schema_rows) == 1
-    assert (schema_rows[0]["old_value"], schema_rows[0]["new_value"]) == ("1", "2")
-    assert schema_rows[0]["source"] == "migration"
+    assert [(r["old_value"], r["new_value"]) for r in schema_rows] == [("1", "2"), ("2", "3")]
+    assert {r["source"] for r in schema_rows} == {"migration"}
