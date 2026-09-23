@@ -1,8 +1,10 @@
 """SQLite schema, migrations, legacy accessors, settings and the config change log.
 
 Schema v1 is the legacy monitoring database (connectivity checks + speed tests);
-schema v2 adds the network quality model (design spec §3). ``ensure_db`` creates
-the v1 tables and then migrates forward idempotently.
+schema v2 adds the network quality model (design spec §3); schema v3 adds
+expected maintenance windows and the `expected` flag on `incidents` and
+`connectivity_periods` (design spec 2026-09-23-expected-outages-design.md §2).
+``ensure_db`` creates the v1 tables and then migrates forward idempotently.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from .time_utils import to_iso_z
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Version created by the legacy DDL below; everything above it is a migration.
 LEGACY_SCHEMA_VERSION = 1
@@ -394,6 +396,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         except Exception:
             conn.execute("ROLLBACK")
             raise
+    if _read_schema_version(conn) < 3:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _migrate_2_to_3(conn)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def _migrate_1_to_2(conn: sqlite3.Connection) -> None:
@@ -417,6 +427,61 @@ def _migrate_1_to_2(conn: sqlite3.Connection) -> None:
         INSERT INTO meta(key, value) VALUES ('schema_version','2')
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schema v3 — expected maintenance windows (design spec §2)
+# ---------------------------------------------------------------------------
+
+SCHEMA_V3_DDL: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS expected_windows (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      name       TEXT NOT NULL,
+      time_from  TEXT NOT NULL,
+      time_to    TEXT NOT NULL,
+      days       TEXT NOT NULL,
+      target_id  INTEGER NULL REFERENCES probe_targets(id) ON DELETE CASCADE,
+      enabled    INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+      note       TEXT NULL,
+      created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_expected_windows_enabled ON expected_windows(enabled)",
+)
+
+#: `incidents` and `connectivity_periods` carry the same verdict (spec §2).
+EXPECTED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("expected", "INTEGER NOT NULL DEFAULT 0 CHECK (expected IN (0,1))"),
+    ("expected_source", "TEXT NULL CHECK (expected_source IN ('rule','manual'))"),
+    ("expected_rule_id", "INTEGER NULL REFERENCES expected_windows(id) ON DELETE SET NULL"),
+)
+
+
+def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
+    now_iso = _utc_now_iso()
+    for statement in SCHEMA_V3_DDL:
+        conn.execute(statement)
+    for table in ("incidents", "connectivity_periods"):
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for name, ddl in EXPECTED_COLUMNS:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_incidents_expected_time ON incidents(expected, started_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_connectivity_periods_expected "
+        "ON connectivity_periods(expected, started_at)"
+    )
+    conn.execute(
+        "INSERT INTO config_changes(changed_at, key, old_value, new_value, source) VALUES (?,?,?,?,?)",
+        (now_iso, "schema_version", "2", "3", "migration"),
+    )
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES ('schema_version','3') "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
     )
 
 

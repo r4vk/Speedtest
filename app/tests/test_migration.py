@@ -1,4 +1,6 @@
-"""Migration 1 -> 2: new tables, seeded targets, legacy data untouched, atomicity."""
+"""Migrations: 1 -> 2 (new tables, seeded targets, legacy data untouched,
+atomicity) and 2 -> 3 (expected_windows table and the expected flag columns,
+design spec 2026-09-23-expected-outages-design.md §2)."""
 from __future__ import annotations
 
 import sqlite3
@@ -7,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from speedtest_app import db as db_module
-from speedtest_app.db import SCHEMA_VERSION, db_conn, ensure_db
+from speedtest_app.db import SCHEMA_VERSION, db_conn, ensure_db, record_connectivity
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -79,8 +81,8 @@ def test_empty_db_migrates_to_v2(tmp_path, monkeypatch):
 
     ensure_db(path)
 
-    assert SCHEMA_VERSION == 2
-    assert _schema_version(path) == "2"
+    assert SCHEMA_VERSION == 3
+    assert _schema_version(path) == "3"
     assert set(V2_TABLES).issubset(_tables(path))
 
     targets = _targets(path)
@@ -201,13 +203,18 @@ def test_v1_history_survives_migration(tmp_path, monkeypatch):
 
     ensure_db(path)
 
-    assert _schema_version(path) == "2"
+    assert _schema_version(path) == "3"
     assert _counts(path, legacy_tables) == before
     with db_conn(path) as conn:
         periods_after = [dict(r) for r in conn.execute("SELECT * FROM connectivity_periods ORDER BY id")]
         checks_after = [dict(r) for r in conn.execute("SELECT * FROM connectivity_checks ORDER BY id")]
         speed_after = [dict(r) for r in conn.execute("SELECT * FROM speed_tests ORDER BY id")]
-    assert periods_after == periods_before
+    # connectivity_periods gains the expected-window columns (schema v3) but
+    # keeps every existing value; a v1 row was never evaluated against a rule.
+    for old, new in zip(periods_before, periods_after):
+        assert {k: new[k] for k in old} == old
+        assert new["expected"] == 0
+        assert new["expected_source"] is None
     assert checks_after == checks_before
     # speed_tests gains the v1.x columns (NULL) but keeps every existing value
     for old, new in zip(speed_before, speed_after):
@@ -227,7 +234,7 @@ def test_ensure_db_is_idempotent(tmp_path, monkeypatch):
 
     ensure_db(path)
 
-    assert _schema_version(path) == "2"
+    assert _schema_version(path) == "3"
     assert _counts(path, tables) == after_first
     assert _targets(path) == targets_first
 
@@ -247,3 +254,40 @@ def test_failed_migration_leaves_v1_intact(tmp_path, monkeypatch):
     assert _schema_version(path) == "1"
     assert _tables(path).isdisjoint(set(V2_TABLES))
     assert _counts(path, ["connectivity_checks", "settings"]) == before
+
+
+# ---------------------------------------------------------------------------
+# Migration 2 -> 3 — expected_windows and the expected flag columns
+# ---------------------------------------------------------------------------
+
+
+def test_migration_2_to_3_adds_expected_columns(tmp_path):
+    path = str(tmp_path / "app.db")
+    ensure_db(path)
+    with db_conn(path) as conn:
+        for table in ("incidents", "connectivity_periods"):
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            assert {"expected", "expected_source", "expected_rule_id"} <= cols
+        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "expected_windows" in tables
+        version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        assert int(version["value"]) == 3
+
+
+def test_migration_2_to_3_leaves_existing_rows_unexpected(tmp_path):
+    path = str(tmp_path / "app.db")
+    ensure_db(path)
+    record_connectivity(path, is_up=False, now_iso="2026-09-01T00:00:00.000Z")
+    with db_conn(path) as conn:
+        row = conn.execute("SELECT expected, expected_source FROM connectivity_periods").fetchone()
+    assert row["expected"] == 0
+    assert row["expected_source"] is None
+
+
+def test_ensure_db_is_idempotent_on_v3(tmp_path):
+    path = str(tmp_path / "app.db")
+    ensure_db(path)
+    ensure_db(path)
+    with db_conn(path) as conn:
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(incidents)")]
+    assert cols.count("expected") == 1
