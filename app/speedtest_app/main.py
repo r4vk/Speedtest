@@ -663,22 +663,9 @@ def api_outages(
         else len(query_connectivity_periods(cfg.db_path, tr=tr, is_up=False))
     )
 
-    items: list[dict[str, Any]] = []
-    for r in rows:
-        started_at = to_local_iso(parse_dt(r["started_at"]))
-        ended_at = to_local_iso(parse_dt(r["ended_at"])) if r["ended_at"] else to_local_iso(utc_now())
-        items.append(
-            {
-                # `id` is what the dashboard's mark/unmark button addresses, and
-                # the three `expected*` columns are what it renders as a badge.
-                "id": r["id"],
-                "started_at": started_at,
-                "ended_at": ended_at,
-                "expected": r["expected"],
-                "expected_source": r["expected_source"],
-                "expected_rule_id": r["expected_rule_id"],
-            }
-        )
+    # The same payload the PATCH answers with, so a row never changes shape
+    # between being listed and being marked.
+    items = [_outage_payload(r) for r in rows]
 
     return {
         "range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)},
@@ -689,11 +676,20 @@ def api_outages(
 
 
 def _outage_payload(row: dict[str, Any]) -> dict[str, Any]:
-    """One availability period in the shape `/api/outages` lists them in."""
+    """One availability period in the shape `/api/outages` lists them in.
+
+    An outage still running has no end, but the list has always shown one — the
+    current time — so a row can be drawn without a special case. That reading is
+    kept, and `open` says which of the two it is: without it a caller cannot
+    tell "ended a moment ago" from "still going", and would offer to mark a
+    running outage expected, which `PATCH .../expected` refuses with 409.
+    """
+    ended_at = parse_dt(row["ended_at"]) if row["ended_at"] else utc_now()
     return {
         "id": row["id"],
         "started_at": to_local_iso(parse_dt(row["started_at"])),
-        "ended_at": to_local_iso(parse_dt(row["ended_at"])) if row["ended_at"] else None,
+        "ended_at": to_local_iso(ended_at),
+        "open": row["ended_at"] is None,
         "expected": row["expected"],
         "expected_source": row["expected_source"],
         "expected_rule_id": row["expected_rule_id"],

@@ -183,6 +183,16 @@ def test_the_list_and_the_downtime_figures_share_one_filter():
         assert "withExpectedFilter(" in _function_source(name), name
 
 
+def test_a_running_outage_is_not_offered_the_mark_button():
+    """`PATCH /api/outages/{id}/expected` answers 409 while an outage runs, so
+    the row must read the payload's `open` flag and show a state instead of a
+    control. A button there could only ever produce an error message."""
+    source = _function_source("loadOutagesList")
+
+    assert "it.open" in source
+    assert source.index("it.open") < source.index("toggle-expected")
+
+
 @requires_node
 @pytest.mark.parametrize(
     "hide, expected",

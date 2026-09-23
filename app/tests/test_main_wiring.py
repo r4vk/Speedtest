@@ -128,6 +128,42 @@ def test_open_outage_cannot_be_marked(client: TestClient) -> None:
     )
 
 
+def test_a_running_outage_says_it_is_still_running(client: TestClient) -> None:
+    """`ended_at` is filled in with "now" for an outage that has not ended, so
+    it is `open` that tells a caller not to offer the mark control — otherwise
+    the dashboard offers a button whose only possible answer is the 409 above.
+    """
+    record_connectivity(client.app_db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
+    running = client.get(f"/api/outages?{OUTAGE_RANGE}").json()["items"][0]
+    assert running["open"] is True
+    assert running["ended_at"]  # a drawable end, not null
+
+    record_connectivity(client.app_db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
+    finished = client.get(f"/api/outages?{OUTAGE_RANGE}").json()["items"][0]
+    assert finished["open"] is False
+
+
+def test_a_marked_outage_keeps_its_shape_between_the_list_and_the_patch(
+    client: TestClient,
+) -> None:
+    """The PATCH answers with the row the list would have shown, key for key.
+
+    Both are built by one helper; this is what stops the two drifting apart
+    again, which is how the dashboard lost track of what was still running.
+    """
+    record_connectivity(client.app_db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
+    record_connectivity(client.app_db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
+    listed = client.get(f"/api/outages?{OUTAGE_RANGE}").json()["items"][0]
+
+    patched = client.patch(
+        f"/api/outages/{listed['id']}/expected", json={"expected": True}
+    ).json()["outage"]
+
+    assert set(patched) == set(listed)
+    assert patched["started_at"] == listed["started_at"]
+    assert patched["expected"] == 1
+
+
 def test_marking_an_unknown_outage_is_404(client: TestClient) -> None:
     assert (
         client.patch("/api/outages/424242/expected", json={"expected": True}).status_code == 404

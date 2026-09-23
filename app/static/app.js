@@ -1086,12 +1086,18 @@ async function loadOutagesList() {
     div.className = "outage";
     div.dataset.outageId = String(it.id);
     const badge = expectedBadgeLabel(it, ruleNames);
+    // An outage still running cannot be judged yet — nobody knows whether it
+    // will stay inside its window — and the API refuses it with 409. Offering
+    // the button anyway would be an invitation to an error message.
+    const verdict = it.open
+      ? ` <span class="tool-muted">trwa</span>`
+      : ` <button type="button" class="linkbtn btn-small" data-action="toggle-expected"` +
+        ` data-expected="${it.expected ? "1" : "0"}">` +
+        `${it.expected ? "To była prawdziwa awaria" : "Oznacz jako spodziewaną"}</button>`;
     div.innerHTML =
       `<span>Od: ${_escHtml(it.started_at)}  Do: ${_escHtml(it.ended_at)}</span>` +
       (badge ? ` <span class="badge badge-gray">${_escHtml(badge)}</span>` : "") +
-      ` <button type="button" class="linkbtn btn-small" data-action="toggle-expected"` +
-      ` data-expected="${it.expected ? "1" : "0"}">` +
-      `${it.expected ? "To była prawdziwa awaria" : "Oznacz jako spodziewaną"}</button>`;
+      verdict;
     el.appendChild(div);
   }
 }
