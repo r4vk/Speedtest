@@ -713,8 +713,15 @@ def api_mark_outage_expected(period_id: int, body: ExpectedMark) -> dict[str, An
         # itself the moment connectivity returns.
         raise HTTPException(status_code=409, detail="awaria jeszcze trwa")
 
+    # The helper writes all three columns, so the rule that had matched is
+    # passed back in rather than dropped: spec §6 keeps it, because it says
+    # which window claimed this outage — the thing a hand verdict overrules.
     mark_connectivity_period_expected_by_id(
-        cfg.db_path, period_id, expected=body.expected, source="manual", rule_id=None
+        cfg.db_path,
+        period_id,
+        expected=body.expected,
+        source="manual",
+        rule_id=row["expected_rule_id"],
     )
     note = (body.note or "").strip()
     if note:

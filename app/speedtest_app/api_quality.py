@@ -597,7 +597,9 @@ def api_mark_incident_expected(
     `expected_source` becomes `manual` for *both* answers, a `false` included:
     a later reader has to be able to tell "somebody looked and said this was a
     real outage" from "nobody has looked at it yet" (Review Focus #5). The
-    rule id goes with it, because the rule is no longer what decided this row.
+    rule id stays as it is: it records which window had originally claimed the
+    outage, which is exactly what a "no, this one was real" verdict argues
+    against — clearing it would throw away the evidence the verdict is about.
     """
     db_path = db_path_of(request)
     row = quality_db.get_incident(db_path, incident_id)
@@ -614,7 +616,6 @@ def api_mark_incident_expected(
         incident_id,
         expected=1 if body.expected else 0,
         expected_source="manual",
-        expected_rule_id=None,
     )
     note = (body.note or "").strip()
     if note:

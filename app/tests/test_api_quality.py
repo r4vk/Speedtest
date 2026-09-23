@@ -896,6 +896,33 @@ def test_manual_unmark_records_that_a_person_looked(client) -> None:
     assert response.json()["incident"]["expected_source"] == "manual"
 
 
+def test_manual_unmark_keeps_the_rule_that_had_matched(client) -> None:
+    """Spec §6: a hand verdict leaves `expected_rule_id` untouched.
+
+    The rule id is the very thing a "no, this one was real" verdict argues
+    against — which window had claimed the outage — so nulling it destroys the
+    evidence the verdict is about, and leaves `expected_source = 'manual'`
+    standing alone with nothing to say what it overruled.
+    """
+    window_id = quality_db.insert_expected_window(
+        client.app_db_path,
+        name="restart routera",
+        time_from="02:55",
+        time_to="03:15",
+        days="[0,1,2,3,4,5,6]",
+    )
+    incident_id = _closed_incident(
+        client, expected=1, expected_source="rule", expected_rule_id=window_id
+    )
+
+    marked = client.patch(
+        f"/api/quality/incidents/{incident_id}/expected", json={"expected": False}
+    ).json()["incident"]
+
+    assert (marked["expected"], marked["expected_source"]) == (0, "manual")
+    assert marked["expected_rule_id"] == window_id
+
+
 def test_open_incident_cannot_be_marked(client) -> None:
     incident_id = _open_incident(client)
     assert (

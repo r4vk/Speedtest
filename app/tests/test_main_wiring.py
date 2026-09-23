@@ -119,6 +119,40 @@ def test_manual_unmark_of_an_outage_records_that_a_person_looked(client: TestCli
     assert item["expected"] == 0 and item["expected_source"] == "manual"
 
 
+def test_manual_unmark_of_an_outage_keeps_the_rule_that_had_matched(client: TestClient) -> None:
+    """Spec §6, the `connectivity_periods` half: the rule id survives a hand.
+
+    Which window had claimed the outage is what a "no, this one was real"
+    verdict overrules; nulling it throws that away and leaves nothing behind
+    the `manual` source.
+    """
+    window_id = quality_db.insert_expected_window(
+        client.app_db_path,
+        name="restart routera",
+        time_from="02:55",
+        time_to="03:15",
+        days="[0,1,2,3,4,5,6]",
+    )
+    record_connectivity(client.app_db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
+    record_connectivity(client.app_db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
+    url = f"/api/outages?{OUTAGE_RANGE}"
+    period_id = client.get(url).json()["items"][0]["id"]
+    mark_connectivity_period_expected(
+        client.app_db_path,
+        started_at_iso="2026-09-21T01:00:00.000Z",
+        expected=True,
+        source="rule",
+        rule_id=window_id,
+    )
+
+    marked = client.patch(
+        f"/api/outages/{period_id}/expected", json={"expected": False}
+    ).json()["outage"]
+
+    assert (marked["expected"], marked["expected_source"]) == (0, "manual")
+    assert marked["expected_rule_id"] == window_id
+
+
 def test_open_outage_cannot_be_marked(client: TestClient) -> None:
     record_connectivity(client.app_db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
     period_id = client.get(f"/api/outages?{OUTAGE_RANGE}").json()["items"][0]["id"]
