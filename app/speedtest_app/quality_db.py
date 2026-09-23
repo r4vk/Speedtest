@@ -558,6 +558,19 @@ def expected_clause(expected: str) -> str | None:
     return None
 
 
+def expected_mode(value: str | None) -> str:
+    """`all` unless the caller clearly asked for something else.
+
+    A typo must never hide an outage, so anything unrecognised reads as `all`.
+    It lives here rather than in either API module because `api_quality.py`,
+    `api_quality_exports.py`, `main.py` and the report all parse the same query
+    parameter — one parser is the only way the three modes cannot drift apart
+    between endpoints.
+    """
+    mode = (value or "all").strip().lower()
+    return mode if mode in EXPECTED_FILTERS else "all"
+
+
 def query_incidents(
     db_path: str,
     start_iso: str,

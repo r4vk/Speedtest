@@ -645,10 +645,23 @@ def _overlap_seconds(start: datetime, end: datetime, a: datetime, b: datetime) -
 def api_outages(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    expected: str = Query(default="all"),
 ) -> dict[str, Any]:
+    """Outage periods in the range, optionally without the expected ones (§10).
+
+    `expected_hidden` is counted rather than inferred, so a filtered list can
+    say how many rows it is not showing — an empty list otherwise reads as
+    "nothing happened" when it means "everything was planned".
+    """
     pr = parse_range(from_, to)
     tr = TimeRange(start_iso=to_iso_z(pr.start), end_iso=to_iso_z(pr.end))
-    rows = query_connectivity_periods(cfg.db_path, tr=tr, is_up=False)
+    mode = quality_db.expected_mode(expected)
+    rows = query_connectivity_periods(cfg.db_path, tr=tr, is_up=False, expected=mode)
+    total = (
+        len(rows)
+        if mode == "all"
+        else len(query_connectivity_periods(cfg.db_path, tr=tr, is_up=False))
+    )
 
     items: list[dict[str, Any]] = []
     for r in rows:
@@ -667,7 +680,12 @@ def api_outages(
             }
         )
 
-    return {"range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)}, "items": items}
+    return {
+        "range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)},
+        "expected_filter": mode,
+        "expected_hidden": total - len(rows),
+        "items": items,
+    }
 
 
 def _outage_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -759,10 +777,23 @@ def api_blocked_periods(
 def api_report_quality(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    expected: str = Query(default="all"),
 ) -> dict[str, Any]:
+    """The dashboard's downtime figures, optionally ignoring expected outages.
+
+    This — not `/api/outages` — is what fills `q-downtime` and `q-percent`, so
+    the `expected` filter has to bite here for "pomiń spodziewane" to change
+    the number a person reads off the panel (spec §10).
+    """
     pr = parse_range(from_, to)
     tr = TimeRange(start_iso=to_iso_z(pr.start), end_iso=to_iso_z(pr.end))
-    down_periods = query_connectivity_periods(cfg.db_path, tr=tr, is_up=False)
+    mode = quality_db.expected_mode(expected)
+    down_periods = query_connectivity_periods(cfg.db_path, tr=tr, is_up=False, expected=mode)
+    hidden = (
+        0
+        if mode == "all"
+        else len(query_connectivity_periods(cfg.db_path, tr=tr, is_up=False)) - len(down_periods)
+    )
 
     cov = coverage(cfg.db_path, pr.start, pr.end, test_type="ping")
     coverage_known = bool(cov["coverage_known"])
@@ -801,6 +832,8 @@ def api_report_quality(
 
     return {
         "range": {"from": to_local_iso(pr.start), "to": to_local_iso(pr.end)},
+        "expected_filter": mode,
+        "expected_hidden": hidden,
         "incident_count": incident_count,
         "downtime_seconds": downtime_seconds,
         "total_seconds": total_seconds,
@@ -865,16 +898,24 @@ def export_speed_csv(
 def export_outages_csv(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    expected: str = Query(default="all"),
 ):
+    """Outage periods as CSV, carrying the expected-window verdict (spec §10).
+
+    The flag is a column, not a silent omission: this file is the copy handed
+    to an ISP, so a planned outage stays visible *and* labelled.
+    """
     pr = parse_range(from_, to)
     tr = TimeRange(start_iso=to_iso_z(pr.start), end_iso=to_iso_z(pr.end))
-    items = query_connectivity_periods(cfg.db_path, tr=tr, is_up=False)
-    rows: list[list[Any]] = [["started_at", "ended_at"]]
+    items = query_connectivity_periods(
+        cfg.db_path, tr=tr, is_up=False, expected=quality_db.expected_mode(expected)
+    )
+    rows: list[list[Any]] = [["started_at", "ended_at", "expected", "expected_source"]]
     now_iso = to_iso_z(utc_now())
     for it in items:
         started_local = to_local_display(parse_dt(it["started_at"]))
         ended_local = to_local_display(parse_dt(it["ended_at"])) if it["ended_at"] else to_local_display(parse_dt(now_iso))
-        rows.append([started_local, ended_local])
+        rows.append([started_local, ended_local, it["expected"], it["expected_source"] or ""])
     return _csv_response("outages.csv", rows)
 
 

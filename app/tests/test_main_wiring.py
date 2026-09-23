@@ -10,6 +10,7 @@ import sqlite3
 
 from fastapi.testclient import TestClient
 
+from speedtest_app import quality_db
 from speedtest_app.db import mark_connectivity_period_expected, record_connectivity
 
 
@@ -131,3 +132,86 @@ def test_marking_an_unknown_outage_is_404(client: TestClient) -> None:
     assert (
         client.patch("/api/outages/424242/expected", json={"expected": True}).status_code == 404
     )
+
+
+# ---------------------------------------------------------------------------
+# the expected filter across the reads (Task 9 — design spec §10)
+# ---------------------------------------------------------------------------
+
+WIDE_RANGE = "from=2026-09-21T00:00:00.000Z&to=2026-09-21T05:00:00.000Z"
+
+
+def _two_outages(db_path: str) -> None:
+    """A 5-minute real outage and, two hours later, a 4-minute expected one."""
+    record_connectivity(db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
+    record_connectivity(db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
+    record_connectivity(db_path, is_up=False, now_iso="2026-09-21T03:00:00.000Z")
+    record_connectivity(db_path, is_up=True, now_iso="2026-09-21T03:04:00.000Z")
+    mark_connectivity_period_expected(
+        db_path,
+        started_at_iso="2026-09-21T03:00:00.000Z",
+        expected=True,
+        source="rule",
+        rule_id=None,
+    )
+
+
+def _observed_session(db_path: str) -> None:
+    """A closed monitor session covering the fixtures' range.
+
+    `/api/report/quality` clips downtime to the time somebody was watching, so
+    a range nobody observed reports zero however many periods it holds.
+    """
+    session_id = quality_db.start_session(
+        db_path, device_id="test", app_version="test", now_iso="2026-09-21T00:00:00.000Z"
+    )
+    quality_db.end_session(db_path, session_id, "2026-09-21T05:00:00.000Z", "shutdown")
+
+
+def test_outages_endpoint_filters_expected(client: TestClient) -> None:
+    _two_outages(client.app_db_path)
+    url = f"/api/outages?{WIDE_RANGE}"
+
+    body = client.get(url).json()
+    assert len(body["items"]) == 2
+    assert body["expected_filter"] == "all" and body["expected_hidden"] == 0
+
+    filtered = client.get(url + "&expected=exclude").json()
+    assert [i["started_at"] for i in filtered["items"]] == [body["items"][0]["started_at"]]
+    assert filtered["expected_filter"] == "exclude" and filtered["expected_hidden"] == 1
+
+    only = client.get(url + "&expected=only").json()
+    assert [i["expected"] for i in only["items"]] == [1]
+
+    typo = client.get(url + "&expected=krowa").json()
+    assert len(typo["items"]) == 2 and typo["expected_filter"] == "all"
+
+
+def test_report_quality_downtime_follows_the_filter(client: TestClient) -> None:
+    """`q-downtime` and `q-percent` read this endpoint, not `/api/outages`."""
+    _observed_session(client.app_db_path)
+    _two_outages(client.app_db_path)
+    url = f"/api/report/quality?{WIDE_RANGE}"
+
+    body = client.get(url).json()
+    assert body["downtime_seconds"] == 540
+    assert body["incident_count"] == 2
+    assert body["expected_filter"] == "all" and body["expected_hidden"] == 0
+
+    filtered = client.get(url + "&expected=exclude").json()
+    assert filtered["downtime_seconds"] == 300
+    assert filtered["incident_count"] == 1
+    assert filtered["expected_hidden"] == 1
+    assert filtered["downtime_percent"] < body["downtime_percent"]
+
+
+def test_outage_csv_carries_the_flag(client: TestClient) -> None:
+    _two_outages(client.app_db_path)
+    lines = client.get(f"/api/export/outages.csv?{WIDE_RANGE}").text.splitlines()
+
+    header = lines[0].split(",")
+    assert "expected" in header and "expected_source" in header
+    assert [line.split(",")[header.index("expected")] for line in lines[1:]] == ["0", "1"]
+
+    excluded = client.get(f"/api/export/outages.csv?{WIDE_RANGE}&expected=exclude").text.splitlines()
+    assert len(excluded) == 2

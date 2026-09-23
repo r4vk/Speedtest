@@ -911,3 +911,42 @@ def test_marking_an_unknown_incident_is_404(client) -> None:
         client.patch("/api/quality/incidents/424242/expected", json={"expected": True}).status_code
         == 404
     )
+
+
+# ---------------------------------------------------------------------------
+# the expected filter across the reads (Task 9 — design spec §10)
+# ---------------------------------------------------------------------------
+
+#: Spelled in UTC: `parse_dt` reads a naked `2026-09-21T00:00` as *local*, so a
+#: wall-clock range would slide off the fixtures on any machine but UTC+0.
+INCIDENT_RANGE = {"from": "2026-09-21T00:00:00.000Z", "to": "2026-09-21T23:00:00.000Z"}
+
+
+def test_incidents_endpoint_filters_expected(client) -> None:
+    plain = _closed_incident(client, started_at="2026-09-21T01:00:00.000Z")
+    planned = _closed_incident(
+        client,
+        started_at="2026-09-21T02:00:00.000Z",
+        ended_at="2026-09-21T02:04:00.000Z",
+        closed_at="2026-09-21T02:05:00.000Z",
+        expected=1,
+        expected_source="rule",
+    )
+
+    body = client.get("/api/quality/incidents", params=INCIDENT_RANGE).json()
+    assert [i["id"] for i in body["items"]] == [plain, planned]
+    assert body["expected_filter"] == "all" and body["expected_hidden"] == 0
+
+    body = client.get(
+        "/api/quality/incidents", params={**INCIDENT_RANGE, "expected": "exclude"}
+    ).json()
+    assert [i["id"] for i in body["items"]] == [plain]
+    assert body["expected_filter"] == "exclude" and body["expected_hidden"] == 1
+
+    only = client.get("/api/quality/incidents", params={**INCIDENT_RANGE, "expected": "only"}).json()
+    assert [i["id"] for i in only["items"]] == [planned]
+
+    # a typo must never hide an outage
+    typo = client.get("/api/quality/incidents", params={**INCIDENT_RANGE, "expected": "krowa"}).json()
+    assert [i["id"] for i in typo["items"]] == [plain, planned]
+    assert typo["expected_filter"] == "all"

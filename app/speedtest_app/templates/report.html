@@ -121,16 +121,25 @@
   {% endif %}
   — liczba przerw: {{ availability["incident_count"] }}.
 </p>
+{% if availability["expected_incident_count"] %}
+<p class="muted">
+  W tym spodziewane (okna serwisowe):
+  <strong>{{ availability["expected_downtime_seconds"] | seconds }}</strong>
+  — liczba przerw: {{ availability["expected_incident_count"] }}.
+  Przerwy spodziewane są wliczone do sumy powyżej i wykazane w tabeli, a nie pominięte.
+</p>
+{% endif %}
 <table>
-  <tr><th>Początek</th><th>Koniec</th><th class="num">Czas w obserwacji</th></tr>
+  <tr><th>Początek</th><th>Koniec</th><th class="num">Czas w obserwacji</th><th>Spodziewana</th></tr>
   {% for period in availability["periods"] %}
   <tr>
     <td>{{ period["started_at"] }}</td>
     <td>{{ period["ended_at"] or "trwa" }}</td>
     <td class="num">{{ period["observed_seconds"] | seconds }}</td>
+    <td>{{ "tak (ręcznie)" if period["expected_source"] == "manual" else ("tak" if period["expected"] else "—") }}</td>
   </tr>
   {% else %}
-  <tr><td colspan="3" class="empty">brak zarejestrowanych przerw</td></tr>
+  <tr><td colspan="4" class="empty">brak zarejestrowanych przerw</td></tr>
   {% endfor %}
 </table>
 </section>
@@ -191,7 +200,7 @@
   <tr>
     <th>Cel</th><th>Rodzaj</th><th>Początek</th><th>Koniec</th><th>Zamknięcie</th>
     <th class="num">Szczyt straty [%]</th><th class="num">Szczyt p95 [ms]</th>
-    <th class="num">Najdłuższa seria</th><th class="num">Okna</th>
+    <th class="num">Najdłuższa seria</th><th class="num">Okna</th><th>Spodziewany</th>
   </tr>
   {% for incident in incidents %}
   <tr>
@@ -204,9 +213,10 @@
     <td class="num">{{ incident["peak_p95_rtt_ms"] | number }}</td>
     <td class="num">{{ incident["longest_fail_streak"] if incident["longest_fail_streak"] is not none else "—" }}</td>
     <td class="num">{{ incident["windows_degraded"] }}</td>
+    <td>{{ "tak (ręcznie)" if incident["expected_source"] == "manual" else ("tak" if incident["expected"] else "—") }}</td>
   </tr>
   {% else %}
-  <tr><td colspan="9" class="empty">brak danych</td></tr>
+  <tr><td colspan="10" class="empty">brak danych</td></tr>
   {% endfor %}
 </table>
 

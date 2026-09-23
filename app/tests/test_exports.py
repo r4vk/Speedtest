@@ -456,3 +456,37 @@ def test_probe_csv_rows_survive_hopping_between_worker_threads(
 
     assert rows[0][0] == "started_at_local"
     assert len(rows) == 26  # header + all 25 rows, across four pages
+
+
+def test_incident_csv_carries_the_flag(client) -> None:
+    """The CSV is the evidence copy: it has to say which outages were planned."""
+    db_path = client.app_db_path
+    target = _target(db_path, name="expected-target")
+    incident_id = quality_db.insert_incident(
+        db_path,
+        target_id=target.id,
+        protocol="icmp",
+        kind="outage",
+        started_at="2026-09-21T01:00:00.000Z",
+        ended_at="2026-09-21T01:04:00.000Z",
+        closed_at="2026-09-21T01:05:00.000Z",
+        close_reason="recovered",
+        window_seconds=10,
+        probe_interval_seconds=1.0,
+        expected=1,
+        expected_source="rule",
+    )
+    params = {"from": "2026-09-21T00:00:00.000Z", "to": "2026-09-21T23:00:00.000Z"}
+
+    rows = _csv_rows(client.get("/api/quality/export/incidents.csv", params=params).text)
+    assert "expected" in rows[0] and "expected_source" in rows[0]
+    flagged = next(row for row in rows[1:] if row[0] == str(incident_id))
+    assert flagged[rows[0].index("expected")] == "1"
+    assert flagged[rows[0].index("expected_source")] == "rule"
+
+    excluded = _csv_rows(
+        client.get(
+            "/api/quality/export/incidents.csv", params={**params, "expected": "exclude"}
+        ).text
+    )
+    assert [row[0] for row in excluded[1:]] == []

@@ -519,15 +519,31 @@ def api_incidents(
     request: Request,
     pr: ParsedRange = Depends(get_range),
     target_id: int | None = Query(default=None),
+    expected: str = Query(default="all"),
 ) -> dict[str, Any]:
+    """Incidents in the range, optionally without the expected ones (spec §10).
+
+    `expected_hidden` is counted, not inferred: a panel that filters has to be
+    able to say *how many* rows it is not showing, or an empty list reads as
+    "nothing happened" when it really means "everything was planned".
+    """
     db_path = db_path_of(request)
     names = target_names(db_path)
+    mode = quality_db.expected_mode(expected)
+    start_iso, end_iso = to_iso_z(pr.start), to_iso_z(pr.end)
     rows = quality_db.query_incidents(
-        db_path, to_iso_z(pr.start), to_iso_z(pr.end), target_id=target_id
+        db_path, start_iso, end_iso, target_id=target_id, expected=mode
+    )
+    total = (
+        len(rows)
+        if mode == "all"
+        else len(quality_db.query_incidents(db_path, start_iso, end_iso, target_id=target_id))
     )
     return {
         "range": range_payload(pr.start, pr.end),
         "tz": tz_name(),
+        "expected_filter": mode,
+        "expected_hidden": total - len(rows),
         "items": [incident_payload(row, names) for row in rows],
     }
 

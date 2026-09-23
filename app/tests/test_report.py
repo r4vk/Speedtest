@@ -10,7 +10,7 @@ from datetime import timedelta
 
 import pytest
 
-from speedtest_app import quality_db, report
+from speedtest_app import db, quality_db, report
 from speedtest_app.probe_types import Outcome, ProbeResult, Protocol
 from speedtest_app.time_utils import parse_dt, to_iso_z, utc_now
 
@@ -318,13 +318,15 @@ def test_report_reads_the_raw_range_once_per_target(client, monkeypatch) -> None
     _seed(db_path, target.id, start)
 
     calls: list[dict] = []
-    original = quality_db.query_probe_results
+    original = quality_db.query_probe_metrics
 
     def _counting(*args, **kwargs):
         calls.append(kwargs)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(quality_db, "query_probe_results", _counting)
+    # the report reads raw rows through the narrow projection; the wide
+    # accessor is only for `probes.csv`, which reproduces the stored row
+    monkeypatch.setattr(quality_db, "query_probe_metrics", _counting)
     model = report.build_report_model(db_path, start, now, app_version="1.0.0", now=now)
 
     targets = quality_db.list_targets(db_path)
@@ -434,3 +436,56 @@ def test_report_without_an_engine_says_nothing_about_dropped_rows(client) -> Non
     )
     assert healthy["dropped_rows_note"] is None
     assert without["dropped_rows_note"] is None
+
+
+def test_report_separates_expected_downtime(client) -> None:
+    """The printable report never hides a planned outage — it labels it.
+
+    The report is evidence handed to an ISP, so an expected outage stays in
+    both tables and is called out separately instead of being filtered away.
+    """
+    db_path = client.app_db_path
+    target = _target(db_path, name="expected-report")
+    session_id = quality_db.start_session(
+        db_path, device_id="test", app_version="test", now_iso="2026-09-21T00:00:00.000Z"
+    )
+    quality_db.end_session(db_path, session_id, "2026-09-21T05:00:00.000Z", "shutdown")
+    db.record_connectivity(db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
+    db.record_connectivity(db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
+    db.record_connectivity(db_path, is_up=False, now_iso="2026-09-21T03:00:00.000Z")
+    db.record_connectivity(db_path, is_up=True, now_iso="2026-09-21T03:04:00.000Z")
+    db.mark_connectivity_period_expected(
+        db_path,
+        started_at_iso="2026-09-21T03:00:00.000Z",
+        expected=True,
+        source="rule",
+        rule_id=None,
+    )
+    quality_db.insert_incident(
+        db_path,
+        target_id=target.id,
+        protocol="icmp",
+        kind="outage",
+        started_at="2026-09-21T03:00:00.000Z",
+        ended_at="2026-09-21T03:04:00.000Z",
+        closed_at="2026-09-21T03:05:00.000Z",
+        close_reason="recovered",
+        window_seconds=10,
+        probe_interval_seconds=1.0,
+        expected=1,
+        expected_source="rule",
+    )
+
+    start, end = parse_dt("2026-09-21T00:00:00.000Z"), parse_dt("2026-09-21T05:00:00.000Z")
+    model = report.build_report_model(db_path, start, end, app_version="1.0.0", now=end)
+
+    assert model["availability"]["downtime_seconds"] == 540
+    assert model["availability"]["expected_downtime_seconds"] == 240
+    assert model["availability"]["expected_incident_count"] == 1
+    assert [incident["expected"] for incident in model["incidents"]] == [1]
+
+    html = client.get(
+        "/api/quality/report.html",
+        params={"from": "2026-09-21T00:00:00.000Z", "to": "2026-09-21T05:00:00.000Z"},
+    ).text
+    assert "spodziewane" in html

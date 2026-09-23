@@ -43,12 +43,13 @@ from .stats import bucket_rows, compute_stats
 from .time_utils import parse_dt, to_iso_z, to_local_display
 
 #: The device these measurements describe (spec §13.1).
-DEVICE = "NAS, kabel"
+DEVICE = "kontener Speedtest Monitor"
 
 #: How the link is probed — printed under the header so the reader knows what
 #: the numbers are made of.
 PROBE_METHOD = (
-    "Sondy wykonywane z NAS-a po kablu: ICMP echo, zestawienie połączenia TCP, "
+    "Sondy wykonywane z urządzenia, na którym działa kontener: ICMP echo, "
+    "zestawienie połączenia TCP, "
     "zapytanie DNS i żądanie HTTPS. Każda próba jest zapisywana osobno; straty "
     "liczone są wyłącznie z prób zakończonych odpowiedzią lub timeoutem."
 )
@@ -58,8 +59,8 @@ PROBE_METHOD = (
 LIMITATIONS: tuple[str, ...] = (
     "Rozdzielczość pomiaru wyznacza interwał sondy — zdarzenia krótsze niż interwał "
     "mogą pozostać niewidoczne.",
-    "Pomiar wykonywany jest z NAS-a po kablu i opisuje ścieżkę NAS → router → internet; "
-    "sam w sobie nie jest dowodem winy dostawcy.",
+    "Pomiar opisuje ścieżkę: urządzenie z kontenerem → router → internet. Nie obejmuje "
+    "Wi-Fi ani innych urządzeń w sieci i sam w sobie nie jest dowodem winy dostawcy.",
     "Brak odpowiedzi pojedynczego przeskoku w MTR nie oznacza awarii — routery często "
     "nie odpowiadają na ICMP lub traktują go niskim priorytetem.",
     "Pomiar nie rozstrzyga kierunku utraty pakietów: nie wiadomo, czy pakiet przepadł "
@@ -291,12 +292,20 @@ def _chart_series(
 
 
 def _availability(db_path: str, start: datetime, end: datetime, now: datetime) -> dict[str, Any]:
-    """Downtime from `connectivity_periods`, clipped to the observed time (§9)."""
+    """Downtime from `connectivity_periods`, clipped to the observed time (§9).
+
+    Expected outages are counted *and* reported separately rather than filtered
+    out: this report is the evidence copy handed to an ISP, so a planned
+    interruption belongs in the table with a label on it, not missing from a
+    total nobody can reconcile (spec §10).
+    """
     periods = query_connectivity_periods(
         db_path, tr=TimeRange(start_iso=to_iso_z(start), end_iso=to_iso_z(end)), is_up=False
     )
     observed = observed_intervals(db_path, start, end)
     downtime = 0.0
+    expected_downtime = 0.0
+    expected_count = 0
     items: list[dict[str, Any]] = []
     for period in periods:
         period_start = parse_dt(period["started_at"])
@@ -305,11 +314,17 @@ def _availability(db_path: str, start: datetime, end: datetime, now: datetime) -
         for piece_start, piece_end in clip_to_observed([(period_start, period_end)], observed):
             seconds += (piece_end - piece_start).total_seconds()
         downtime += seconds
+        is_expected = bool(period["expected"])
+        if is_expected:
+            expected_downtime += seconds
+            expected_count += 1
         items.append(
             {
                 "started_at": local_iso(period_start),
                 "ended_at": local_iso(period_end) if period["ended_at"] else None,
                 "observed_seconds": seconds,
+                "expected": period["expected"],
+                "expected_source": period["expected_source"],
             }
         )
     observed_seconds = sum((right - left).total_seconds() for left, right in observed)
@@ -317,6 +332,8 @@ def _availability(db_path: str, start: datetime, end: datetime, now: datetime) -
         "observed_seconds": observed_seconds,
         "downtime_seconds": downtime,
         "downtime_pct": (downtime / observed_seconds * 100.0) if observed_seconds > 0 else None,
+        "expected_downtime_seconds": expected_downtime,
+        "expected_incident_count": expected_count,
         "incident_count": len(items),
         "periods": items,
     }
@@ -342,6 +359,8 @@ def _incident_entries(
                 "peak_p95_rtt_ms": row["peak_p95_rtt_ms"],
                 "longest_fail_streak": row["longest_fail_streak"],
                 "windows_degraded": row["windows_degraded"],
+                "expected": row["expected"],
+                "expected_source": row["expected_source"],
                 "windows": incident_windows(row),
                 "diagnostics": [
                     {
@@ -384,10 +403,10 @@ def _latency_under_load(db_path: str, row: Mapping[str, Any], targets: Sequence[
         if str(target.protocol) != "icmp":
             continue
         during = compute_stats(
-            quality_db.query_probe_results(db_path, to_iso_z(start), to_iso_z(end), target_id=target.id)
+            quality_db.query_probe_metrics(db_path, to_iso_z(start), to_iso_z(end), target_id=target.id)
         )
         before = compute_stats(
-            quality_db.query_probe_results(
+            quality_db.query_probe_metrics(
                 db_path, to_iso_z(baseline_start), to_iso_z(baseline_end), target_id=target.id
             )
         )

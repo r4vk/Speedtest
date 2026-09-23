@@ -139,9 +139,19 @@ def export_probes_csv(
 
 
 @router.get("/quality/export/incidents.csv")
-def export_incidents_csv(request: Request, pr: ParsedRange = Depends(get_range)):
+def export_incidents_csv(
+    request: Request,
+    pr: ParsedRange = Depends(get_range),
+    expected: str = Query(default="all"),
+):
+    """Incidents as CSV, carrying the expected-window verdict (spec §10).
+
+    The flag is a column rather than a silent omission: this file is the copy
+    handed to an ISP, so a planned outage has to be visible *and* labelled.
+    """
     db_path = db_path_of(request)
     names = target_names(db_path)
+    mode = quality_db.expected_mode(expected)
     rows: list[list[Any]] = [
         [
             "id",
@@ -159,9 +169,13 @@ def export_incidents_csv(request: Request, pr: ParsedRange = Depends(get_range))
             "peak_p95_rtt_ms",
             "longest_fail_streak",
             "windows_degraded",
+            "expected",
+            "expected_source",
         ]
     ]
-    for row in quality_db.query_incidents(db_path, to_iso_z(pr.start), to_iso_z(pr.end)):
+    for row in quality_db.query_incidents(
+        db_path, to_iso_z(pr.start), to_iso_z(pr.end), expected=mode
+    ):
         rows.append(
             [
                 row["id"],
@@ -179,6 +193,8 @@ def export_incidents_csv(request: Request, pr: ParsedRange = Depends(get_range))
                 row["peak_p95_rtt_ms"] if row["peak_p95_rtt_ms"] is not None else "",
                 row["longest_fail_streak"] if row["longest_fail_streak"] is not None else "",
                 row["windows_degraded"],
+                row["expected"],
+                row["expected_source"] or "",
             ]
         )
     return csv_response("incidents.csv", rows, comment_lines=[_timezone_comment()])
