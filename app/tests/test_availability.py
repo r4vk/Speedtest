@@ -6,6 +6,7 @@ and no clock is guessed.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -661,3 +662,67 @@ async def test_short_outage_keeps_its_existing_min_seconds_behaviour(
     await tracker.drain()
 
     assert notifier.calls == []
+
+
+async def test_an_outage_split_by_a_gap_is_flagged_on_every_segment(
+    db_path: str, tmp_path: Any, warsaw: None
+) -> None:
+    """Review finding: unmeasured time splits the outage into two periods.
+
+    ``no_data`` closes the open period while the tracker keeps the outage's
+    start mark, so the next ``down`` opens a second one. The verdict belongs to
+    the whole outage, so both segments must carry it — flagging only the row
+    that starts at the mark leaves the segment that actually ran to recovery
+    looking like an ordinary, unexplained outage on the dashboard, in the CSV
+    and in the downtime the quality report charges.
+    """
+    nightly_window(db_path)
+    notifier = FakeNotifier()
+    tracker = AvailabilityTracker(db_path, smtp_config(tmp_path), notifier=notifier)
+
+    tracker.apply("down", parse_dt("2026-09-21T01:00:00.000Z"))
+    tracker.apply("no_data", parse_dt("2026-09-21T01:00:30.000Z"))
+    tracker.apply("down", parse_dt("2026-09-21T01:01:00.000Z"))
+    tracker.apply("up", parse_dt("2026-09-21T01:04:00.000Z"))
+    await tracker.drain()
+
+    assert notifier.calls == []
+    tr = TimeRange(start_iso="2026-09-21T00:00:00.000Z", end_iso="2026-09-21T02:00:00.000Z")
+    downs = query_connectivity_periods(db_path, tr=tr, is_up=False)
+    assert [p["started_at"] for p in downs] == [
+        "2026-09-21T01:00:00.000Z",
+        "2026-09-21T01:01:00.000Z",
+    ]
+    assert [p["expected"] for p in downs] == [1, 1]
+    assert [p["expected_source"] for p in downs] == ["rule", "rule"]
+    assert all(p["expected_rule_id"] is not None for p in downs)
+
+
+async def test_an_expected_outage_with_no_period_left_is_logged(
+    db_path: str, tmp_path: Any, warsaw: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A suppressed mail with nothing written anywhere must not be silent.
+
+    Retention (or a stale start mark) can leave the tracker with nothing to
+    flag. The mail stays suppressed either way — the outage really was inside
+    the window — but a warning is the only trace left that it happened.
+    """
+    nightly_window(db_path)
+    notifier = FakeNotifier()
+    tracker = AvailabilityTracker(db_path, smtp_config(tmp_path), notifier=notifier)
+    tracker.apply("down", parse_dt("2026-09-21T01:00:00.000Z"))
+
+    conn = sqlite3.connect(db_path)
+    try:  # retention pruned the period out from under the tracker
+        conn.execute("DELETE FROM connectivity_periods")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with caplog.at_level(logging.WARNING, logger="speedtest_app.availability"):
+        tracker.apply("up", parse_dt("2026-09-21T01:04:00.000Z"))
+    await tracker.drain()
+
+    assert notifier.calls == []
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("expected" in message.lower() for message in warnings), warnings

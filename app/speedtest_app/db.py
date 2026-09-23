@@ -908,6 +908,46 @@ def query_connectivity_periods(
         return [dict(r) for r in rows]
 
 
+def mark_connectivity_outage_expected(
+    db_path: str,
+    *,
+    started_at_iso: str,
+    ended_at_iso: str,
+    expected: bool,
+    source: str,
+    rule_id: int | None = None,
+) -> int:
+    """Flag every *down* period inside the outage `[started_at_iso, ended_at_iso]`.
+
+    Addressed by time rather than by id because the caller
+    (`AvailabilityTracker`) knows when the outage began and ended but never
+    held the row ids — `record_connectivity` closed each period on the way
+    past. `is_up = 0` keeps the flag off the "up" period that starts at the
+    same instant as the recovery.
+
+    The span matters: an outage is a single row only while availability stays
+    measurable. A stretch of `no_data` closes the open period while the tracker
+    deliberately keeps the outage's start mark (spec §8), so the next `down`
+    opens a *second* period. The verdict is about the whole outage, so every
+    segment in it carries it; addressing the start mark alone would leave the
+    segment that actually ran to recovery unflagged — an unexplained outage on
+    the dashboard, in `outages.csv` and in the downtime the quality report
+    charges, with no e-mail to go with it.
+
+    Returns the number of periods flagged.
+    """
+    with db_conn(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE connectivity_periods
+            SET expected = ?, expected_source = ?, expected_rule_id = ?
+            WHERE is_up = 0 AND started_at >= ? AND started_at <= ?
+            """,
+            (1 if expected else 0, source, rule_id, started_at_iso, ended_at_iso),
+        )
+        return cur.rowcount
+
+
 def mark_connectivity_period_expected(
     db_path: str,
     *,
@@ -918,21 +958,17 @@ def mark_connectivity_period_expected(
 ) -> int:
     """Flag the *down* period that starts at `started_at_iso`.
 
-    Addressed by start time rather than id because the caller
-    (`AvailabilityTracker`) knows when the outage began but never held its row
-    id — `record_connectivity` closed the period on the way past. `is_up = 0`
-    keeps it off the "up" period that starts at the same instant.
+    The one-instant case of :func:`mark_connectivity_outage_expected`, for
+    callers holding a single start mark rather than a whole outage span.
     """
-    with db_conn(db_path) as conn:
-        cur = conn.execute(
-            """
-            UPDATE connectivity_periods
-            SET expected = ?, expected_source = ?, expected_rule_id = ?
-            WHERE started_at = ? AND is_up = 0
-            """,
-            (1 if expected else 0, source, rule_id, started_at_iso),
-        )
-        return cur.rowcount
+    return mark_connectivity_outage_expected(
+        db_path,
+        started_at_iso=started_at_iso,
+        ended_at_iso=started_at_iso,
+        expected=expected,
+        source=source,
+        rule_id=rule_id,
+    )
 
 
 def mark_connectivity_period_expected_by_id(

@@ -24,7 +24,7 @@ from .config import AppConfig
 from .db import (
     end_current_connectivity_period,
     get_current_connectivity_period,
-    mark_connectivity_period_expected,
+    mark_connectivity_outage_expected,
     record_connectivity,
 )
 from .email_notify import send_outage_notification
@@ -287,16 +287,7 @@ class AvailabilityTracker:
         log.info("Internet restored at %s", ended_local)
         window = self._expected_window(started_at, now_iso)
         if window is not None:
-            try:
-                mark_connectivity_period_expected(
-                    self._db_path,
-                    started_at_iso=started_at,
-                    expected=True,
-                    source="rule",
-                    rule_id=window.id,
-                )
-            except Exception:
-                log.warning("Could not flag the expected outage period", exc_info=True)
+            self._flag_expected(started_at, now_iso, window, started_local, ended_local)
             log.info(
                 "Outage %s–%s fits the expected window %r, no e-mail sent",
                 started_local,
@@ -320,6 +311,47 @@ class AvailabilityTracker:
             self._cfg.smtp_min_outage_seconds,
         )
         self._dispatch(started_local, ended_local, duration_seconds)
+
+    def _flag_expected(
+        self,
+        started_at: str,
+        ended_at: str,
+        window: ExpectedWindow,
+        started_local: str,
+        ended_local: str,
+    ) -> None:
+        """Carry the verdict to every period of the outage (spec §4).
+
+        The whole span is addressed, not just the start mark: an outage broken
+        by a stretch of unmeasurable time is several ``connectivity_periods``
+        rows, and all of them belong to the window.
+
+        Flagging nothing is not an error the caller can act on — the mail stays
+        suppressed either way, because the outage really did fit the window —
+        but it must not be silent: if retention pruned the rows, or the start
+        mark no longer matches anything, the warning is the only trace that the
+        outage happened at all.
+        """
+        try:
+            flagged = mark_connectivity_outage_expected(
+                self._db_path,
+                started_at_iso=started_at,
+                ended_at_iso=ended_at,
+                expected=True,
+                source="rule",
+                rule_id=window.id,
+            )
+        except Exception:
+            log.warning("Could not flag the expected outage period", exc_info=True)
+            return
+        if flagged == 0:
+            log.warning(
+                "Expected outage %s–%s matched the window %r but no availability "
+                "period could be flagged; the e-mail stays suppressed",
+                started_local,
+                ended_local,
+                window.name,
+            )
 
     def _expected_window(self, started_at: str, ended_at: str) -> ExpectedWindow | None:
         """The rule covering this closed outage, or ``None`` (spec §4).
