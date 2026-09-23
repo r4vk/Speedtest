@@ -10,6 +10,8 @@ import json
 from datetime import timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from speedtest_app import api_quality, quality_db, quality_views
 from speedtest_app.db import db_conn
 from speedtest_app.probe_types import Outcome, ProbeResult, Protocol
@@ -63,7 +65,7 @@ def _legacy_check(db_path: str, checked_at: str, is_up: int) -> None:
 def test_status_reports_the_running_monitor(client) -> None:
     payload = client.get("/api/quality/status").json()
 
-    assert payload["measured_from"] == "NAS (kabel)"
+    assert payload["measured_from"] == "urządzenie, na którym działa kontener"
     assert payload["tz"]
     assert payload["availability"] == "no_data"
     assert payload["quality"] == "unknown"
@@ -781,3 +783,53 @@ def test_aggregate_bucket_for_switches_at_the_point_budget() -> None:
     # 2000 h is the cap; a hair more has to drop to daily rows
     assert quality_views.aggregate_bucket_for(now - timedelta(hours=2000), now) == "1h"
     assert quality_views.aggregate_bucket_for(now - timedelta(hours=2001), now) == "1d"
+
+
+# ---------------------------------------------------------------------------
+# expected-window rules (Task 7 — design spec §7)
+# ---------------------------------------------------------------------------
+
+def test_expected_window_crud_over_http(client) -> None:
+    created = client.post("/api/quality/expected-windows", json={
+        "name": "restart routera", "time_from": "02:55", "time_to": "03:15",
+        "days": [0, 1, 2, 3, 4, 5, 6], "note": "codzienny",
+    })
+    assert created.status_code == 201
+    window = created.json()["window"]
+    assert window["days"] == [0, 1, 2, 3, 4, 5, 6] and window["enabled"] is True
+
+    listed = client.get("/api/quality/expected-windows").json()["windows"]
+    assert [w["name"] for w in listed] == ["restart routera"]
+
+    updated = client.put(f"/api/quality/expected-windows/{window['id']}", json={
+        "name": "restart routera", "time_from": "02:50", "time_to": "03:20",
+        "days": [0], "enabled": False,
+    })
+    assert updated.json()["window"]["time_from"] == "02:50"
+    assert updated.json()["window"]["enabled"] is False
+
+    assert client.delete(f"/api/quality/expected-windows/{window['id']}").status_code == 200
+    assert client.delete(f"/api/quality/expected-windows/{window['id']}").status_code == 404
+
+
+@pytest.mark.parametrize("body", [
+    {"name": "", "time_from": "02:55", "time_to": "03:15", "days": [0]},
+    {"name": "x", "time_from": "krowa", "time_to": "03:15", "days": [0]},
+    {"name": "x", "time_from": "02:55", "time_to": "25:00", "days": [0]},
+    {"name": "x", "time_from": "03:00", "time_to": "03:00", "days": [0]},
+    {"name": "x", "time_from": "02:55", "time_to": "03:15", "days": []},
+    {"name": "x", "time_from": "02:55", "time_to": "03:15", "days": [9]},
+    {"name": "x", "time_from": "02:55", "time_to": "03:15", "days": [0], "target_id": 9999},
+])
+def test_expected_window_validation(client, body) -> None:
+    assert client.post("/api/quality/expected-windows", json=body).status_code == 422
+
+
+def test_expected_window_mutation_is_audited(client) -> None:
+    client.post("/api/quality/expected-windows", json={
+        "name": "restart routera", "time_from": "02:55", "time_to": "03:15", "days": [0],
+    })
+    changes = quality_db.query_config_changes(
+        client.app_db_path, "2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z"
+    )
+    assert any(c["key"].startswith("expected_window") for c in changes)

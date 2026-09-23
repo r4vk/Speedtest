@@ -16,6 +16,7 @@ Two rules are visible all over this module:
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta
@@ -28,6 +29,8 @@ from pydantic import BaseModel, Field
 
 from . import quality_db, report
 from .coverage import coverage
+from .db import db_conn
+from .expected_windows import parse_days, parse_hhmm
 from .network_tools import _validate_hostname
 from .quality_settings import read_quality_settings
 from .quality_views import (
@@ -212,6 +215,125 @@ def api_delete_target(request: Request, target_id: int) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# expected-window rules (design spec §7)
+# ---------------------------------------------------------------------------
+
+class ExpectedWindowBody(BaseModel):
+    name: str = Field(max_length=200)
+    time_from: str = Field(max_length=5)
+    time_to: str = Field(max_length=5)
+    days: list[int]
+    target_id: int | None = None
+    enabled: bool = True
+    note: str | None = Field(default=None, max_length=2000)
+
+
+def _validated_window_fields(db_path: str, body: ExpectedWindowBody) -> dict[str, Any]:
+    """Reject a rule that cannot mean what its author intended (spec §7).
+
+    A `time_from == time_to` rule reads, to the matcher, as a full 24-hour
+    window (Review Focus #4) — it would quietly mark every outage expected,
+    so it is refused here rather than silently accepted and skipped later.
+    """
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="nazwa nie może być pusta")
+    if parse_hhmm(body.time_from) is None or parse_hhmm(body.time_to) is None:
+        raise HTTPException(status_code=422, detail="godziny muszą mieć format HH:MM")
+    if body.time_from == body.time_to:
+        # Read as a 24-hour window it would quietly mark every outage expected.
+        raise HTTPException(status_code=422, detail="okno o zerowej długości")
+    days = sorted({int(d) for d in body.days})
+    if not days or any(d < 0 or d > 6 for d in days):
+        raise HTTPException(status_code=422, detail="dni muszą być liczbami 0-6")
+    if body.target_id is not None and quality_db.get_target(db_path, body.target_id) is None:
+        raise HTTPException(status_code=422, detail="nie ma takiego celu")
+    return {
+        "name": name,
+        "time_from": body.time_from,
+        "time_to": body.time_to,
+        "days": json.dumps(days),
+        "target_id": body.target_id,
+        "enabled": 1 if body.enabled else 0,
+        "note": (body.note or "").strip() or None,
+    }
+
+
+def expected_window_payload(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "name": row["name"],
+        "time_from": row["time_from"],
+        "time_to": row["time_to"],
+        "days": sorted(parse_days(row["days"])),
+        "target_id": row["target_id"],
+        "enabled": bool(row["enabled"]),
+        "note": row["note"],
+        "created_at": local_iso(parse_dt(str(row["created_at"]))),
+    }
+
+
+def _log_expected_window_change(
+    db_path: str, window_id: int, old_value: str | None, new_value: str | None
+) -> None:
+    """Audit trail for a rule mutation — every write to `expected_windows`
+    leaves a `config_changes` row, the same way every setting write does
+    (`db.set_setting`), keyed so it can be told apart from a setting change.
+    """
+    with db_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO config_changes(changed_at, key, old_value, new_value, source) "
+            "VALUES (?,?,?,?,?)",
+            (to_iso_z(utc_now()), f"expected_window:{window_id}", old_value, new_value, "ui"),
+        )
+
+
+@router.get("/quality/expected-windows")
+def api_list_expected_windows(request: Request) -> dict[str, Any]:
+    db_path = db_path_of(request)
+    rows = quality_db.list_expected_windows(db_path)
+    return {"tz": tz_name(), "windows": [expected_window_payload(row) for row in rows]}
+
+
+@router.post("/quality/expected-windows", status_code=201)
+def api_create_expected_window(request: Request, body: ExpectedWindowBody) -> dict[str, Any]:
+    db_path = db_path_of(request)
+    values = _validated_window_fields(db_path, body)
+    window_id = quality_db.insert_expected_window(db_path, **values)
+    _log_expected_window_change(db_path, window_id, None, json.dumps(values))
+    row = quality_db.get_expected_window(db_path, window_id)
+    return {"tz": tz_name(), "window": expected_window_payload(row)}
+
+
+@router.put("/quality/expected-windows/{window_id}")
+def api_update_expected_window(
+    request: Request, window_id: int, body: ExpectedWindowBody
+) -> dict[str, Any]:
+    db_path = db_path_of(request)
+    current = quality_db.get_expected_window(db_path, window_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="nie ma takiego okna")
+
+    values = _validated_window_fields(db_path, body)
+    quality_db.update_expected_window(db_path, window_id, **values)
+    _log_expected_window_change(db_path, window_id, json.dumps(current), json.dumps(values))
+    row = quality_db.get_expected_window(db_path, window_id)
+    return {"tz": tz_name(), "window": expected_window_payload(row)}
+
+
+@router.delete("/quality/expected-windows/{window_id}")
+def api_delete_expected_window(request: Request, window_id: int) -> dict[str, Any]:
+    db_path = db_path_of(request)
+    current = quality_db.get_expected_window(db_path, window_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="nie ma takiego okna")
+
+    quality_db.delete_expected_window(db_path, window_id)
+    _log_expected_window_change(db_path, window_id, json.dumps(current), None)
+    return {"tz": tz_name(), "ok": True}
+
+
+# ---------------------------------------------------------------------------
 # status, statistics, timeline
 # ---------------------------------------------------------------------------
 
@@ -342,7 +464,7 @@ def api_quality_timeline(
     complete_buckets = 0
     for target in targets:
         rows = (
-            quality_db.query_probe_results(db_path, start_iso, end_iso, target_id=target.id)
+            quality_db.query_probe_metrics(db_path, start_iso, end_iso, target_id=target.id)
             if allow_raw
             else []
         )
