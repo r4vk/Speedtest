@@ -455,9 +455,10 @@ def test_report_separates_expected_downtime(client) -> None:
     db.record_connectivity(db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
     db.record_connectivity(db_path, is_up=False, now_iso="2026-09-21T03:00:00.000Z")
     db.record_connectivity(db_path, is_up=True, now_iso="2026-09-21T03:04:00.000Z")
-    db.mark_connectivity_period_expected(
+    db.mark_connectivity_outage_expected(
         db_path,
         started_at_iso="2026-09-21T03:00:00.000Z",
+        ended_at_iso="2026-09-21T03:00:00.000Z",
         expected=True,
         source="rule",
         rule_id=None,
@@ -527,9 +528,10 @@ def test_report_availability_table_prints_the_verdict_a_person_wrote(client) -> 
     for hour in (1, 2, 3, 4):
         db.record_connectivity(db_path, is_up=False, now_iso=f"2026-09-21T0{hour}:00:00.000Z")
         db.record_connectivity(db_path, is_up=True, now_iso=f"2026-09-21T0{hour}:05:00.000Z")
-    db.mark_connectivity_period_expected(
+    db.mark_connectivity_outage_expected(
         db_path,
         started_at_iso="2026-09-21T01:00:00.000Z",
+        ended_at_iso="2026-09-21T01:00:00.000Z",
         expected=True,
         source="rule",
         rule_id=None,

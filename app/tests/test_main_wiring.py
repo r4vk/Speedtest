@@ -11,7 +11,7 @@ import sqlite3
 from fastapi.testclient import TestClient
 
 from speedtest_app import quality_db
-from speedtest_app.db import mark_connectivity_period_expected, record_connectivity
+from speedtest_app.db import mark_connectivity_outage_expected, record_connectivity
 
 
 def test_startup_creates_the_quality_engine(client: TestClient) -> None:
@@ -106,9 +106,10 @@ def test_manual_unmark_of_an_outage_records_that_a_person_looked(client: TestCli
     record_connectivity(client.app_db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
     url = f"/api/outages?{OUTAGE_RANGE}"
     period_id = client.get(url).json()["items"][0]["id"]
-    mark_connectivity_period_expected(
+    mark_connectivity_outage_expected(
         client.app_db_path,
         started_at_iso="2026-09-21T01:00:00.000Z",
+        ended_at_iso="2026-09-21T01:00:00.000Z",
         expected=True,
         source="rule",
         rule_id=None,
@@ -137,9 +138,10 @@ def test_manual_unmark_of_an_outage_keeps_the_rule_that_had_matched(client: Test
     record_connectivity(client.app_db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
     url = f"/api/outages?{OUTAGE_RANGE}"
     period_id = client.get(url).json()["items"][0]["id"]
-    mark_connectivity_period_expected(
+    mark_connectivity_outage_expected(
         client.app_db_path,
         started_at_iso="2026-09-21T01:00:00.000Z",
+        ended_at_iso="2026-09-21T01:00:00.000Z",
         expected=True,
         source="rule",
         rule_id=window_id,
@@ -217,9 +219,10 @@ def _two_outages(db_path: str) -> None:
     record_connectivity(db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
     record_connectivity(db_path, is_up=False, now_iso="2026-09-21T03:00:00.000Z")
     record_connectivity(db_path, is_up=True, now_iso="2026-09-21T03:04:00.000Z")
-    mark_connectivity_period_expected(
+    mark_connectivity_outage_expected(
         db_path,
         started_at_iso="2026-09-21T03:00:00.000Z",
+        ended_at_iso="2026-09-21T03:00:00.000Z",
         expected=True,
         source="rule",
         rule_id=None,

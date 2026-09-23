@@ -25,7 +25,7 @@ from speedtest_app.config import AppConfig
 from speedtest_app.db import (
     TimeRange,
     get_current_connectivity_period,
-    mark_connectivity_period_expected,
+    mark_connectivity_outage_expected,
     query_connectivity_periods,
     record_connectivity,
 )
@@ -488,7 +488,7 @@ def _periods(db_path: str) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# query_connectivity_periods / mark_connectivity_period_expected (Task 4)
+# query_connectivity_periods / mark_connectivity_outage_expected (Task 4)
 # ---------------------------------------------------------------------------
 
 
@@ -502,11 +502,13 @@ def test_query_connectivity_periods_exposes_id_and_flag(db_path: str) -> None:
     assert down[0]["expected"] == 0
 
 
-def test_mark_connectivity_period_expected_targets_the_down_period(db_path: str) -> None:
+def test_marking_an_outage_leaves_the_up_period_alone(db_path: str) -> None:
     record_connectivity(db_path, is_up=False, now_iso="2026-09-21T01:00:00.000Z")
     record_connectivity(db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
-    updated = mark_connectivity_period_expected(
-        db_path, started_at_iso="2026-09-21T01:00:00.000Z",
+    updated = mark_connectivity_outage_expected(
+        db_path,
+        started_at_iso="2026-09-21T01:00:00.000Z",
+        ended_at_iso="2026-09-21T01:00:00.000Z",
         expected=True, source="rule", rule_id=None,
     )
     assert updated == 1
@@ -521,8 +523,10 @@ def test_query_connectivity_periods_expected_filter(db_path: str) -> None:
     record_connectivity(db_path, is_up=True, now_iso="2026-09-21T01:05:00.000Z")
     record_connectivity(db_path, is_up=False, now_iso="2026-09-21T03:00:00.000Z")
     record_connectivity(db_path, is_up=True, now_iso="2026-09-21T03:05:00.000Z")
-    mark_connectivity_period_expected(
-        db_path, started_at_iso="2026-09-21T03:00:00.000Z",
+    mark_connectivity_outage_expected(
+        db_path,
+        started_at_iso="2026-09-21T03:00:00.000Z",
+        ended_at_iso="2026-09-21T03:00:00.000Z",
         expected=True, source="rule", rule_id=None,
     )
     tr = TimeRange(start_iso="2026-09-21T00:00:00.000Z", end_iso="2026-09-21T04:00:00.000Z")

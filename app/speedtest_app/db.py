@@ -948,29 +948,6 @@ def mark_connectivity_outage_expected(
         return cur.rowcount
 
 
-def mark_connectivity_period_expected(
-    db_path: str,
-    *,
-    started_at_iso: str,
-    expected: bool,
-    source: str,
-    rule_id: int | None = None,
-) -> int:
-    """Flag the *down* period that starts at `started_at_iso`.
-
-    The one-instant case of :func:`mark_connectivity_outage_expected`, for
-    callers holding a single start mark rather than a whole outage span.
-    """
-    return mark_connectivity_outage_expected(
-        db_path,
-        started_at_iso=started_at_iso,
-        ended_at_iso=started_at_iso,
-        expected=expected,
-        source=source,
-        rule_id=rule_id,
-    )
-
-
 def mark_connectivity_period_expected_by_id(
     db_path: str, period_id: int, *, expected: bool, source: str, rule_id: int | None = None
 ) -> int:
