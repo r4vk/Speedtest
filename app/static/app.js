@@ -954,9 +954,103 @@ async function loadChart() {
   }
 }
 
+/**
+ * Zapytanie zakresu z opcjonalnym filtrem spodziewanych awarii.
+ *
+ * Lista awarii bierze sie z `/api/outages`, a liczby `q-downtime` i
+ * `q-percent` z `/api/report/quality`. Oba wywolania musza dostac ten sam
+ * filtr — inaczej naglowek mowilby co innego niz lista pod nim.
+ */
+function withExpectedFilter(params, hideExpected) {
+  const query = params.toString();
+  if (!hideExpected) return query;
+  return query ? `${query}&expected=exclude` : "expected=exclude";
+}
+
+function hideExpectedOutages() {
+  return qs("q-hide-expected")?.checked === true;
+}
+
+function polishOutages(n) {
+  const last = n % 10;
+  const teen = n % 100;
+  const many = last >= 2 && last <= 4 && !(teen >= 12 && teen <= 14);
+  return many ? `${n} spodziewane awarie` : `${n} spodziewanych awarii`;
+}
+
+function expectedHiddenNote(count) {
+  const n = Number(count) || 0;
+  if (n <= 0) return "";
+  if (n === 1) return "Ukryto 1 spodziewaną awarię.";
+  return `Ukryto ${polishOutages(n)}.`;
+}
+
+/**
+ * Podpis plakietki przy awarii uznanej za spodziewana, albo `null`.
+ *
+ * `/api/outages` oddaje samo `expected_rule_id`, wiec nazwa reguly przychodzi
+ * z osobnego slownika; gdy jej nie ma (regula skasowana, lista nieczytelna),
+ * plakietka i tak sie pokazuje — sama informacja "spodziewana" jest wazniejsza
+ * niz jej zrodlo.
+ */
+function expectedBadgeLabel(item, ruleNames) {
+  if (!item || !item.expected) return null;
+  if (item.expected_source === "manual") return "oznaczone ręcznie";
+  const name = item.expected_rule_id == null ? null : (ruleNames || {})[item.expected_rule_id];
+  return name ? `spodziewana: ${name}` : "spodziewana";
+}
+
+//: Nazwy okien serwisowych, wczytywane leniwie i tylko wtedy, gdy na liscie
+//: pojawi sie regula, ktorej jeszcze nie znamy. Nieudany odczyt zapisuje
+//: `null`, zeby nie probowac przy kazdym odswiezeniu.
+let expectedWindowNames = {};
+
+async function ensureExpectedWindowNames(items) {
+  const ids = items.filter((it) => it.expected_rule_id != null).map((it) => it.expected_rule_id);
+  if (!ids.some((id) => !(id in expectedWindowNames))) return expectedWindowNames;
+  try {
+    const resp = await fetch("/api/quality/expected-windows");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    for (const w of data.windows || []) expectedWindowNames[w.id] = w.name || null;
+  } catch (e) {
+    console.error(e);
+  }
+  for (const id of ids) {
+    if (!(id in expectedWindowNames)) expectedWindowNames[id] = null;
+  }
+  return expectedWindowNames;
+}
+
+async function apiErrorText(resp) {
+  try {
+    const data = await resp.clone().json();
+    if (data && typeof data.detail === "string") return data.detail;
+    if (data && data.detail) return JSON.stringify(data.detail);
+  } catch {
+    /* odpowiedz nie jest JSON-em */
+  }
+  try {
+    const text = await resp.text();
+    if (text) return text;
+  } catch {
+    /* cialo juz przeczytane */
+  }
+  return `HTTP ${resp.status}`;
+}
+
+function setOutagesError(message) {
+  const el = qs("q-outages-error");
+  if (!el) return;
+  el.textContent = message || "";
+  el.style.display = message ? "" : "none";
+}
+
 async function loadQuality() {
   const params = paramsFromInputs();
-  const resp = await fetch(`/api/report/quality?${params.toString()}`);
+  const resp = await fetch(
+    `/api/report/quality?${withExpectedFilter(params, hideExpectedOutages())}`
+  );
   const data = await resp.json();
 
   qs("q-incidents").textContent = `${data.incident_count ?? 0}`;
@@ -966,9 +1060,16 @@ async function loadQuality() {
 
 async function loadOutagesList() {
   const params = paramsFromInputs();
-  const resp = await fetch(`/api/outages?${params.toString()}`);
+  const resp = await fetch(`/api/outages?${withExpectedFilter(params, hideExpectedOutages())}`);
   const data = await resp.json();
   const items = data.items || [];
+
+  const note = qs("q-expected-hidden-note");
+  if (note) {
+    const text = expectedHiddenNote(data.expected_hidden);
+    note.textContent = text;
+    note.style.display = text ? "" : "none";
+  }
 
   const el = qs("outagesList");
   el.innerHTML = "";
@@ -979,11 +1080,47 @@ async function loadOutagesList() {
     el.appendChild(div);
     return;
   }
+  const ruleNames = await ensureExpectedWindowNames(items);
   for (const it of items) {
     const div = document.createElement("div");
     div.className = "outage";
-    div.textContent = `Od: ${it.started_at}  Do: ${it.ended_at}`;
+    div.dataset.outageId = String(it.id);
+    const badge = expectedBadgeLabel(it, ruleNames);
+    div.innerHTML =
+      `<span>Od: ${_escHtml(it.started_at)}  Do: ${_escHtml(it.ended_at)}</span>` +
+      (badge ? ` <span class="badge badge-gray">${_escHtml(badge)}</span>` : "") +
+      ` <button type="button" class="linkbtn btn-small" data-action="toggle-expected"` +
+      ` data-expected="${it.expected ? "1" : "0"}">` +
+      `${it.expected ? "To była prawdziwa awaria" : "Oznacz jako spodziewaną"}</button>`;
     el.appendChild(div);
+  }
+}
+
+/**
+ * Reczny werdykt o jednej awarii (`PATCH /api/outages/{id}/expected`).
+ *
+ * Po zapisie odswiezamy i liste, i liczby — zmiana flagi przesuwa czas awarii
+ * w naglowku, gdy filtr jest wlaczony.
+ */
+async function onOutagesListClick(e) {
+  const btn = e.target.closest('button[data-action="toggle-expected"]');
+  if (!btn) return;
+  const row = btn.closest("[data-outage-id]");
+  if (!row) return;
+  const expected = btn.dataset.expected !== "1";
+  btn.disabled = true;
+  setOutagesError("");
+  try {
+    const resp = await fetch(`/api/outages/${Number(row.dataset.outageId)}/expected`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected }),
+    });
+    if (!resp.ok) throw new Error(await apiErrorText(resp));
+    await Promise.all([loadQuality(), loadOutagesList()]);
+  } catch (err) {
+    setOutagesError(`Nie udało się oznaczyć awarii: ${err.message}`);
+    btn.disabled = false;
   }
 }
 
@@ -1025,6 +1162,11 @@ async function refreshAll() {
 }
 
 qs("refresh").addEventListener("click", refreshAll);
+qs("outagesList")?.addEventListener("click", onOutagesListClick);
+qs("q-hide-expected")?.addEventListener("change", () => {
+  // Filtr dotyczy i listy, i liczb nad nia, wiec odswiezamy obie naraz.
+  Promise.all([loadQuality(), loadOutagesList()]).catch((e) => console.error(e));
+});
 qs("run-speedtest")?.addEventListener("click", async () => {
   const btn = qs("run-speedtest");
   if (!btn || btn.disabled) return;

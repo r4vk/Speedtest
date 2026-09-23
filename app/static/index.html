@@ -518,6 +518,12 @@
             <div class="qitem"><span class="qlabel">Czas awarii</span><span id="q-downtime" class="qvalue">-</span></div>
             <div class="qitem"><span class="qlabel">% okresu</span><span id="q-percent" class="qvalue">-</span></div>
           </div>
+          <label class="label-row" for="q-hide-expected">
+            <input type="checkbox" id="q-hide-expected" />
+            <span>Pomiń spodziewane awarie</span>
+          </label>
+          <p id="q-expected-hidden-note" class="hint" style="display:none;"></p>
+          <p id="q-outages-error" class="tool-error" style="display:none;" role="alert"></p>
           <details class="details">
             <summary>Lista awarii w zakresie</summary>
             <div id="outagesList" class="outages"></div>
