@@ -163,6 +163,130 @@ def test_stats_match_compute_stats_on_the_same_rows(client) -> None:
     assert payload["coverage"]["coverage_known"] is True
 
 
+def test_stats_are_identical_with_and_without_a_shared_bucket(client) -> None:
+    """`bucket_seconds` only lets the timeline reuse the scan — no number moves."""
+    db_path = client.app_db_path
+    target = _target(db_path)
+    start = utc_now().replace(microsecond=0) - timedelta(minutes=10)
+    end = start + timedelta(minutes=2)
+    _seed_results(db_path, target.id, start)
+    params = {"from": to_iso_z(start), "to": to_iso_z(end)}
+
+    plain = client.get("/api/quality/stats", params=params).json()
+    shared = client.get("/api/quality/stats", params={**params, "bucket_seconds": 60}).json()
+
+    assert shared["targets"] == plain["targets"]
+
+
+def test_timeline_reuses_the_scan_the_stats_just_made(client, monkeypatch) -> None:
+    """The panel asks for both at once; the raw rows must be read once, not twice."""
+    db_path = client.app_db_path
+    target = _target(db_path)
+    start = utc_now().replace(microsecond=0) - timedelta(minutes=10)
+    end = start + timedelta(minutes=2)
+    _seed_results(db_path, target.id, start)
+    params = {"from": to_iso_z(start), "to": to_iso_z(end), "bucket_seconds": 60}
+
+    reads = []
+    real = quality_db.query_probe_metrics
+
+    def counting(*args, **kwargs):
+        reads.append(kwargs.get("target_id"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(quality_db, "query_probe_metrics", counting)
+    quality_views._rollup_cache.clear()
+
+    stats = client.get("/api/quality/stats", params=params).json()
+    timeline = client.get("/api/quality/timeline", params=params).json()
+
+    assert reads.count(target.id) == 1
+    entry = next(t for t in stats["targets"] if t["target"]["id"] == target.id)
+    series = next(t for t in timeline["targets"] if t["target"]["id"] == target.id)
+    # both views describe the same rows: the buckets sum to the statistics
+    assert sum(p["attempts"] for p in series["points"]) == entry["stats"]["attempts"]
+
+
+def test_a_new_probe_row_is_never_hidden_behind_a_cached_scan(client) -> None:
+    db_path = client.app_db_path
+    target = _target(db_path)
+    start = utc_now().replace(microsecond=0) - timedelta(minutes=10)
+    end = start + timedelta(minutes=5)
+    _seed_results(db_path, target.id, start, count=6)
+    params = {"from": to_iso_z(start), "to": to_iso_z(end), "bucket_seconds": 60}
+    quality_views._rollup_cache.clear()
+
+    before = client.get("/api/quality/stats", params=params).json()
+    _seed_results(db_path, target.id, start + timedelta(seconds=200), count=2)
+    after = client.get("/api/quality/stats", params=params).json()
+
+    def attempts(payload):
+        return next(t for t in payload["targets"] if t["target"]["id"] == target.id)["stats"]["attempts"]
+
+    assert attempts(after) == attempts(before) + 2
+
+
+def test_stats_and_timeline_of_one_range_share_a_single_scan(client, monkeypatch) -> None:
+    """The panel asks for both at once; each target's rows are read once, not twice,
+    and the two views describe exactly the same rows."""
+    db_path = client.app_db_path
+    target = _target(db_path)
+    start = utc_now().replace(microsecond=0) - timedelta(minutes=10)
+    end = start + timedelta(minutes=2)
+    _seed_results(db_path, target.id, start)
+    quality_views._rollup_cache.clear()
+
+    reads: list[int] = []
+    original = quality_db.query_probe_metrics
+
+    def counting(*args, **kwargs):
+        reads.append(kwargs.get("target_id"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(quality_db, "query_probe_metrics", counting)
+    params = {"from": to_iso_z(start), "to": to_iso_z(end), "bucket_seconds": 60}
+    stats = client.get("/api/quality/stats", params=params).json()
+    timeline = client.get("/api/quality/timeline", params=params).json()
+
+    assert reads.count(target.id) == 1
+    entry = next(t for t in stats["targets"] if t["target"]["id"] == target.id)
+    series = next(t for t in timeline["targets"] if t["target"]["id"] == target.id)
+    assert sum(p["attempts"] for p in series["points"]) == entry["stats"]["attempts"] == 12
+
+
+def test_stats_numbers_do_not_depend_on_bucket_seconds(client) -> None:
+    db_path = client.app_db_path
+    target = _target(db_path)
+    start = utc_now().replace(microsecond=0) - timedelta(minutes=10)
+    end = start + timedelta(minutes=2)
+    _seed_results(db_path, target.id, start)
+    quality_views._rollup_cache.clear()
+    params = {"from": to_iso_z(start), "to": to_iso_z(end)}
+
+    plain = client.get("/api/quality/stats", params=params).json()
+    bucketed = client.get("/api/quality/stats", params={**params, "bucket_seconds": 30}).json()
+    assert bucketed["targets"] == plain["targets"]
+
+
+def test_a_freshly_written_probe_is_never_hidden_by_the_cache(client) -> None:
+    db_path = client.app_db_path
+    target = _target(db_path)
+    start = utc_now().replace(microsecond=0) - timedelta(minutes=10)
+    end = start + timedelta(minutes=5)
+    _seed_results(db_path, target.id, start, count=6)
+    quality_views._rollup_cache.clear()
+    params = {"from": to_iso_z(start), "to": to_iso_z(end), "bucket_seconds": 60}
+
+    first = client.get("/api/quality/stats", params=params).json()
+    _seed_results(db_path, target.id, start + timedelta(seconds=65), count=3)
+    second = client.get("/api/quality/stats", params=params).json()
+
+    def attempts(payload):
+        return next(t for t in payload["targets"] if t["target"]["id"] == target.id)["stats"]["attempts"]
+
+    assert (attempts(first), attempts(second)) == (6, 9)
+
+
 def test_stats_note_depends_on_the_protocol(client) -> None:
     db_path = client.app_db_path
     _target(db_path, name="dns-extra", protocol="dns")

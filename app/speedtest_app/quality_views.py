@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -28,7 +30,7 @@ from .db import TimeRange, query_connectivity_checks
 from .iperf_udp import LoadTestResult, summarize_for_report
 from .probe_types import ProbeTarget
 from .quality_settings import read_quality_settings
-from .stats import ProbeStats, compute_stats, merge_counters
+from .stats import ProbeStats, compute_stats, merge_counters, stats_and_buckets
 from .time_utils import ParsedRange, local_tz, parse_dt, parse_range, to_iso_z, to_local_iso
 
 #: Where these measurements were taken (spec §12); shown on every view.
@@ -278,12 +280,75 @@ def raw_rows_by_target(
     }
 
 
+#: How long a computed rollup is reused. The panel asks for the statistics and
+#: the timeline of the same range at the same moment; that pair is what the
+#: cache exists for, so the window is seconds, not minutes.
+ROLLUP_TTL_SECONDS = 5.0
+_ROLLUP_MAX_ENTRIES = 64
+
+
+@dataclass(frozen=True)
+class RawRollup:
+    """What one scan of a target's raw rows yields for a range."""
+
+    stats: ProbeStats
+    error_kinds: dict[str, int]
+    points: list[dict[str, Any]]
+    complete_buckets: int
+
+
+_rollup_lock = threading.Lock()
+_rollup_cache: dict[tuple, tuple[float, RawRollup | None]] = {}
+
+
+def raw_rollup(
+    db_path: str, target_id: int, start: datetime, end: datetime, bucket_seconds: float
+) -> RawRollup | None:
+    """Statistics, error histogram and timeline points of one target, from one scan.
+
+    ``None`` when the range holds no raw row. The result is shared for
+    `ROLLUP_TTL_SECONDS` between `/quality/stats` and `/quality/timeline`, so
+    that the two requests a page load fires together read and parse the range
+    once instead of twice — and so that both describe exactly the same rows.
+    The key carries the newest probe row id, so a freshly written probe never
+    hides behind an older result, and the range edges at whole-second
+    resolution (the two requests clamp an open end to "now" a few
+    milliseconds apart).
+    """
+    version = quality_db.probe_results_version(db_path)
+    key = (db_path, target_id, int(start.timestamp()), int(end.timestamp()), bucket_seconds, version)
+    with _rollup_lock:
+        now = time.monotonic()
+        hit = _rollup_cache.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        for stale in [k for k, (expires, _) in _rollup_cache.items() if expires <= now]:
+            del _rollup_cache[stale]
+        rows = quality_db.query_probe_metrics(
+            db_path, to_iso_z(start), to_iso_z(end), target_id=target_id
+        )
+        rollup: RawRollup | None = None
+        if rows:
+            stats, points = stats_and_buckets(rows, bucket_seconds, start, end)
+            rollup = RawRollup(
+                stats=stats,
+                error_kinds=error_kinds_histogram(rows),
+                points=points,
+                complete_buckets=sum(1 for point in points if not point["partial"]),
+            )
+        while len(_rollup_cache) >= _ROLLUP_MAX_ENTRIES:
+            del _rollup_cache[next(iter(_rollup_cache))]
+        _rollup_cache[key] = (now + ROLLUP_TTL_SECONDS, rollup)
+        return rollup
+
+
 def target_stats_entries(
     db_path: str,
     start: datetime,
     end: datetime,
     targets: Sequence[ProbeTarget] | None = None,
     raw_rows: Mapping[int, Sequence[Mapping[str, Any]]] | None = None,
+    bucket_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
     """Per-target counters and statistics for the range, enabled targets included.
 
@@ -302,23 +367,35 @@ def target_stats_entries(
     labels itself `aggregates`, which is the honest description of numbers
     pooled from rollups. ``raw_rows`` lets a caller that already fetched the
     rows for this very range (the report) hand them over instead of paying for
-    a second query.
+    a second query. ``bucket_seconds`` (already normalised, see
+    `timeline_bucket_seconds`) makes the raw path go through `raw_rollup`, which
+    the timeline of the same range then reuses.
     """
     start_iso, end_iso = to_iso_z(start), to_iso_z(end)
     allow_raw = raw_range_allowed(start, end)
     bucket = aggregate_bucket_for(start, end)
     entries: list[dict[str, Any]] = []
     for target in targets if targets is not None else quality_db.list_targets(db_path):
+        rollup: RawRollup | None = None
         if raw_rows is not None:
             rows: Sequence[Mapping[str, Any]] = raw_rows.get(target.id) or ()
+        elif allow_raw and bucket_seconds is not None:
+            rollup = raw_rollup(db_path, target.id, start, end, bucket_seconds)
+            rows = ()
         elif allow_raw:
             rows = quality_db.query_probe_metrics(db_path, start_iso, end_iso, target_id=target.id)
         else:
             rows = ()
         covered_from: datetime | None
         covered_to: datetime | None
-        if rows:
+        error_kinds: dict[str, int] = {}
+        if rollup is not None:
+            stats, source = rollup.stats, "raw"
+            error_kinds = rollup.error_kinds
+            covered_from, covered_to = start, end
+        elif rows:
             stats, source = compute_stats(rows), "raw"
+            error_kinds = error_kinds_histogram(rows)
             covered_from, covered_to = start, end
         else:
             aggregates = fully_contained_aggregates(db_path, bucket, start, end, target.id)
@@ -335,7 +412,7 @@ def target_stats_entries(
                 "target": target_payload(target),
                 "stats": stats_payload(stats),
                 "note": PROTOCOL_NOTES.get(str(target.protocol), ""),
-                "error_kinds": error_kinds_histogram(rows),
+                "error_kinds": error_kinds,
                 "data_source": source,
                 "covered_from": local_iso(covered_from),
                 "covered_to": local_iso(covered_to),

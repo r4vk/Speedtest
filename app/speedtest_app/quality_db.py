@@ -352,6 +352,17 @@ def query_probe_metrics(
     return _dicts(rows)
 
 
+def probe_results_version(db_path: str) -> int:
+    """Highest probe row id: moves whenever a probe row is written.
+
+    A cheap (one b-tree probe) stamp a short-lived cache can key on, so that
+    a result computed from the table is never served once a newer row exists.
+    """
+    with db_conn(db_path) as conn:
+        row = conn.execute("SELECT MAX(id) FROM probe_results").fetchone()
+    return int(row[0] or 0)
+
+
 def iter_probe_results(
     db_path: str,
     start_iso: str,

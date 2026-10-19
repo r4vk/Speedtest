@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -146,13 +147,27 @@ async def _session_heartbeat_loop(
         _heartbeat_once(tracker)
 
 
+async def _integrity_check_in_background() -> None:
+    """`PRAGMA quick_check` off the startup path.
+
+    It reads every page of the database, so on a NAS with two weeks of raw
+    probes it took longer than everything else in startup together — and the
+    UI stayed unreachable until it finished. A problem is only ever logged
+    (never a reason to refuse to serve), so nothing needs to wait for it.
+    """
+    try:
+        integrity = await asyncio.to_thread(integrity_quick_check, cfg.db_path)
+    except Exception:
+        log.warning("SQLite integrity check could not run", exc_info=True)
+        return
+    if integrity != "ok":
+        log.warning("SQLite integrity check reported problems: %s", integrity)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start the monitor with the app and stop it before the app goes away."""
     init_runtime()
-    integrity = integrity_quick_check(cfg.db_path)
-    if integrity != "ok":
-        log.warning("SQLite integrity check reported problems: %s", integrity)
     _reconcile_gateway_host_from_env()
     state = RunningState(stop=asyncio.Event())
     app.state.running_state = state
@@ -164,6 +179,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         await engine.start()
         app.state.tasks = [
+            asyncio.create_task(_integrity_check_in_background()),
             asyncio.create_task(_session_heartbeat_loop(tracker, state)),
             asyncio.create_task(speedtest_loop(cfg, state)),
             asyncio.create_task(
@@ -204,6 +220,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Speedtest Monitor", version=APP_VERSION, lifespan=lifespan)
+#: The timeline is a few hundred kB of repetitive JSON; compressed it is a
+#: tenth of that, which is what a phone on Wi-Fi or a VPN actually waits for.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.include_router(retention_router)
 #: The quality router resolves the database through the app, not through a
 #: module-level import, so tests can point a fresh app at a temporary file.

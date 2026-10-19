@@ -345,7 +345,37 @@ def bucket_rows(
     and the CSV exports report; incident evaluation keeps the plain tumbling
     windows, where a half-filled window must not be judged.
     """
+    return _bucket_points_from_timed(
+        _timed(rows), bucket_seconds, start_at, end_at, include_partial=include_partial
+    )
+
+
+def stats_and_buckets(
+    rows: Iterable[Any],
+    bucket_seconds: float,
+    start_at: datetime,
+    end_at: datetime,
+) -> tuple[ProbeStats, list[dict[str, Any]]]:
+    """:func:`compute_stats` and :func:`bucket_rows` (partial tail included) in one pass.
+
+    The statistics table and the timeline describe the same rows; parsing and
+    sorting a day of timestamps twice is what made the panel slow, so a caller
+    that needs both takes them from a single ``_timed`` call.
+    """
     ordered = _timed(rows)
+    return _stats_from_timed(ordered), _bucket_points_from_timed(
+        ordered, bucket_seconds, start_at, end_at, include_partial=True
+    )
+
+
+def _bucket_points_from_timed(
+    ordered: Sequence[Timed],
+    bucket_seconds: float,
+    start_at: datetime,
+    end_at: datetime,
+    *,
+    include_partial: bool,
+) -> list[dict[str, Any]]:
     windows = _tumbling_from_timed(ordered, bucket_seconds, start_at, end_at)
     points = [
         _bucket_point(window_start, bucket, partial=False)

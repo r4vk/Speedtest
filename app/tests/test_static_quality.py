@@ -346,16 +346,16 @@ def test_served_page_has_panel_title_and_claims_no_measurement_host(client):
     "range_seconds, expected_bucket_seconds",
     [
         (3600, 60),  # 1 h -> 60 s buckets (60 points)
-        (86400, 180),  # 24 h -> 3 min buckets (480 points)
-        (2592000, 4320),  # 30 d -> 72 min buckets (600 points, the cap)
+        (86400, 600),  # 24 h -> 10 min buckets (144 points)
+        (2592000, 17280),  # 30 d -> 288 min buckets (150 points, the cap)
     ],
 )
-def test_pick_bucket_seconds_matches_the_600_point_budget(range_seconds, expected_bucket_seconds):
+def test_pick_bucket_seconds_matches_the_150_point_budget(range_seconds, expected_bucket_seconds):
     program = f"{QUALITY_JS}\nconsole.log(Quality.pickBucketSeconds({range_seconds}));"
     result = _run_node(program)
     assert result.returncode == 0, result.stderr
     assert int(result.stdout.strip()) == expected_bucket_seconds
-    assert range_seconds / expected_bucket_seconds <= 600
+    assert range_seconds / expected_bucket_seconds <= 150
 
 
 @requires_node
@@ -410,6 +410,137 @@ def test_loss_value_for_point_treats_zero_attempts_as_a_gap():
     result = _run_node(program)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.strip()) == [None, 25, None]
+
+
+@requires_node
+@pytest.mark.parametrize(
+    "entry, expected",
+    [
+        # loss and spread both small -> great
+        ({"stats": {"loss_pct": 0.1, "rtt_p50_ms": 5.8, "rtt_p95_ms": 7.3}}, "great"),
+        # HTTPS is slow by nature: 73 -> 87 ms is steady, not bad
+        ({"stats": {"loss_pct": 0.17, "rtt_p50_ms": 73.0, "rtt_p95_ms": 86.7}}, "great"),
+        # some loss -> good, not great
+        ({"stats": {"loss_pct": 1.0, "rtt_p50_ms": 6.0, "rtt_p95_ms": 7.0}}, "good"),
+        # 2 % loss or more is felt
+        ({"stats": {"loss_pct": 2.0, "rtt_p50_ms": 6.0, "rtt_p95_ms": 7.0}}, "poor"),
+        # replies spread far above the typical ones
+        ({"stats": {"loss_pct": 0.0, "rtt_p50_ms": 5.0, "rtt_p95_ms": 90.0}}, "poor"),
+        # aggregates carry no percentiles: loss alone decides
+        ({"data_source": "aggregates", "stats": {"loss_pct": 0.1}}, "great"),
+        # no data is never "great"
+        ({"data_source": "none", "stats": {}}, "unknown"),
+        ({"stats": {"loss_pct": None}}, "unknown"),
+    ],
+)
+def test_rate_target_judges_loss_and_spread_not_absolute_milliseconds(entry, expected):
+    program = f"{QUALITY_JS}\nconsole.log(Quality.rateTarget({json.dumps(entry)}));"
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+
+
+@requires_node
+def test_ping_axis_cap_ignores_a_single_spike_but_keeps_ordinary_values_in_view():
+    steady = [7.0] * 99
+    program = (
+        f"{QUALITY_JS}\n"
+        f"const steady = {json.dumps(steady)};\n"
+        "console.log(JSON.stringify([\n"
+        "  Quality.pingAxisCap(steady.concat([48.0])),\n"  # one spike -> clipped
+        "  Quality.pingAxisCap([5, 6, 7, 8, 9]),\n"  # no spike -> fits the data
+        "  Quality.pingAxisCap([]),\n"
+        "]));"
+    )
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    spike_cap, plain_cap, empty_cap = json.loads(result.stdout.strip())
+    assert spike_cap < 48  # the spike no longer flattens everything else
+    assert spike_cap >= 10
+    assert plain_cap >= 9  # every ordinary value stays inside the axis
+    assert empty_cap is None
+
+
+@requires_node
+def test_summarize_stats_reports_loss_from_counters_and_the_worst_rating():
+    entries = [
+        {"stats": {"attempts": 1000, "ok": 999, "timeouts": 1, "errors": 0, "loss_pct": 0.1,
+                   "rtt_p50_ms": 5, "rtt_p95_ms": 6}},
+        {"stats": {"attempts": 10, "ok": 5, "timeouts": 5, "errors": 0, "loss_pct": 50.0,
+                   "rtt_p50_ms": 5, "rtt_p95_ms": 6}},
+    ]
+    program = f"{QUALITY_JS}\nconsole.log(JSON.stringify(Quality.summarizeStats({json.dumps(entries)}, 2)));"
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout.strip())
+    assert summary["tone"] == "bad"
+    assert "1 z 2" in summary["text"]
+    assert "0.59%" in summary["text"]  # 6 / 1005, not the mean of 0.1 and 50
+    assert "incydenty: 2" in summary["text"]
+
+
+@requires_node
+def test_summarize_stats_without_measurements_says_so():
+    program = f"{QUALITY_JS}\nconsole.log(JSON.stringify(Quality.summarizeStats([{{\"data_source\": \"none\", \"stats\": {{}}}}], 0)));"
+    result = _run_node(program)
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout.strip())
+    assert summary["tone"] == "warn"
+    assert "Brak pomiarów" in summary["text"]
+
+
+def _node_json(expression: str):
+    result = _run_node(f"{QUALITY_JS}\nconsole.log(JSON.stringify({expression}));")
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip())
+
+
+def _entry(loss, p50=None, p95=None, source="raw"):
+    return {"data_source": source, "stats": {"loss_pct": loss, "rtt_p50_ms": p50, "rtt_p95_ms": p95}}
+
+
+@requires_node
+@pytest.mark.parametrize(
+    "entry, expected",
+    [
+        (_entry(0.07, 5.8, 7.2), "great"),  # the real ICMP rows of a healthy line
+        (_entry(0.17, 73.0, 86.7), "great"),  # HTTPS is slow by nature, not bad
+        (_entry(1.0, 5.8, 7.2), "good"),
+        (_entry(0.1, 6.0, 60.0), "poor"),  # p95 far above the typical reply
+        (_entry(3.5, 5.8, 7.2), "poor"),
+        (_entry(0.1, None, None, source="aggregates"), "great"),  # counters only
+        (_entry(None, None, None), "unknown"),
+        ({"data_source": "none", "stats": {}}, "unknown"),
+    ],
+)
+def test_rate_target_judges_loss_and_spread_not_absolute_milliseconds(entry, expected):
+    assert _node_json(f"Quality.rateTarget({json.dumps(entry)})") == expected
+
+
+@requires_node
+def test_ping_axis_cap_ignores_a_lone_spike_but_keeps_ordinary_data_whole():
+    steady = [7.0, 7.2, 6.9, 7.5, 7.1] * 20
+    cap = _node_json(f"Quality.pingAxisCap({json.dumps(steady)})")
+    assert 7.5 <= cap <= 10  # fits the data: nothing is clipped
+    spiky = steady + [48.0]
+    cap = _node_json(f"Quality.pingAxisCap({json.dumps(spiky)})")
+    assert 10 <= cap < 48  # the spike is drawn clipped, not allowed to flatten the line
+    assert _node_json("Quality.pingAxisCap([])") is None
+
+
+@requires_node
+def test_summary_counts_loss_from_counters_and_names_the_verdict():
+    entries = [
+        {"data_source": "raw", "stats": {"attempts": 1000, "ok": 999, "timeouts": 1, "errors": 0,
+                                         "loss_pct": 0.1, "rtt_p50_ms": 5.0, "rtt_p95_ms": 6.0}},
+        {"data_source": "raw", "stats": {"attempts": 10, "ok": 9, "timeouts": 1, "errors": 0,
+                                         "loss_pct": 10.0, "rtt_p50_ms": 5.0, "rtt_p95_ms": 6.0}},
+    ]
+    result = _node_json(f"Quality.summarizeStats({json.dumps(entries)}, 2)")
+    assert result["tone"] == "bad"  # the 10 % target is rated poor
+    assert "0.20%" in result["text"]  # 2 / 1010, never the mean of 0.1 and 10
+    assert "incydenty: 2" in result["text"]
+    assert _node_json("Quality.summarizeStats([], 0)")["tone"] == "warn"
 
 
 # ---------------------------------------------------------------------------

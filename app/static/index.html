@@ -6,9 +6,9 @@
     <title>Speedtest Monitor</title>
     <link rel="stylesheet" href="/static/styles.css" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
   </head>
   <body>
     <main class="container">
@@ -538,6 +538,34 @@
         </div>
         <p id="q-range-error" class="tool-error" style="display:none;" role="alert"></p>
 
+        <p id="q-summary" class="q-summary" aria-live="polite">Ładowanie danych…</p>
+
+        <details class="q-glossary">
+          <summary>Jak czytać te wykresy i liczby?</summary>
+          <dl>
+            <dt>Ping (RTT)</dt>
+            <dd>Czas, jaki mija między wysłaniem krótkiego „pytania” do serwera a odebraniem odpowiedzi, w milisekundach (ms; 1000 ms = 1 s). Im mniej, tym lepiej. Dla przeglądania stron i filmów liczy się mniej niż ok. 50 ms, dla gier i rozmów wideo — im niżej, tym lepiej.</dd>
+            <dt>Typowy ping (p50)</dt>
+            <dd>Połowa odpowiedzi była szybsza niż ta wartość, połowa wolniejsza — czyli „zwykły” czas odpowiedzi (mediana). Tak działa łącze w większości chwil.</dd>
+            <dt>Wolniejsze odpowiedzi (p95)</dt>
+            <dd>95 na 100 odpowiedzi było szybszych niż ta wartość. Pokazuje, jak łącze działa w tych gorszych chwilach — gdy p95 jest bliskie typowemu pingowi, łącze jest równe i przewidywalne.</dd>
+            <dt>Najgorsze chwile (p99)</dt>
+            <dd>99 na 100 odpowiedzi było szybszych. Wartość mówi o rzadkich, ale zauważalnych „zacięciach” (np. na chwilę zamarznięty film lub rozmowa).</dd>
+            <dt>Rekord (max)</dt>
+            <dd>Najwolniejsza pojedyncza odpowiedź w całym okresie. To jedna próba, więc zwykle jest wielokrotnie większa od reszty i nie powinna niepokoić, jeśli nic poza nią nie odstaje.</dd>
+            <dt>Wahania pingu (jitter)</dt>
+            <dd>O ile średnio różnią się dwie kolejne odpowiedzi. Mała wartość = łącze działa stabilnie; duża = ping „skacze”, co psuje rozmowy wideo i gry nawet przy niskim średnim pingu.</dd>
+            <dt>Utrata pakietów</dt>
+            <dd>Jaka część sprawdzeń nie dostała odpowiedzi w czasie oczekiwania. Poniżej 0,5% to wynik bardzo dobry; powyżej 2% zwykle da się to odczuć (zacinanie, ponowne ładowanie stron). Błędy samego pomiaru nie są wliczane do utraty.</dd>
+            <dt>Najdłuższa przerwa</dt>
+            <dd>Najwięcej sprawdzeń z rzędu, które pozostały bez odpowiedzi. Przy sprawdzaniu raz na sekundę „48” oznacza przerwę rzędu 48 sekund.</dd>
+            <dt>Ocena</dt>
+            <dd>Prosta ocena celu na podstawie utraty pakietów i tego, jak bardzo wolniejsze odpowiedzi odstają od typowych — dla każdego typu pomiaru osobno, bo np. otwarcie strony (HTTPS) z natury trwa dłużej niż ping. Świetnie: utrata poniżej 0,5%, wyniki równe. Dobrze: poniżej 2%, drobne wahania. Słabo: ponad 2% lub duże skoki.</dd>
+            <dt>Cele</dt>
+            <dd>To różne miejsca, do których łącze wysyła sprawdzenia. <b>Router (gateway)</b> to Twoja sieć domowa; <b>Cloudflare, Google, Quad9</b> to internet. Jeśli router odpowiada dobrze, a internet źle — problem leży po stronie dostawcy; jeśli źle odpowiada już router — w sieci domowej (Wi-Fi, kabel, urządzenie).</dd>
+          </dl>
+        </details>
+
         <div class="q-legend">
           <span><i class="q-swatch q-swatch-incident"></i> Incydent</span>
           <span><i class="q-swatch" style="background:rgba(239,68,68,.16);"></i> Incydent spodziewany</span>
@@ -547,7 +575,14 @@
         </div>
 
         <div id="q-target-toggles" class="q-target-toggles"></div>
-        <canvas id="qualityChart" height="140"></canvas>
+
+        <h3 class="q-chart-title">Czas odpowiedzi (ping)</h3>
+        <p class="hint q-chart-help">Im niżej, tym lepiej. Linia ciągła to typowy czas odpowiedzi, przerywana — wolniejsze odpowiedzi (95 na 100 było szybszych). Czerwony trójkąt ▲ oznacza wartość większą niż skala wykresu — dokładną liczbę pokaże najechanie myszką.</p>
+        <canvas id="qualityChart" height="110"></canvas>
+
+        <h3 class="q-chart-title">Utrata pakietów</h3>
+        <p class="hint q-chart-help">Słupek pojawia się tylko tam, gdzie część sprawdzeń została bez odpowiedzi. Brak słupków oznacza, że wszystko dotarło.</p>
+        <canvas id="qualityLossChart" height="50"></canvas>
         <p id="q-chart-caption" class="hint"></p>
 
         <h3>Statystyki celów</h3>
@@ -555,20 +590,20 @@
           <table class="tool-table" id="q-stats-table">
             <thead>
               <tr>
-                <th scope="col">Cel</th>
-                <th scope="col">Protokół</th>
-                <th scope="col">Próby</th>
-                <th scope="col">OK</th>
-                <th scope="col">Timeouty</th>
-                <th scope="col">Błędy</th>
-                <th scope="col">Strata %</th>
-                <th scope="col">p50</th>
-                <th scope="col">p95</th>
-                <th scope="col">p99</th>
-                <th scope="col">Max</th>
-                <th scope="col">Zmienność RTT</th>
-                <th scope="col">Najdł. seria błędów</th>
-                <th scope="col">Uwagi</th>
+                <th scope="col" title="Miejsce, do którego wysyłane są sprawdzenia">Cel</th>
+                <th scope="col" title="Rodzaj sprawdzenia: ping (icmp), połączenie (tcp), zapytanie DNS albo otwarcie strony (https)">Metoda</th>
+                <th scope="col" title="Ile sprawdzeń wykonano w wybranym okresie">Próby</th>
+                <th scope="col" title="Sprawdzenia, na które przyszła odpowiedź">Udane</th>
+                <th scope="col" title="Sprawdzenia bez odpowiedzi w czasie oczekiwania — to one liczą się jako utrata">Bez odpowiedzi</th>
+                <th scope="col" title="Pomiar się nie udał (np. brak uprawnień, błąd nazwy) — to nie jest utrata pakietów">Błędy pomiaru</th>
+                <th scope="col" title="Jaka część sprawdzeń nie dostała odpowiedzi. Poniżej 0,5% — bardzo dobrze">Utrata pakietów</th>
+                <th scope="col" title="p50: połowa odpowiedzi była szybsza niż ta wartość (ms)">Typowy ping (p50)</th>
+                <th scope="col" title="p95: 95 na 100 odpowiedzi było szybszych niż ta wartość (ms)">Wolniejsze (p95)</th>
+                <th scope="col" title="p99: 99 na 100 odpowiedzi było szybszych niż ta wartość (ms)">Najgorsze chwile (p99)</th>
+                <th scope="col" title="Najwolniejsza pojedyncza odpowiedź (ms)">Rekord (max)</th>
+                <th scope="col" title="Jitter: o ile średnio różnią się dwie kolejne odpowiedzi (ms). Mało = stabilnie">Wahania (jitter)</th>
+                <th scope="col" title="Najwięcej sprawdzeń z rzędu bez odpowiedzi">Najdłuższa przerwa</th>
+                <th scope="col" title="Prosta ocena na podstawie utraty pakietów i równości odpowiedzi">Ocena</th>
               </tr>
             </thead>
             <tbody id="q-stats-tbody"></tbody>
@@ -694,7 +729,7 @@
       </footer>
     </main>
 
-    <script src="/static/app.js"></script>
-    <script src="/static/quality.js"></script>
+    <script defer src="/static/app.js"></script>
+    <script defer src="/static/quality.js"></script>
   </body>
 </html>

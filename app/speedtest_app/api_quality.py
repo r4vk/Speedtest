@@ -50,6 +50,7 @@ from .quality_views import (
     legacy_tcp_counters,
     range_payload,
     raw_range_allowed,
+    raw_rollup,
     stats_payload,
     target_names,
     target_payload,
@@ -57,7 +58,6 @@ from .quality_views import (
     timeline_bucket_seconds,
     tz_name,
 )
-from .stats import bucket_rows
 from .time_utils import ParsedRange, parse_dt, to_iso_z, utc_now
 
 log = logging.getLogger(__name__)
@@ -396,13 +396,27 @@ def api_quality_status(request: Request) -> dict[str, Any]:
 
 
 @router.get("/quality/stats")
-def api_quality_stats(request: Request, pr: ParsedRange = Depends(get_range)) -> dict[str, Any]:
+def api_quality_stats(
+    request: Request,
+    pr: ParsedRange = Depends(get_range),
+    bucket_seconds: float | None = Query(default=None, gt=0, le=86400),
+) -> dict[str, Any]:
+    """Per-target statistics of the range.
+
+    ``bucket_seconds`` is optional and changes no number: pass the same value
+    as to `/quality/timeline` and the two share one scan of the raw rows.
+    """
     db_path = db_path_of(request)
+    bucket = (
+        timeline_bucket_seconds(bucket_seconds, pr.start, pr.end)
+        if bucket_seconds is not None
+        else None
+    )
     return {
         "range": range_payload(pr.start, pr.end),
         "tz": tz_name(),
         "coverage": _coverage_payload(db_path, pr.start, pr.end),
-        "targets": target_stats_entries(db_path, pr.start, pr.end),
+        "targets": target_stats_entries(db_path, pr.start, pr.end, bucket_seconds=bucket),
         "legacy_tcp": legacy_tcp_counters(db_path, pr.start, pr.end),
     }
 
@@ -463,15 +477,12 @@ def api_quality_timeline(
     series = []
     complete_buckets = 0
     for target in targets:
-        rows = (
-            quality_db.query_probe_metrics(db_path, start_iso, end_iso, target_id=target.id)
-            if allow_raw
-            else []
+        rollup = (
+            raw_rollup(db_path, target.id, pr.start, pr.end, bucket) if allow_raw else None
         )
-        if rows:
-            raw_points = bucket_rows(rows, bucket, pr.start, pr.end, include_partial=True)
-            points = [{**point, "t": local_iso(point["t"])} for point in raw_points]
-            complete_buckets = max(complete_buckets, sum(1 for p in raw_points if not p["partial"]))
+        if rollup is not None:
+            points = [{**point, "t": local_iso(point["t"])} for point in rollup.points]
+            complete_buckets = max(complete_buckets, rollup.complete_buckets)
             source = "raw"
         else:
             points = _aggregate_timeline_points(

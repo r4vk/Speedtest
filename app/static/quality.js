@@ -16,6 +16,7 @@ const Quality = (() => {
   // stan modułu
   // ---------------------------------------------------------------------
   let chart = null;
+  let lossChart = null;
   let lastTimeline = null;
   let targetsCache = [];
   let expectedWindowsCache = [];
@@ -81,14 +82,103 @@ const Quality = (() => {
   // czyste helpery (bez DOM/fetch) — testowane bezpośrednio przez `node -e`
   // ---------------------------------------------------------------------
 
+  //: Ile punktów na linię mieści czytelny wykres. 600 punktów (3 min na
+  //: dobę) zlewało się w postrzępioną wstęgę, w której nie widać ani trendu,
+  //: ani pojedynczego zdarzenia; ~150 to 10 min na dobę — wciąż widać
+  //: kilkuminutową awarię (strata w kubełku), a linia jest czytelna.
+  const CHART_POINT_BUDGET = 150;
+
   /**
-   * Szerokość kubełka wykresu tak, by zmieścić się w ~600 punktach
-   * (brief T10): `max(60, ceil(range_seconds/600/60)*60)`.
+   * Szerokość kubełka wykresu tak, by zmieścić się w ~150 punktach:
+   * `max(60, ceil(range_seconds/150/60)*60)`.
    */
   function pickBucketSeconds(rangeSeconds) {
     const r = Number(rangeSeconds);
     if (!Number.isFinite(r) || r <= 0) return 60;
-    return Math.max(60, Math.ceil(r / 600 / 60) * 60);
+    return Math.max(60, Math.ceil(r / CHART_POINT_BUDGET / 60) * 60);
+  }
+
+  /**
+   * Prosta ocena celu dla laika: `great` | `good` | `poor` | `unknown`.
+   *
+   * Opiera się na utracie pakietów i na tym, jak bardzo wolniejsze odpowiedzi
+   * (p95) odstają od typowych (p50) — nie na bezwzględnych milisekundach,
+   * bo otwarcie strony po HTTPS z natury trwa dłużej niż ping, a nie jest
+   * przez to gorsze. Dla danych z agregatów (bez percentyli) decyduje sama
+   * utrata pakietów.
+   */
+  function rateTarget(entry) {
+    if (!entry || entry.data_source === "none") return "unknown";
+    const s = entry.stats || {};
+    const loss = typeof s.loss_pct === "number" ? s.loss_pct : null;
+    if (loss == null) return "unknown";
+    if (loss >= 2) return "poor";
+    const p50 = s.rtt_p50_ms;
+    const p95 = s.rtt_p95_ms;
+    if (typeof p50 !== "number" || typeof p95 !== "number") {
+      return loss < 0.5 ? "great" : "good";
+    }
+    if (p95 > 4 * p50 + 20) return "poor";
+    if (loss < 0.5 && p95 <= 2 * p50 + 10) return "great";
+    return "good";
+  }
+
+  const RATING_LABELS = {
+    great: "Świetnie",
+    good: "Dobrze",
+    poor: "Słabo",
+    unknown: "Brak oceny",
+  };
+
+  /**
+   * Górna granica osi ping: skala ma pokazywać zwykłe działanie łącza, a nie
+   * jeden wystrzał. Wartości powyżej są rysowane na granicy jako ▲, a
+   * dokładna liczba trafia do podpowiedzi. Zwraca `null`, gdy nie ma danych.
+   */
+  function pingAxisCap(values) {
+    const nums = (values || []).filter((v) => typeof v === "number" && Number.isFinite(v));
+    if (!nums.length) return null;
+    const sorted = nums.slice().sort((a, b) => a - b);
+    const p95 = sorted[Math.min(sorted.length - 1, Math.ceil(0.95 * sorted.length) - 1)];
+    const max = sorted[sorted.length - 1];
+    const cap = Math.max(10, p95 * 2);
+    if (max <= cap * 1.25) return Math.ceil(max * 1.1);
+    // zaokrąglenie w górę do "ładnej" liczby (10, 20, 25, 50, 100, ...)
+    const steps = [10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 500, 1000];
+    return steps.find((step) => step >= cap) || Math.ceil(cap);
+  }
+
+  /**
+   * Podsumowanie po ludzku: zdanie + klasa koloru. Utrata liczona z sumy
+   * liczników (spec §6), nigdy ze średniej procentów.
+   */
+  function summarizeStats(entries, incidentCount) {
+    const measured = (entries || []).filter((e) => e.data_source !== "none");
+    if (!measured.length) {
+      return { tone: "warn", text: "Brak pomiarów w wybranym okresie — nie ma jeszcze z czego wyliczyć oceny." };
+    }
+    const counts = { great: 0, good: 0, poor: 0, unknown: 0 };
+    for (const e of measured) counts[rateTarget(e)] += 1;
+    const sum = buildSumRow(measured);
+    const loss = sum.loss_pct == null ? "brak danych" : `${sum.loss_pct.toFixed(2)}%`;
+    let verdict;
+    let tone;
+    if (counts.poor > 0) {
+      verdict = `Wykryto problemy: ${counts.poor} z ${measured.length} celów oceniono słabo.`;
+      tone = "bad";
+    } else if (counts.good > 0) {
+      verdict = "Łącze działało dobrze, z drobnymi wahaniami.";
+      tone = "warn";
+    } else {
+      verdict = "Łącze działało świetnie.";
+      tone = "good";
+    }
+    const inc = Number(incidentCount) || 0;
+    const incText = inc > 0 ? `Zarejestrowane incydenty: ${inc}.` : "Bez zarejestrowanych incydentów.";
+    return {
+      tone,
+      text: `<strong>${verdict}</strong> Łączna utrata pakietów: ${loss}. ${incText} Szczegóły — w tabeli poniżej.`,
+    };
   }
 
   /**
@@ -160,6 +250,10 @@ const Quality = (() => {
   function fmtNum(value, digits) {
     const d = digits == null ? 1 : digits;
     return typeof value === "number" && Number.isFinite(value) ? value.toFixed(d) : "–";
+  }
+
+  function fmtMs(value) {
+    return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)} ms` : "–";
   }
 
   function fmtPct(value) {
@@ -432,12 +526,18 @@ const Quality = (() => {
     for (const id of Array.from(visibleTargetIds)) {
       if (!currentIds.has(id)) visibleTargetIds.delete(id);
     }
-    for (const t of targets) {
-      if (!knownTargetIds.has(t.id)) {
-        knownTargetIds.add(t.id);
-        if (t.kind === "internet" || t.kind === "tcp") visibleTargetIds.add(t.id);
-      }
-    }
+    const firstLoad = knownTargetIds.size === 0;
+    for (const t of targets) knownTargetIds.add(t.id);
+    // Domyślnie (tylko przy pierwszym załadowaniu) router i jeden cel w
+    // internecie: razem pokazują, czy kłopot jest u Ciebie, czy u dostawcy.
+    // Cztery niemal identyczne linie do serwerów DNS tylko zasłaniały się
+    // nawzajem. Późniejszy wybór użytkownika zostaje nietknięty.
+    if (!firstLoad) return;
+    const gateway = targets.find((t) => t.kind === "gateway");
+    const internet = targets.find((t) => t.kind === "internet") || targets.find((t) => t.kind === "tcp");
+    if (gateway) visibleTargetIds.add(gateway.id);
+    if (internet) visibleTargetIds.add(internet.id);
+    if (visibleTargetIds.size === 0 && targets[0]) visibleTargetIds.add(targets[0].id);
   }
 
   function renderTargetToggles(targets) {
@@ -462,103 +562,209 @@ const Quality = (() => {
     }
   }
 
+  const AXIS_TEXT = "rgba(169,180,221,.85)";
+  const AXIS_GRID = "rgba(231,236,255,.08)";
+  //: Oba wykresy mają osie Y tej samej szerokości, żeby ta sama godzina
+  //: leżała w tym samym miejscu nad i pod sobą.
+  const Y_AXIS_WIDTH = 58;
+
+  /** Utwórz wykres albo podmień mu dane i opcje (jeden `Chart` na canvas). */
+  function upsertChart(current, canvas, config, boxes) {
+    let instance = current;
+    if (!instance) {
+      instance = new Chart(canvas.getContext("2d"), { ...config, plugins: [qualityBackgroundPlugin] });
+    } else {
+      instance.data.datasets = config.data.datasets;
+      instance.options = config.options;
+    }
+    instance.$quality = { boxes };
+    instance.update();
+    return instance;
+  }
+
   function renderChart(timeline) {
     const canvas = qs("qualityChart");
+    const lossCanvas = qs("qualityLossChart");
     if (!canvas || typeof Chart === "undefined") return;
-    const entries = timeline.targets || [];
-    const datasets = [];
+    const entries = (timeline.targets || []).filter((e) => visibleTargetIds.has((e.target || {}).id));
+    const legendColor = (getComputedStyle(document.documentElement).getPropertyValue("--text") || "").trim() || "rgba(231,236,255,.9)";
+    const rangeFrom = parseIsoToMs(timeline.range && timeline.range.from);
+    const rangeTo = parseIsoToMs(timeline.range && timeline.range.to);
+
+    // Skala pingu z danych widocznych celów, nie z jednego wystrzału.
+    const allValues = [];
+    for (const entry of entries) {
+      for (const p of entry.points || []) {
+        if (p.attempts && typeof p.p95 === "number") allValues.push(p.p95);
+        if (p.attempts && typeof p.p50 === "number") allValues.push(p.p50);
+      }
+    }
+    const cap = pingAxisCap(allValues);
+    let clippedCount = 0;
+    let clippedMax = 0;
+
+    const latencySets = [];
+    const lossSets = [];
     let colorIdx = 0;
     for (const entry of entries) {
       const t = entry.target || {};
-      if (!visibleTargetIds.has(t.id)) continue;
       const color = CHART_PALETTE[colorIdx % CHART_PALETTE.length];
       colorIdx += 1;
       const points = entry.points || [];
-      const p95Data = points.map((p) => ({ x: parseIsoToMs(p.t), y: p.attempts ? p.p95 : null }));
-      const lossData = points.map((p) => ({ x: parseIsoToMs(p.t), y: lossValueForPoint(p) }));
-      datasets.push({
+      const series = (field) =>
+        points.map((p) => {
+          const real = p.attempts && typeof p[field] === "number" ? p[field] : null;
+          const clipped = real != null && cap != null && real > cap;
+          if (clipped && field === "p95") {
+            clippedCount += 1;
+            clippedMax = Math.max(clippedMax, real);
+          }
+          return { x: parseIsoToMs(p.t), y: clipped ? cap : real, real, clipped };
+        });
+      const common = {
         type: "line",
-        label: `${t.name} — p95`,
-        yAxisID: "yP95",
-        data: p95Data,
+        yAxisID: "y",
         borderColor: color,
         backgroundColor: color,
-        borderWidth: 2,
-        pointRadius: points.map((p) => (p.partial ? 3 : 1)),
-        tension: 0.2,
+        tension: 0.15,
         spanGaps: false,
-        segment: {
-          borderDash: (ctx) => {
-            const p = points[ctx.p1DataIndex];
-            return p && p.partial ? [4, 4] : undefined;
-          },
-        },
+      };
+      const marker = (data, base) => ({
+        pointStyle: data.map((d) => (d.clipped ? "triangle" : "circle")),
+        pointRadius: data.map((d, i) => (d.clipped ? 6 : points[i] && points[i].partial ? 3 : base)),
+        pointBackgroundColor: data.map((d) => (d.clipped ? "#ef4444" : color)),
+        pointBorderColor: data.map((d) => (d.clipped ? "#ef4444" : color)),
       });
-      datasets.push({
+      const p50 = series("p50");
+      const p95 = series("p95");
+      latencySets.push({
+        ...common,
+        label: `${t.name} — typowy (p50)`,
+        data: p50,
+        borderWidth: 2.2,
+        ...marker(p50, 0),
+      });
+      latencySets.push({
+        ...common,
+        label: `${t.name} — wolniejsze (p95)`,
+        data: p95,
+        borderColor: hexToRgba(color, 0.7),
+        borderWidth: 1.4,
+        borderDash: [5, 4],
+        ...marker(p95, 0),
+      });
+      lossSets.push({
         type: "bar",
-        label: `${t.name} — strata %`,
-        yAxisID: "yLoss",
-        data: lossData,
-        backgroundColor: points.map((p) => hexToRgba(color, p.partial ? 0.12 : 0.28)),
-        borderColor: hexToRgba(color, 0.4),
+        yAxisID: "y",
+        label: `${t.name} — utrata pakietów`,
+        data: points.map((p) => ({ x: parseIsoToMs(p.t), y: lossValueForPoint(p) })),
+        backgroundColor: hexToRgba(color, 0.75),
+        borderColor: color,
         borderWidth: 1,
-        barPercentage: 0.85,
-        categoryPercentage: 0.8,
+        barPercentage: 0.9,
+        categoryPercentage: 0.9,
+        minBarLength: 3,
       });
     }
 
     const boxes = buildChartBoxes(timeline);
-    const legendColor = (getComputedStyle(document.documentElement).getPropertyValue("--text") || "").trim() || "rgba(231,236,255,.9)";
-    if (!chart) {
-      chart = new Chart(canvas.getContext("2d"), {
-        data: { datasets },
+    const xScale = {
+      type: "time",
+      min: rangeFrom == null ? undefined : rangeFrom,
+      max: rangeTo == null ? undefined : rangeTo,
+      ticks: { color: AXIS_TEXT, maxRotation: 0, autoSkip: true },
+      grid: { color: AXIS_GRID },
+    };
+    const yAxis = (title, extra) => ({
+      position: "left",
+      min: 0,
+      title: { display: true, text: title, color: AXIS_TEXT },
+      ticks: { color: AXIS_TEXT },
+      grid: { color: AXIS_GRID },
+      afterFit(scale) {
+        scale.width = Y_AXIS_WIDTH;
+      },
+      ...extra,
+    });
+
+    chart = upsertChart(
+      chart,
+      canvas,
+      {
+        data: { datasets: latencySets },
         options: {
           responsive: true,
           animation: false,
           interaction: { mode: "nearest", axis: "x", intersect: false },
           scales: {
-            x: {
-              type: "time",
-              ticks: { color: "rgba(194,204,240,.92)", maxRotation: 0, autoSkip: true },
-              grid: { color: "rgba(231,236,255,.10)" },
-            },
-            yP95: {
-              position: "left",
-              min: 0,
-              title: { display: true, text: "p95 RTT (ms)", color: "rgba(169,180,221,.9)" },
-              ticks: { color: "rgba(169,180,221,.8)" },
-              grid: { color: "rgba(231,236,255,.06)" },
-            },
-            yLoss: {
-              position: "right",
-              min: 0,
-              max: 100,
-              stacked: false,
-              title: { display: true, text: "Strata (%)", color: "rgba(169,180,221,.9)" },
-              ticks: { color: "rgba(169,180,221,.8)" },
-              grid: { drawOnChartArea: false },
-            },
+            x: xScale,
+            y: yAxis("Ping (ms) — niżej = lepiej", cap == null ? {} : { max: cap }),
           },
           plugins: {
-            legend: { labels: { color: legendColor } },
+            legend: { labels: { color: legendColor, usePointStyle: false, boxWidth: 28 } },
+            tooltip: {
+              callbacks: {
+                label(ctx) {
+                  const raw = ctx.raw || {};
+                  const value = typeof raw.real === "number" ? raw.real : ctx.parsed.y;
+                  return `${ctx.dataset.label}: ${typeof value === "number" ? value.toFixed(1) : "–"} ms`;
+                },
+              },
+            },
           },
         },
-        plugins: [qualityBackgroundPlugin],
-      });
-    } else {
-      chart.data.datasets = datasets;
-      chart.options.plugins.legend.labels.color = legendColor;
+      },
+      boxes
+    );
+
+    if (lossCanvas) {
+      lossChart = upsertChart(
+        lossChart,
+        lossCanvas,
+        {
+          type: "bar",
+          data: { datasets: lossSets },
+          options: {
+            responsive: true,
+            animation: false,
+            interaction: { mode: "nearest", axis: "x", intersect: false },
+            scales: {
+              //: `offset: false` — słupki na osi czasu domyślnie dostają zapas po
+              //: bokach, przez co oś rozjeżdża się z wykresem pingu nad nimi.
+              x: { ...xScale, offset: false, ticks: { ...xScale.ticks, display: false } },
+              y: yAxis("Utrata (%)", { suggestedMax: 1 }),
+            },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label(ctx) {
+                    const v = ctx.parsed.y;
+                    return `${ctx.dataset.label}: ${typeof v === "number" ? `${v.toFixed(2)}%` : "–"}`;
+                  },
+                },
+              },
+            },
+          },
+        },
+        boxes
+      );
     }
-    chart.$quality = { boxes };
-    chart.update();
 
     const caption = qs("q-chart-caption");
     if (caption) {
       const bucket = timeline.bucket_seconds;
       const lastComplete = timeline.last_complete_bucket;
       const parts = [];
-      if (bucket) parts.push(`kubełek: ${bucket >= 60 ? `${Math.round(bucket / 60)} min` : `${bucket} s`}`);
+      if (bucket) {
+        parts.push(`jeden punkt = ${bucket >= 60 ? `${Math.round(bucket / 60)} min` : `${bucket} s`} pomiarów`);
+      }
       if (lastComplete) parts.push(`dane do: ${lastComplete}`);
+      if (clippedCount > 0) {
+        parts.push(`▲ ${clippedCount} pkt poza skalą (najwyżej ${clippedMax.toFixed(1)} ms) — skala pingu kończy się na ${cap} ms`);
+      }
+      const anyLoss = lossSets.some((set) => set.data.some((d) => typeof d.y === "number" && d.y > 0));
+      if (lossSets.length && !anyLoss) parts.push("w wybranych celach nie zgubiono żadnych pakietów ✓");
       caption.textContent = parts.join(" · ");
     }
   }
@@ -567,12 +773,31 @@ const Quality = (() => {
   // tabela statystyk
   // ---------------------------------------------------------------------
 
+  function ratingBadge(rating) {
+    return `<span class="q-rating q-rating-${rating}">${RATING_LABELS[rating] || RATING_LABELS.unknown}</span>`;
+  }
+
+  let lastStats = null;
+  let lastIncidentCount = null;
+
+  /** Zdanie nad wykresami; odświeżane, gdy dojdzie statystyka albo incydenty. */
+  function renderSummary() {
+    const el = qs("q-summary");
+    if (!el || !lastStats) return;
+    const { tone, text } = summarizeStats(lastStats.targets || [], lastIncidentCount);
+    el.className = `q-summary q-summary-${tone}`;
+    el.innerHTML = text;
+  }
+
   function buildStatsRow(entry) {
     const tr = document.createElement("tr");
     const t = entry.target || {};
     const s = entry.stats || {};
     const source = entry.data_source;
-    const nameCell = `<td>${_escHtml(t.name || "")}</td><td>${_escHtml(t.protocol || "")}</td>`;
+    //: Opis tego, co dla danej metody znaczy "strata", ląduje w podpowiedzi
+    //: (najechanie myszką) zamiast powtarzać się tekstem w każdym wierszu.
+    const noteTitle = _escHtml(entry.note || "");
+    const nameCell = `<td>${_escHtml(t.name || "")}</td><td title="${noteTitle}">${_escHtml(t.protocol || "")}</td>`;
     if (source === "none") {
       tr.innerHTML = `${nameCell}<td colspan="12" class="tool-muted" style="font-style:italic;text-align:center;">brak danych</td>`;
       return tr;
@@ -588,19 +813,21 @@ const Quality = (() => {
       <td>${s.ok ?? 0}</td>
       <td>${s.timeouts ?? 0}</td>
       <td title="${_escHtml(errTitle)}">${s.errors ?? 0}</td>
-      <td>${fmtPct(s.loss_pct)}${lossSuffix}</td>
-      <td>${fmtNum(s.rtt_p50_ms)}</td>
-      <td>${fmtNum(s.rtt_p95_ms)}</td>
-      <td>${fmtNum(s.rtt_p99_ms)}</td>
-      <td>${fmtNum(s.rtt_max_ms)}</td>
-      <td>${fmtNum(s.rtt_variation_ms)}</td>
+      <td title="${noteTitle}">${fmtPct(s.loss_pct)}${lossSuffix}</td>
+      <td>${fmtMs(s.rtt_p50_ms)}</td>
+      <td>${fmtMs(s.rtt_p95_ms)}</td>
+      <td>${fmtMs(s.rtt_p99_ms)}</td>
+      <td>${fmtMs(s.rtt_max_ms)}</td>
+      <td>${fmtMs(s.rtt_variation_ms)}</td>
       <td>${s.longest_fail_streak ?? 0}</td>
-      <td>${_escHtml(entry.note || "")}</td>
+      <td>${ratingBadge(rateTarget(entry))}</td>
     `;
     return tr;
   }
 
   function renderStats(data) {
+    lastStats = data;
+    renderSummary();
     const tbody = qs("q-stats-tbody");
     if (tbody) {
       tbody.innerHTML = "";
@@ -613,11 +840,10 @@ const Quality = (() => {
         const measured = entries.filter((e) => e.data_source !== "none");
         const sum = buildSumRow(measured);
         sumRow.innerHTML = `
-          <td><b>Razem</b></td><td></td>
+          <td title="Suma liczników ze wszystkich celów; utrata liczona z sum, nie jako średnia procentów"><b>Razem</b></td><td></td>
           <td>${sum.attempts}</td><td>${sum.ok}</td><td>${sum.timeouts}</td><td>${sum.errors}</td>
           <td>${fmtPct(sum.loss_pct)}</td>
-          <td>–</td><td>–</td><td>–</td><td>–</td><td>–</td><td>–</td>
-          <td class="tool-muted">Σ liczników</td>
+          <td>–</td><td>–</td><td>–</td><td>–</td><td>–</td><td>–</td><td>–</td>
         `;
       }
     }
@@ -1502,46 +1728,51 @@ const Quality = (() => {
       qs("q-incidents-hide-expected")?.checked === true
     );
 
-    const [statusResult, statsResult, timelineResult, incidentsResult, targetsResult] = await Promise.allSettled([
-      fetchJson("/api/quality/status"),
-      fetchJson(`/api/quality/stats?${params.toString()}`),
-      fetchJson(`/api/quality/timeline?${timelineParams.toString()}`),
-      fetchJson(`/api/quality/incidents?${incidentParams}`),
-      fetchJson("/api/targets"),
+    //: Każda odpowiedź rysuje się, gdy tylko przyjdzie: plakietki stanu i lista
+    //: incydentów nie czekają na najcięższe zapytanie (statystyki i oś czasu
+    //: czytają cały dzień surowych prób). `bucket_seconds` w statystykach nie
+    //: zmienia żadnej liczby — pozwala serwerowi policzyć oba widoki jednym
+    //: przebiegiem po danych.
+    const statsParams = new URLSearchParams(params);
+    statsParams.set("bucket_seconds", String(bucket));
+    setLoadingState();
+    const settle = (promise, render) =>
+      promise.then(render).catch((err) => showRangeError(err));
+
+    await Promise.allSettled([
+      settle(fetchJson("/api/quality/status"), renderStatus),
+      settle(fetchJson("/api/targets"), (data) => {
+        targetsCache = data.items || [];
+        renderTargetsTable(targetsCache);
+      }),
+      settle(fetchJson(`/api/quality/incidents?${incidentParams}`), (data) => {
+        const items = data.items || [];
+        lastIncidentCount = items.length;
+        renderSummary();
+        renderIncidents(items, data.expected_hidden);
+      }),
+      settle(fetchJson(`/api/quality/stats?${statsParams.toString()}`), renderStats),
+      settle(fetchJson(`/api/quality/timeline?${timelineParams.toString()}`), (timeline) => {
+        lastTimeline = timeline;
+        renderTargetToggles((lastTimeline.targets || []).map((e) => e.target));
+        renderChart(lastTimeline);
+        renderAnnotationsList(lastTimeline.annotations || []);
+      }),
     ]);
+  }
 
-    if (statusResult.status === "fulfilled") {
-      renderStatus(statusResult.value);
-    } else {
-      showRangeError(statusResult.reason);
+  /** Od razu pokaż, że dane się ładują, zamiast pustych ramek. */
+  function setLoadingState() {
+    const summary = qs("q-summary");
+    if (summary && !lastStats) {
+      summary.className = "q-summary";
+      summary.textContent = "Ładowanie danych…";
     }
-
-    if (targetsResult.status === "fulfilled") {
-      targetsCache = targetsResult.value.items || [];
-      renderTargetsTable(targetsCache);
-    } else {
-      showRangeError(targetsResult.reason);
-    }
-
-    if (statsResult.status === "fulfilled") {
-      renderStats(statsResult.value);
-    } else {
-      showRangeError(statsResult.reason);
-    }
-
-    if (timelineResult.status === "fulfilled") {
-      lastTimeline = timelineResult.value;
-      renderTargetToggles((lastTimeline.targets || []).map((e) => e.target));
-      renderChart(lastTimeline);
-      renderAnnotationsList(lastTimeline.annotations || []);
-    } else {
-      showRangeError(timelineResult.reason);
-    }
-
-    if (incidentsResult.status === "fulfilled") {
-      renderIncidents(incidentsResult.value.items || [], incidentsResult.value.expected_hidden);
-    } else {
-      showRangeError(incidentsResult.reason);
+    const caption = qs("q-chart-caption");
+    if (caption && !lastTimeline) caption.textContent = "Ładowanie wykresu…";
+    const tbody = qs("q-stats-tbody");
+    if (tbody && !tbody.children.length) {
+      tbody.innerHTML = '<tr><td colspan="14" class="tool-muted" style="font-style:italic;text-align:center;">Ładowanie statystyk…</td></tr>';
     }
   }
 
@@ -1615,6 +1846,9 @@ const Quality = (() => {
     incidentExpectedBadge,
     buildChartBoxes,
     pickBucketSeconds,
+    rateTarget,
+    pingAxisCap,
+    summarizeStats,
     buildSumRow,
     lossValueForPoint,
     schedulerWarnings,
