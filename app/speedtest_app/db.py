@@ -67,6 +67,36 @@ def db_conn(db_path: str) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+#: One idle connection per database, kept open for the life of the process.
+_held: dict[str, sqlite3.Connection] = {}
+
+
+def hold_connection(db_path: str) -> None:
+    """Keep one idle connection to ``db_path`` open until :func:`release_connection`.
+
+    Every ``db_conn`` opens and closes its own connection. SQLite checkpoints
+    and removes the WAL when the *last* connection to a database closes, so
+    without a long-lived one each short write ended in a full checkpoint with
+    three fsyncs (WAL, database, directory). On a copy-on-write filesystem such
+    as btrfs that costs far more than the few KB written. With this connection
+    held, the WAL is checkpointed by SQLite's own auto-checkpoint instead, and
+    ``checkpoint_wal`` still truncates it after each retention pass.
+    """
+    if db_path in _held:
+        return
+    conn = _connect(db_path)
+    # A first read maps the wal-index, which is what makes later closes of
+    # other connections "not the last one".
+    conn.execute("SELECT 1 FROM meta LIMIT 1").fetchall()
+    _held[db_path] = conn
+
+
+def release_connection(db_path: str) -> None:
+    conn = _held.pop(db_path, None)
+    if conn is not None:
+        conn.close()
+
+
 @contextmanager
 def streaming_conn(db_path: str) -> Iterator[sqlite3.Connection]:
     """A read connection for a cursor a *generator* is walked with.

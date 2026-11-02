@@ -6,7 +6,36 @@ from __future__ import annotations
 import threading
 import time
 
-from speedtest_app.db import checkpoint_wal, db_conn, integrity_quick_check, set_setting
+import os
+
+from speedtest_app.db import (
+    checkpoint_wal,
+    db_conn,
+    hold_connection,
+    integrity_quick_check,
+    release_connection,
+    set_setting,
+)
+
+
+def test_closing_the_last_connection_checkpoints_and_removes_the_wal(db_path: str) -> None:
+    """The cost `hold_connection` avoids: a full checkpoint after every short write."""
+    set_setting(db_path, "k", "v", source="env")
+
+    assert not os.path.exists(db_path + "-wal")
+
+
+def test_a_held_connection_keeps_the_wal_between_short_writes(db_path: str) -> None:
+    hold_connection(db_path)
+    try:
+        set_setting(db_path, "k", "v", source="env")
+
+        assert os.path.getsize(db_path + "-wal") > 0
+        with db_conn(db_path) as conn:
+            assert conn.execute("SELECT value FROM settings WHERE key = 'k'").fetchone()["value"] == "v"
+    finally:
+        release_connection(db_path)
+    assert not os.path.exists(db_path + "-wal")
 
 
 def test_integrity_quick_check_reports_ok_on_a_fresh_migrated_db(db_path: str) -> None:

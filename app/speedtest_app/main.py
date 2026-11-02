@@ -25,6 +25,8 @@ from .db import (
     TimeRange,
     ensure_db,
     ensure_default_setting,
+    hold_connection,
+    release_connection,
     get_connectivity_period,
     get_current_connectivity_period,
     get_last_speed_test,
@@ -168,6 +170,7 @@ async def _integrity_check_in_background() -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start the monitor with the app and stop it before the app goes away."""
     init_runtime()
+    hold_connection(cfg.db_path)
     _reconcile_gateway_host_from_env()
     state = RunningState(stop=asyncio.Event())
     app.state.running_state = state
@@ -217,6 +220,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         tracker.stop(to_iso_z(utc_now()))
+        release_connection(cfg.db_path)
 
 
 app = FastAPI(title="Speedtest Monitor", version=APP_VERSION, lifespan=lifespan)
