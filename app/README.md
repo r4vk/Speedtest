@@ -198,7 +198,9 @@ W panelu: **Ustawienia → Urządzenia wysyłające wyniki → Dodaj urządzenie
 wklej go w ustawieniach NetLoga. Wyniki urządzeń **nie są wliczane** do statystyk, incydentów, agregatów,
 raportu ani eksportów serwera — widać je tylko w sekcji „Porównanie: urządzenie i ten serwer”, na tych samych
 przedziałach czasu co pomiary serwera. Przyjmowane są wyniki tylko dla celów, które serwer zna (po nazwie albo
-po protokole i adresie, np. `1.1.1.1` → `cloudflare-dns`).
+po protokole i adresie, np. `1.1.1.1` → `cloudflare-dns`). Wysłane wyniki nie są zapisywane od razu — trafiają
+do tego samego bufora w pamięci co pomiary serwera i zapisują się razem z nimi co `PROBE_FLUSH_SECONDS`, więc
+urządzenie nie budzi dysku częściej niż sam serwer. Pełny bufor odpowiada `503` i urządzenie ponawia wysyłkę później.
 
 API: `POST /api/devices`, `GET /api/devices`, `DELETE /api/devices/{id}`, `POST /api/ingest/results`
 (nagłówek `Authorization: Bearer <token>`), `GET /api/quality/compare?device=<id>`. Szczegóły:

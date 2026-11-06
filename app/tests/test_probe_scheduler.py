@@ -657,3 +657,42 @@ async def test_hard_guard_kills_a_hanging_probe_and_the_loop_continues() -> None
 
         await fake.advance(1.0)  # the loop is alive and takes the next tick
         assert calls == 2
+
+
+# --------------------------------------------------------------------------
+# rows uploaded by other devices (stage 9)
+# --------------------------------------------------------------------------
+
+async def test_external_rows_are_buffered_but_never_feed_nas_state() -> None:
+    from dataclasses import replace
+
+    import pytest
+
+    from speedtest_app.probe_scheduler import BufferFullError
+
+    fake = FakeTime()
+    target = make_target(1)
+    writer = FakeWriter()
+    seen: list[ProbeResult] = []
+    flushed: list[int] = []
+    scheduler = build_scheduler(fake, [], {}, writer, buffer_hard_max=3)
+    scheduler.on_result(seen.append)
+    scheduler.on_flushed(lambda: flushed.append(1))
+
+    mac = [
+        replace(make_result(target, fake), device_id="mac", external_id=f"{i}:gateway")
+        for i in range(2)
+    ]
+    scheduler.enqueue_external(mac)
+    assert scheduler.pending_external_ids("mac") == {"0:gateway", "1:gateway"}
+    assert scheduler.recent(target.id, 600) == [] and seen == []
+    assert writer.written == []
+
+    with pytest.raises(BufferFullError):
+        scheduler.enqueue_external(mac)  # 2 + 2 > 3: refused whole, nothing dropped
+    assert scheduler.stats().dropped_rows == 0
+
+    assert await scheduler.flush_now()
+    assert [r.external_id for r in writer.written] == ["0:gateway", "1:gateway"]
+    assert scheduler.pending_external_ids("mac") == set()
+    assert flushed == [1]

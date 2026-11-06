@@ -8,13 +8,22 @@ names its targets differently (NetLog's ``internet`` is the NAS's
 never turned into new targets: a new target would make the NAS probe it too.
 
 Re-sending a batch is safe: ``(device_id, external_id)`` is unique, so rows
-already stored count as duplicates instead of being written twice.
+already stored or still waiting in memory count as duplicates.
+
+Uploads are not written on arrival. They join the probe scheduler's
+in-memory buffer and reach SQLite with the NAS's own rows, every
+``PROBE_FLUSH_SECONDS``, so a device uploading every few minutes does not wake
+the disk more often than the NAS itself. The device's "last seen" is kept in
+memory too and written after each flush. A buffer that cannot take an upload
+answers 503 and the device retries later; rows already acknowledged are lost
+only on an abrupt stop, exactly like the NAS's own buffered rows.
 """
 from __future__ import annotations
 
 import hashlib
 import re
 import secrets
+import threading
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -178,13 +187,23 @@ def _parse_result(
     )
 
 
-def ingest_results(
+@dataclass
+class PreparedUpload:
+    """A validated upload: new rows to store, plus counters for the response."""
+
+    device: Mapping[str, Any]
+    rows: list[ProbeResult]
+    outcome: IngestOutcome
+    seen_at: str
+
+
+def prepare_upload(
     db_path: str,
     device: Mapping[str, Any],
     body: Mapping[str, Any],
     now: datetime | None = None,
-) -> IngestOutcome:
-    """Validate and store one upload of ``device``; see the module docstring."""
+) -> PreparedUpload:
+    """Validate ``body`` and drop rows already stored; reads the database, never writes it."""
     device_id = str(device["id"])
     if str(body.get("device_id") or device_id) != device_id:
         raise IngestError("device_id nie zgadza się z tokenem", status=403)
@@ -217,15 +236,49 @@ def ingest_results(
         seen.add(result.external_id)  # type: ignore[arg-type]
         valid.append(result)
 
-    written = quality_db.insert_probe_results(db_path, valid) if valid else 0
-    outcome.accepted = written
-    outcome.duplicates += len(valid) - written
-    quality_db.upsert_device(
-        db_path,
-        device_id,
-        str(device["name"]),
-        str(device["kind"]),
-        last_seen_at=to_iso_z(now),
-        last_skew_ms=outcome.skew_ms,
-    )
-    return outcome
+    stored = quality_db.existing_external_ids(db_path, device_id, [r.external_id for r in valid])
+    fresh = [r for r in valid if r.external_id not in stored]
+    outcome.duplicates += len(valid) - len(fresh)
+    return PreparedUpload(device=device, rows=fresh, outcome=outcome, seen_at=to_iso_z(now))
+
+
+# -- "last seen" of devices, written together with the buffered rows ---------
+
+_seen_lock = threading.Lock()
+_pending_seen: dict[tuple[str, str], tuple[Mapping[str, Any], str, float | None]] = {}
+
+
+def remember_seen(db_path: str, upload: PreparedUpload) -> None:
+    """Keep the device's last upload in memory until the next buffer flush."""
+    device = upload.device
+    with _seen_lock:
+        _pending_seen[(db_path, str(device["id"]))] = (device, upload.seen_at, upload.outcome.skew_ms)
+
+
+def pending_seen(db_path: str, device_id: str) -> tuple[str, float | None] | None:
+    with _seen_lock:
+        hit = _pending_seen.get((db_path, device_id))
+    return (hit[1], hit[2]) if hit is not None else None
+
+
+def write_pending_seen(db_path: str) -> None:
+    """Persist remembered uploads; registered as the scheduler's after-flush callback."""
+    with _seen_lock:
+        mine = {k: v for k, v in _pending_seen.items() if k[0] == db_path}
+        for key in mine:
+            del _pending_seen[key]
+    for (_, device_id), (device, seen_at, skew_ms) in mine.items():
+        quality_db.upsert_device(
+            db_path, device_id, str(device["name"]), str(device["kind"]),
+            last_seen_at=seen_at, last_skew_ms=skew_ms,
+        )
+
+
+def store_upload_now(db_path: str, upload: PreparedUpload) -> IngestOutcome:
+    """Write directly, for when no probe scheduler is running to buffer the rows."""
+    written = quality_db.insert_probe_results(db_path, upload.rows) if upload.rows else 0
+    upload.outcome.accepted = written
+    upload.outcome.duplicates += len(upload.rows) - written
+    remember_seen(db_path, upload)
+    write_pending_seen(db_path)
+    return upload.outcome

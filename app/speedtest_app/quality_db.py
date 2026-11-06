@@ -915,3 +915,21 @@ def delete_device(db_path: str, device_id: str) -> bool:
     with db_conn(db_path) as conn:
         cur = conn.execute("DELETE FROM devices WHERE id = ? AND kind != 'nas'", (device_id,))
     return cur.rowcount > 0
+
+
+def existing_external_ids(db_path: str, device_id: str, external_ids: Sequence[str | None]) -> set[str]:
+    """Which of ``external_ids`` are already stored for ``device_id`` (a read, chunked)."""
+    wanted = [e for e in external_ids if e]
+    found: set[str] = set()
+    if not wanted:
+        return found
+    with db_conn(db_path) as conn:
+        for i in range(0, len(wanted), 500):
+            chunk = wanted[i : i + 500]
+            marks = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT external_id FROM probe_results WHERE device_id = ? AND external_id IN ({marks})",
+                (device_id, *chunk),
+            ).fetchall()
+            found.update(str(r["external_id"]) for r in rows)
+    return found

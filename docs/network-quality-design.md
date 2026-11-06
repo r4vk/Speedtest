@@ -543,8 +543,18 @@ Exports and report state "surowe dane niedostępne (retencja)" for ranges before
 - Targets are matched by name, then by `(protocol, host)` (NetLog's `internet`/`1.1.1.1` is
   the NAS's `cloudflare-dns`). Unknown targets are rejected with `unknown_target`, never
   created: a new target would make the NAS probe it too.
-- Idempotent through the unique `(device_id, external_id)` index (`INSERT OR IGNORE`); the
-  response returns `{"device_id","accepted","duplicates","rejected":[{"external_id","reason"}],
+- Uploads are buffered, not written on arrival: after validation (and a read-only check of
+  which `external_id`s are already stored), new rows join the probe scheduler's in-memory
+  buffer (`ProbeScheduler.enqueue_external`) and reach SQLite with the NAS's own rows every
+  `PROBE_FLUSH_SECONDS` / `PROBE_FLUSH_MAX`. They never enter `recent()` or the result
+  callbacks, so availability and incidents stay NAS-only. If the buffer cannot take the whole
+  batch without exceeding `PROBE_BUFFER_HARD_MAX`, the answer is 503 with `Retry-After: 60`
+  and nothing is taken. The device's `last_seen_at`/`last_skew_ms` are held in memory and
+  written by the scheduler's after-flush callback; `GET /api/devices` already shows them.
+  Acknowledged rows can be lost on an abrupt stop, like the NAS's own buffered rows. Without a
+  running scheduler (tools, tests) the upload is written directly.
+- Idempotent through the unique `(device_id, external_id)` index (`INSERT OR IGNORE`) and the
+  rows still waiting in the buffer; the response returns `{"device_id","accepted","duplicates","rejected":[{"external_id","reason"}],
   "skew_ms"}`. Rejected rows will be rejected again on retry; the client must not resend them.
 - Clock skew: the server stores `last_skew_ms = server_now - sent_at` on the device; the
   timeline offsets nothing — it reports skew so a human can judge.

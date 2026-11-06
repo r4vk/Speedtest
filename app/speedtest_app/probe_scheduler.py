@@ -19,7 +19,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Awaitable, Callable, Iterable, Sequence
 
 from .probe_types import Outcome, ProbeResult, ProbeTarget, Protocol
 from .quality_db import insert_probe_results, list_targets
@@ -129,6 +129,8 @@ class ProbeScheduler:
         self._tasks: dict[int, asyncio.Task[None]] = {}
         self._buffer: deque[ProbeResult] = deque()
         self._inflight = 0
+        self._inflight_rows: list[ProbeResult] = []
+        self._flushed_callbacks: list[Callable[[], None]] = []
         self._recent: dict[int, deque[tuple[float, ProbeResult]]] = {}
         self._skipped_ticks: dict[int, int] = {}
         self._restarts: dict[int, int] = {}
@@ -367,6 +369,43 @@ class ProbeScheduler:
                 self._dropped_rows,
             )
 
+    # -- rows from other devices (stage 9) --------------------------------
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def pending_external_ids(self, device_id: str) -> set[str]:
+        """External ids of ``device_id`` waiting in memory (buffered or being written)."""
+        return {
+            row.external_id
+            for row in (*self._buffer, *self._inflight_rows)
+            if row.device_id == device_id and row.external_id is not None
+        }
+
+    def enqueue_external(self, rows: Sequence[ProbeResult]) -> None:
+        """Buffer uploaded rows; they are written with the next flush, like the NAS's own.
+
+        They never reach `recent()` or the result callbacks: availability and
+        incidents describe the NAS only. Raises `BufferFullError` instead of
+        pushing out older rows, so the device keeps its queue and retries.
+        """
+        if not rows:
+            return
+        if len(self._buffer) + self._inflight + len(rows) > self._buffer_hard_max:
+            raise BufferFullError(len(self._buffer) + self._inflight, self._buffer_hard_max)
+        self._buffer.extend(rows)
+        if len(self._buffer) >= self._flush_max:
+            self._flush_signal.set()
+
+    def on_flushed(self, callback: Callable[[], None]) -> None:
+        """Run ``callback`` in a worker thread after every successful flush."""
+        self._flushed_callbacks.append(callback)
+
+    async def flush_now(self) -> bool:
+        """Write the buffer immediately (tests, shutdown helpers)."""
+        return await self._flush_once()
+
     def recent(self, target_id: int, seconds: float) -> list[ProbeResult]:
         """In-memory results of the last ``seconds``, oldest first."""
         ring = self._recent.get(target_id)
@@ -437,14 +476,17 @@ class ProbeScheduler:
         rows = list(self._buffer)
         self._buffer.clear()
         self._inflight = len(rows)
+        self._inflight_rows = rows
         try:
             written = await _call(self._writer, self._db_path, rows)
         except asyncio.CancelledError:
             self._buffer.extendleft(reversed(rows))
             self._inflight = 0
+            self._inflight_rows = []
             raise
         except Exception as exc:
             self._inflight = 0
+            self._inflight_rows = []
             self._buffer.extendleft(reversed(rows))
             self._enforce_hard_max()
             self._flush_errors += 1
@@ -457,8 +499,16 @@ class ProbeScheduler:
             )
             return False
         self._inflight = 0
+        self._inflight_rows = []
         self._last_flush_at = to_iso_z(self._wall_clock())
         logger.debug("flushed %d probe result(s) (%s written)", len(rows), written)
+        for callback in self._flushed_callbacks:
+            try:
+                await _call(callback)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("after-flush callback failed")
         return True
 
     # -- reloading ---------------------------------------------------------
@@ -474,6 +524,15 @@ class ProbeScheduler:
             raise
         except Exception:  # pragma: no cover - defensive
             logger.exception("target reload loop crashed")
+
+
+class BufferFullError(RuntimeError):
+    """The buffer cannot take an upload without dropping rows."""
+
+    def __init__(self, buffered: int, hard_max: int) -> None:
+        super().__init__(f"probe buffer holds {buffered} of {hard_max} rows")
+        self.buffered = buffered
+        self.hard_max = hard_max
 
 
 def _default_target_loader(db_path: str) -> list[ProbeTarget]:

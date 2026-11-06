@@ -179,6 +179,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_tracker = tracker
     engine = QualityEngine(cfg, app_version=APP_VERSION, device_id=DEVICE_ID)
     app.state.quality_engine = engine
+    # Uploaded rows ride the probe buffer; the devices' "last seen" follows each flush.
+    engine.scheduler.on_flushed(lambda: api_ingest.ingest.write_pending_seen(cfg.db_path))
     try:
         await engine.start()
         app.state.tasks = [

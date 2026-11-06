@@ -9,12 +9,14 @@
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal, Mapping
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from . import ingest, quality_db
+from .probe_scheduler import BufferFullError, ProbeScheduler
 from .quality_views import (
     db_path_of,
     get_range,
@@ -38,21 +40,27 @@ class DeviceCreate(BaseModel):
     id: str | None = Field(default=None, max_length=40)
 
 
-def device_payload(row: Mapping[str, Any]) -> dict[str, Any]:
+def device_payload(row: Mapping[str, Any], db_path: str | None = None) -> dict[str, Any]:
+    """A device as the panel shows it; an upload not yet flushed counts as seen."""
+    last_seen, skew = row.get("last_seen_at"), row.get("last_skew_ms")
+    pending = ingest.pending_seen(db_path, str(row["id"])) if db_path else None
+    if pending is not None:
+        last_seen, skew = pending
     return {
         "id": row["id"],
         "name": row["name"],
         "kind": row["kind"],
         "created_at": local_iso(row.get("created_at")),
-        "last_seen_at": local_iso(row.get("last_seen_at")),
-        "last_skew_ms": row.get("last_skew_ms"),
+        "last_seen_at": local_iso(last_seen),
+        "last_skew_ms": skew,
         "can_ingest": row["kind"] != "nas" and bool(row.get("token_hash")),
     }
 
 
 @router.get("/devices")
 def api_list_devices(request: Request) -> dict[str, Any]:
-    return {"items": [device_payload(row) for row in quality_db.list_devices(db_path_of(request))]}
+    db_path = db_path_of(request)
+    return {"items": [device_payload(row, db_path) for row in quality_db.list_devices(db_path)]}
 
 
 @router.post("/devices", status_code=201)
@@ -74,22 +82,52 @@ def api_delete_device(request: Request, device_id: str) -> dict[str, Any]:
 
 
 @router.post("/ingest/results")
-def api_ingest_results(
+async def api_ingest_results(
     request: Request,
     body: dict[str, Any] = Body(...),
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
+    """Validate in a worker thread, then hand the new rows to the probe buffer.
+
+    Buffering touches the scheduler's deque, which belongs to the event loop,
+    so this handler is async and only the database reads run in a thread.
+    """
     db_path = db_path_of(request)
-    device = ingest.authenticate(db_path, authorization)
+    device = await asyncio.to_thread(ingest.authenticate, db_path, authorization)
     if device is None:
         raise HTTPException(
             status_code=401, detail="brak lub zły token", headers={"WWW-Authenticate": "Bearer"}
         )
     try:
-        outcome = ingest.ingest_results(db_path, device, body)
+        upload = await asyncio.to_thread(ingest.prepare_upload, db_path, device, body)
     except ingest.IngestError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
-    return {"device_id": device["id"], **outcome.payload()}
+
+    scheduler = _running_scheduler(request)
+    if scheduler is None:
+        outcome = await asyncio.to_thread(ingest.store_upload_now, db_path, upload)
+        return {"device_id": device["id"], **outcome.payload()}
+
+    pending = scheduler.pending_external_ids(str(device["id"]))
+    rows = [row for row in upload.rows if row.external_id not in pending]
+    try:
+        scheduler.enqueue_external(rows)
+    except BufferFullError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="bufor zapisu jest pełny, spróbuj później",
+            headers={"Retry-After": "60"},
+        ) from exc
+    upload.outcome.accepted = len(rows)
+    upload.outcome.duplicates += len(upload.rows) - len(rows)
+    ingest.remember_seen(db_path, upload)
+    return {"device_id": device["id"], **upload.outcome.payload()}
+
+
+def _running_scheduler(request: Request) -> ProbeScheduler | None:
+    engine = getattr(request.app.state, "quality_engine", None)
+    scheduler = getattr(engine, "scheduler", None)
+    return scheduler if isinstance(scheduler, ProbeScheduler) and scheduler.running else None
 
 
 def _side(rows: list[dict[str, Any]], bucket: float, pr: ParsedRange) -> dict[str, Any]:
@@ -142,6 +180,6 @@ def api_quality_compare(
         "range": range_payload(pr.start, pr.end),
         "tz": tz_name(),
         "bucket_seconds": bucket,
-        "device": device_payload(row),
+        "device": device_payload(row, db_path),
         "targets": series,
     }

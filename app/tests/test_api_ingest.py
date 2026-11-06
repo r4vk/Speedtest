@@ -28,6 +28,14 @@ def _result(ext, target, host, outcome="ok", rtt=4.2, offset_s=0):
     }
 
 
+def _scheduler(client):
+    return client.app.state.quality_engine.scheduler
+
+
+def _flush(client):
+    assert client.portal.call(_scheduler(client).flush_now)
+
+
 def _batch(device_id, results):
     return {"device_id": device_id, "sent_at": to_iso_z(utc_now()), "results": results}
 
@@ -64,6 +72,11 @@ def test_ingest_matches_targets_and_is_idempotent(client):
     ]
     assert body["skew_ms"] is not None
 
+    # Still in memory: a resend is recognised from the buffer...
+    again = client.post("/api/ingest/results", json=_batch(device_id, results[:2]), headers=auth)
+    assert (again.json()["accepted"], again.json()["duplicates"]) == (0, 2)
+    _flush(client)
+    # ...and once written, from the database.
     again = client.post("/api/ingest/results", json=_batch(device_id, results[:2]), headers=auth)
     assert (again.json()["accepted"], again.json()["duplicates"]) == (0, 2)
 
@@ -81,6 +94,7 @@ def test_uploaded_rows_do_not_change_nas_stats(client):
     before = client.get("/api/quality/stats").json()
     results = [_result(f"{i}:internet", "internet", "1.1.1.1", outcome="timeout") for i in range(5)]
     client.post("/api/ingest/results", json=_batch(device_id, results), headers=auth)
+    _flush(client)
     after = client.get("/api/quality/stats").json()
     assert [t["stats"] for t in after["targets"]] == [t["stats"] for t in before["targets"]]
 
@@ -130,6 +144,7 @@ def test_compare_puts_device_next_to_nas_on_same_buckets(client):
         item["started_at"] = to_iso_z(t0 + timedelta(seconds=i))
         mac.append(item)
     client.post("/api/ingest/results", json=_batch(device_id, mac), headers=auth)
+    _flush(client)
 
     resp = client.get("/api/quality/compare", params={
         "device": device_id, "from": to_iso_z(t0 - timedelta(minutes=1)), "to": to_iso_z(t0 + timedelta(minutes=2)),
@@ -143,3 +158,30 @@ def test_compare_puts_device_next_to_nas_on_same_buckets(client):
     assert [p["t"] for p in side["nas"]["points"]] == [p["t"] for p in side["device"]["points"]]
 
     assert client.get("/api/quality/compare", params={"device": "nas"}).status_code == 404
+
+
+def test_upload_waits_in_memory_until_the_buffer_flushes(client):
+    device_id, auth = _register(client)
+    db_path = client.app_db_path
+    batch = _batch(device_id, [_result("1:internet", "internet", "1.1.1.1")])
+    assert client.post("/api/ingest/results", json=batch, headers=auth).json()["accepted"] == 1
+
+    everything = ("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z")
+    assert quality_db.query_probe_results(db_path, *everything, device_id=device_id) == []
+    assert quality_db.get_device(db_path, device_id)["last_seen_at"] is None
+    listed = next(d for d in client.get("/api/devices").json()["items"] if d["id"] == device_id)
+    assert listed["last_seen_at"] is not None  # the panel already shows the upload
+
+    _flush(client)
+    assert len(quality_db.query_probe_results(db_path, *everything, device_id=device_id)) == 1
+    assert quality_db.get_device(db_path, device_id)["last_seen_at"] is not None
+
+
+def test_full_buffer_answers_503_and_keeps_nothing(client, monkeypatch):
+    device_id, auth = _register(client)
+    scheduler = _scheduler(client)
+    monkeypatch.setattr(scheduler, "_buffer_hard_max", len(scheduler._buffer) + scheduler._inflight + 1)
+    batch = _batch(device_id, [_result(f"{i}:internet", "internet", "1.1.1.1") for i in range(2)])
+    resp = client.post("/api/ingest/results", json=batch, headers=auth)
+    assert resp.status_code == 503 and resp.headers["retry-after"] == "60"
+    assert scheduler.pending_external_ids(device_id) == set()
