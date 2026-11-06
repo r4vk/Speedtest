@@ -165,12 +165,15 @@ wysyłki: starsza wersja odpowiada 404 i NetLog pokazuje, że trzeba ją zaktual
   te timeouty jako straty, a sen nie jest awarią.
 
 **Rytm i błędy:**
-- paczka do 1000 wyników co 60 s, przy zaległości następna po 5 s, od razu po wybudzeniu i powrocie sieci;
+- paczka do 1000 wyników co 5 min (`NETLOG_UPLOAD_EVERY`, domyślnie 300 s), przy zaległości następna po 5 s,
+  od razu po wybudzeniu i powrocie sieci. Częściej nie ma sensu: NAS trzyma przyjęte wyniki w pamięci
+  i zapisuje je do bazy razem ze swoimi pomiarami co `PROBE_FLUSH_SECONDS`;
 - przyjęte, duplikaty i odrzucone wychodzą z kolejki (`upload_status` = `sent` albo `rejected:<powód>`),
   bo odrzucony wiersz byłby odrzucany przy każdej próbie;
 - 401 (zły lub unieważniony token) albo 403 (identyfikator nie pasuje do tokenu) zatrzymują wysyłkę,
   a popover i Ustawienia pokazują to na czerwono. Po poprawce: „Zapisz” albo „Wyślij teraz”;
-- 413 zmniejsza paczkę o połowę. Przy 5xx, braku sieci i timeoucie odstęp rośnie 60 s → 2 → 4 → 8 → 15 min,
+- 503 z `Retry-After` (bufor NAS-a pełny, nic z paczki nie przyjęto): ponowienie po tylu sekundach, ile poda NAS;
+- 413 zmniejsza paczkę o połowę. Przy innych 5xx, braku sieci i timeoucie odstęp rośnie 5 → 10 → 15 min,
   a kolejka zostaje (SQLite trzyma 7 dni);
 - `external_id = "<epoch_ms>:<cel>"`, więc powtórka po zerwanym połączeniu daje duplikaty, a nie podwójne wiersze.
 

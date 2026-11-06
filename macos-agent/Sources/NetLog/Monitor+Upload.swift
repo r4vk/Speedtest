@@ -29,7 +29,8 @@ enum UploadState: Equatable {
     }
 }
 
-/// Wysyłka kolejki SQLite: paczka do 1000 wierszy co minutę (szybciej, gdy jest zaległość),
+/// Wysyłka kolejki SQLite: paczka do 1000 wierszy co 5 minut (szybciej, gdy jest zaległość),
+/// bo NAS i tak zapisuje przyjęte wiersze do bazy dopiero razem ze swoim buforem;
 /// od razu po wybudzeniu, z rosnącym odstępem przy błędach. 401/403 zatrzymują wysyłkę do zmiany ustawień.
 extension Monitor {
     var uploadConfigured: Bool { config.ingestDeviceID != nil && ingestToken != nil }
@@ -126,6 +127,13 @@ extension Monitor {
         case .tooLarge:
             uploadBatchLimit = max(50, limit / 2)
             nextUploadAt = now + 5
+        case .busy(let after):
+            // Bufor NAS-a pełny: nic nie przyjęto, kolejka zostaje; NAS sam mówi, kiedy wrócić.
+            if !uploadState.isProblem {
+                event("WYSYŁKA wstrzymana na \(after) s: bufor NAS-a pełny (HTTP 503), kolejka zostaje", kind: "upload_busy")
+            }
+            uploadState = .retrying("bufor NAS-a pełny, ponowienie za \(after) s")
+            nextUploadAt = now + after
         case .retryLater(let why):
             uploadFailures += 1
             let delay = Ingest.backoff(failures: uploadFailures, base: config.uploadEvery)

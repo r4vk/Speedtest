@@ -9,7 +9,7 @@ public struct Config: Sendable {
     /// Pusty = bez wysyłki. Token jest w pęku kluczy, nie tutaj.
     public var ingestDeviceID: String?
     /// Co ile sekund wysyłać paczkę i ile w niej wierszy.
-    public var uploadEvery: Int = 60
+    public var uploadEvery: Int = 300
     public var uploadBatch: Int = 1000
     /// Router podany ręcznie; domyślnie `nil` = wykrywany z trasy domyślnej.
     public var routerIP: String?
@@ -97,7 +97,7 @@ public struct Config: Sendable {
             nasURL: value("NETLOG_NAS_URL", "nasURL", "http://192.168.10.2:18000/"),
             internetIP: value("NETLOG_INTERNET_IP", "internetIP", "1.1.1.1"),
             ingestDeviceID: Optional(value("NETLOG_INGEST_DEVICE", "ingestDeviceID", "")).flatMap { $0.isEmpty ? nil : $0 },
-            uploadEvery: max(5, Int(value("NETLOG_UPLOAD_EVERY", "uploadEvery", "60")) ?? 60),
+            uploadEvery: max(5, Int(value("NETLOG_UPLOAD_EVERY", "uploadEvery", "300")) ?? 300),
             routerIP: Optional(value("NETLOG_ROUTER_IP", "routerIP", "")).flatMap { $0.isEmpty ? nil : $0 },
             logDir: URL(filePath: logDir, directoryHint: .isDirectory),
             storePath: URL(filePath: store),

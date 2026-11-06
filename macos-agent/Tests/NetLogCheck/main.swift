@@ -184,6 +184,11 @@ enum IngestTests {
         expect(!Ingest.isValidDeviceID("nas"))
         expect(!Ingest.isValidDeviceID("MacBook"))
         expect(!Ingest.isValidDeviceID("-mac"))
+        expect(Ingest.retryAfter("60") == 60 && Ingest.retryAfter(" 5 ") == 5 && Ingest.retryAfter("0") == 1)
+        expect(Ingest.retryAfter("99999") == 3600 && Ingest.retryAfter(nil) == nil && Ingest.retryAfter("Wed, 21 Oct") == nil)
+        let empty = UserDefaults(suiteName: "org.r4vk.netlog.check-defaults")!
+        expect(Config.load(env: [:], defaults: empty).uploadEvery == 300)
+        expect(Ingest.backoff(failures: 1, base: 300) == 300 && Ingest.backoff(failures: 3, base: 300) == 900)
         expect(Ingest.backoff(failures: 1) == 60 && Ingest.backoff(failures: 2) == 120 && Ingest.backoff(failures: 9) == 900)
     }
 

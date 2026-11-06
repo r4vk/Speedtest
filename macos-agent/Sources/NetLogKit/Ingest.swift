@@ -58,6 +58,8 @@ public enum Ingest {
         case forbidden
         /// 413: paczka za duża — następna będzie mniejsza.
         case tooLarge
+        /// 503 z `Retry-After`: bufor NAS-a pełny, nic z paczki nie przyjęto — ponowić po tylu sekundach.
+        case busy(retryAfter: Int)
         /// 5xx, brak sieci, timeout — ponowić później, kolejka zostaje.
         case retryLater(String)
     }
@@ -115,8 +117,18 @@ public enum Ingest {
         case 403: return .forbidden
         case 413: return .tooLarge
         case 404: return .retryLater("NAS nie ma jeszcze API wysyłki (HTTP 404) — potrzebna nowsza wersja Speedtest")
+        case 503:
+            let header = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
+            if let s = retryAfter(header) { return .busy(retryAfter: s) }
+            return .retryLater("bufor zapisu na NAS-ie pełny (HTTP 503)")
         default: return .retryLater("HTTP \(code)")
         }
+    }
+
+    /// `Retry-After` w sekundach (NAS nie używa formy z datą HTTP), w granicach 1 s – 1 h.
+    public static func retryAfter(_ header: String?) -> Int? {
+        guard let v = header?.trimmingCharacters(in: .whitespaces), let n = Int(v), n >= 0 else { return nil }
+        return min(3600, max(1, n))
     }
 
     /// Opóźnienie po kolejnych nieudanych próbach: 60 s, 2, 4, 8 min… najwyżej 15 min.
