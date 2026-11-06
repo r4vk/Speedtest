@@ -57,7 +57,11 @@ Wymagania: macOS 26 lub nowszy i Xcode albo same Command Line Tools (`xcode-sele
 3. Kliknij ikonę Wi-Fi z NetLog w pasku menu i zaznacz **Przy logowaniu**. To zastępuje LaunchAgent
    loggera (SMAppService). macOS może zapytać o zgodę w Ustawieniach > Ogólne > Rzeczy otwierane przy logowaniu.
 
-**Nie widać ikony?** Aplikacja nie ma ikony w Docku, jest tylko w pasku menu. Jeśli jej tam nie ma:
+**Okno.** Ręczne uruchomienie NetLog (Aplikacje, Spotlight, Launchpad) otwiera okno z tym samym widokiem
+co popover. Póki okno jest otwarte, NetLog ma ikonę w Docku. Zamknięcie okna nie kończy pomiarów, a ponowne
+uruchomienie aplikacji je otwiera. Start z „Przy logowaniu” okna nie otwiera.
+
+**Nie widać ikony w pasku menu?** Uruchom NetLog z Aplikacji, żeby otworzyć okno, i sprawdź:
 - Ustawienia systemowe > Pasek menu > „Zezwalaj w pasku menu”: włącz NetLog;
 - na ekranie MacBooka z wcięciem ikony, które się nie mieszczą, chowają się za wcięciem. Zamknij kilka
   innych ikon albo przeciągnij NetLog bliżej zegara (⌘ + przeciągnięcie).

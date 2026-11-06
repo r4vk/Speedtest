@@ -27,8 +27,13 @@ struct NetLogApp: App {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private var window: NSWindow?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Start z „Przy logowaniu” po cichu; uruchomienie ręczne (Finder, Spotlight) otwiera okno.
+        let lgit = AEKeyword(0x6C67_6974) // keyAELaunchedAsLogInItem
+        let atLogin = NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: lgit)?.booleanValue ?? false
         // Druga kopia pisałaby do tych samych plików — zostaje tylko pierwsza. Przy restarcie (build.sh --open)
         // stara kopia może jeszcze zapisywać bufor, więc czekamy na nią do 3 s.
         // Wyjątek: tryb testowy z własną bazą (tools/snap.sh), który nie dotyka prawdziwych danych.
@@ -41,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             Monitor.shared.start()
             Snapshot.scheduleIfAsked()
+            if !atLogin && !testMode { showWindow() }
             if ProcessInfo.processInfo.environment["NETLOG_DEBUG"] != nil {
                 try? await Task.sleep(for: .seconds(3))
                 for w in NSApp.windows {
@@ -48,6 +54,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// Ponowne uruchomienie działającej aplikacji (Finder, Spotlight, Launchpad) pokazuje okno —
+    /// także wtedy, gdy macOS chowa ikonę w pasku menu.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showWindow()
+        return false
+    }
+
+    /// Okno z tą samą treścią co popover. Póki jest otwarte, NetLog ma ikonę w Docku i w ⌘-Tab.
+    func showWindow() {
+        if window == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: PopoverView().environment(Monitor.shared)))
+            w.title = "NetLog"
+            w.styleMask = [.titled, .closable, .miniaturizable]
+            w.isReleasedWhenClosed = false
+            w.delegate = self
+            w.center()
+            window = w
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate()
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
     }
 
     private static func otherInstanceRunning() -> Bool {
