@@ -113,6 +113,8 @@ struct SettingsView: View {
                 }
             }
             .formStyle(.grouped)
+            // Form to lista przewijana bez własnej wysokości: w oknie AppKit zwijała się do zera.
+            .frame(minHeight: 420, idealHeight: 660)
 
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(draft.errors, id: \.self) { e in

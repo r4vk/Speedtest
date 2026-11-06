@@ -57,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Monitor.shared.start()
             Snapshot.scheduleIfAsked()
             if !atLogin && !testMode { showWindow() }
+            // NETLOG_DEBUG=settings: od razu okno ustawień (sprawdzenie układu w prawdziwym oknie).
+            if ProcessInfo.processInfo.environment["NETLOG_DEBUG"] == "settings" { showSettings() }
             if ProcessInfo.processInfo.environment["NETLOG_DEBUG"] != nil {
                 try? await Task.sleep(for: .seconds(3))
                 for w in NSApp.windows {
@@ -95,11 +97,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let view = SettingsView(draft: draft) { [weak self] in self?.settingsWindow?.close() }
             .environment(Monitor.shared)
         if let w = settingsWindow {
-            w.contentViewController = NSHostingController(rootView: view)
+            let host = NSHostingController(rootView: view)
+            host.sizingOptions = [.minSize, .preferredContentSize]
+            w.contentViewController = host
         } else {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: view))
+            let host = NSHostingController(rootView: view)
+            host.sizingOptions = [.minSize, .preferredContentSize]
+            let w = NSWindow(contentViewController: host)
             w.title = "Ustawienia NetLog"
-            w.styleMask = [.titled, .closable]
+            w.styleMask = [.titled, .closable, .resizable]
             w.isReleasedWhenClosed = false
             w.delegate = self
             w.center()

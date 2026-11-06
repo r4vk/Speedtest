@@ -15,6 +15,7 @@ Polecenia:
 - `./build.sh` (`--open` restartuje aplikację). Bez ostrzeżeń.
 - `swift run --scratch-path ~/Library/Developer/NetLog/build NetLogCheck` drukuje `PASS NetLogCheck`.
 - `tools/snap.sh [s]` zapisuje PNG popovera (jasny/ciemny) z danych tymczasowych. Obejrzyj oba po każdej zmianie UI.
+- Zrzuty z `snap.sh` rysują widok poza oknem i nie wychwycą złego rozmiaru okna (tak przeoczono zwinięty `Form`). Prawdziwe okno ustawień: `NETLOG_DEBUG=settings` z `NETLOG_DIR`/`APP_STORE` w katalogu tymczasowym wypisuje rozmiary okien na stderr.
 - Nigdy nie testuj na `~/Library/Logs/r4vk-netlog` ani `~/Library/Application Support/NetLog`. Używaj `NETLOG_DIR` i `APP_STORE` w katalogu tymczasowym (robi to `snap.sh`).
 - Nie symuluj awarii na prawdziwym łączu. Zamiast tego: `NETLOG_ROUTER_IP=192.0.2.1` (milczący router), `APP_SIMULATE_SLEEP=a,b`.
 
