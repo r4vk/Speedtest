@@ -137,6 +137,38 @@ enum ResultStoreTests {
     }
 }
 
+enum ConfigTests {
+    static func validationAndChanges() {
+        expect(Config.isValidHost("192.168.10.2"))
+        expect(Config.isValidHost("nas.local"))
+        expect(!Config.isValidHost(""))
+        expect(!Config.isValidHost("192.168 .10.2"))
+        expect(Config.isValidURL("http://192.168.10.2:18000/"))
+        expect(!Config.isValidURL("192.168.10.2"))
+        expect(!Config.isValidURL("ftp://nas/"))
+
+        let suite = "org.r4vk.netlog.check-\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: suite)!
+        defer { d.removePersistentDomain(forName: suite) }
+        let old = Config.load(env: [:], defaults: d)
+        var new = old
+        new.nasIP = "192.168.10.3"
+        new.routerIP = "192.168.10.254"
+        new.keepDays = 14
+        expect(new.changes(from: old) == ["nas 192.168.10.2 -> 192.168.10.3", "router auto -> 192.168.10.254", "csv_dni 30 -> 14"])
+        new.save(to: d)
+        let back = Config.load(env: [:], defaults: d)
+        expect(back.nasIP == "192.168.10.3" && back.routerIP == "192.168.10.254" && back.keepDays == 14)
+        expect(back.changes(from: new).isEmpty)
+        var auto = back
+        auto.routerIP = nil
+        auto.save(to: d)
+        expect(Config.load(env: [:], defaults: d).routerIP == nil)
+        // Zmienna środowiskowa wygrywa z zapisanym ustawieniem.
+        expect(Config.load(env: ["NETLOG_NAS_IP": "10.0.0.9"], defaults: d).nasIP == "10.0.0.9")
+    }
+}
+
 nonisolated(unsafe) var failures = 0 // program jednowątkowy, wołany sekwencyjnie
 func expect(_ ok: Bool, file: String = #fileID, line: Int = #line) {
     if !ok { failures += 1; print("FAIL \(file):\(line)") }
@@ -155,5 +187,6 @@ FormatTests.wifiRowMatchesShellLogger()
 FormatTests.stamps()
 FormatTests.mcsParsing()
 try await ResultStoreTests.queueRoundTripIsIdempotent()
+ConfigTests.validationAndChanges()
 print(failures == 0 ? "PASS NetLogCheck" : "FAIL NetLogCheck: \(failures)")
 exit(failures == 0 ? 0 : 1)

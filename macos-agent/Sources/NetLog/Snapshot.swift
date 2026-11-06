@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// `APP_SNAPSHOT=<katalog> APP_SNAPSHOT_AFTER=<s>`: po zebraniu danych rysuje popover poza ekranem
-/// w trybie jasnym i ciemnym, zapisuje `popover-light.png` / `popover-dark.png` i kończy pracę.
+/// i okno ustawień w trybie jasnym i ciemnym (`popover-*.png`, `settings-*.png`) i kończy pracę.
 /// Używać razem z `NETLOG_DIR` i `APP_STORE` w katalogu tymczasowym (tools/snap.sh).
 enum Snapshot {
     static func scheduleIfAsked() {
@@ -14,17 +14,23 @@ enum Snapshot {
             let url = URL(filePath: dir, directoryHint: .isDirectory)
             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-                let file = url.appending(path: "popover-\(name).png")
-                render(appearance: appearance, to: file)
-                print("SNAPSHOT \(file.path)")
+                let pages: [(String, AnyView)] = [
+                    ("popover", AnyView(PopoverView())),
+                    ("settings", AnyView(SettingsView(draft: SettingsDraft(Monitor.shared.config)) {})),
+                ]
+                for (page, view) in pages {
+                    let file = url.appending(path: "\(page)-\(name).png")
+                    render(view, appearance: appearance, to: file)
+                    print("SNAPSHOT \(file.path)")
+                }
             }
             NSApp.terminate(nil)
         }
     }
 
-    private static func render(appearance: NSAppearance.Name, to file: URL) {
+    private static func render(_ view: AnyView, appearance: NSAppearance.Name, to file: URL) {
         let scheme: ColorScheme = appearance == .darkAqua ? .dark : .light
-        let host = NSHostingView(rootView: PopoverView()
+        let host = NSHostingView(rootView: view
             .environment(Monitor.shared)
             .background(Color(nsColor: .windowBackgroundColor))
             .environment(\.colorScheme, scheme))
@@ -37,7 +43,6 @@ enum Snapshot {
         host.frame = NSRect(origin: .zero, size: size)
         host.layoutSubtreeIfNeeded()
         host.display()
-        FileHandle.standardError.write(Data("SNAPSHOT size \(size)\n".utf8))
         guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
             FileHandle.standardError.write(Data("SNAPSHOT no bitmap\n".utf8))
             return

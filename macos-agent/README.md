@@ -78,7 +78,12 @@ Router i internet działają bez tej zgody. SSID jest ukryty (`<redacted>`), bo 
 
 ### Ustawienia
 
-Bez okna ustawień. Cele zmienia się tak (potem zakończ i uruchom aplikację ponownie):
+Okno **Ustawienia** (⌘, albo przycisk „Ustawienia” w oknie i popoverze) zmienia cele pomiarów (NAS, panel
+NAS, internet, router albo wykrywanie automatyczne), MCS z system_profiler, czas przechowywania CSV i SQLite
+oraz start przy logowaniu. Zmiany działają od następnej sekundy, bez restartu, a w dzienniku zdarzeń zapisuje
+się `ZMIANA ustawień: …` (co było, co jest).
+
+To samo z wiersza poleceń (wtedy zakończ i uruchom aplikację ponownie):
 
 ```bash
 defaults write org.r4vk.netlog nasIP 192.168.10.2
@@ -95,9 +100,9 @@ Te same nazwy co w netlog.sh działają jako zmienne środowiskowe: `NETLOG_NAS_
 
 | Ikona | Stan |
 |---|---|
-| Wi-Fi (jak systemowe) | wszystko gra |
-| Wi-Fi z wykrzyknikiem, pomarańczowa | w ostatnich 10 s: strata do routera, ≥ 2 straty do NAS-a lub internetu, ≥ 2 razy router > 100 ms albo internet > 200 ms |
-| Przekreślone Wi-Fi, czerwone | zawieszenie: router nie odpowiada od ≥ 3 s |
+| Linia EKG (jak systemowe ikony) | wszystko gra |
+| Linia EKG, pomarańczowa | w ostatnich 10 s: strata do routera, ≥ 2 straty do NAS-a lub internetu, ≥ 2 razy router > 100 ms albo internet > 200 ms |
+| Trójkąt z wykrzyknikiem, czerwony | zawieszenie: router nie odpowiada od ≥ 3 s |
 | Przekreślone Wi-Fi, szare | brak adresu IP na Wi-Fi |
 | Strzałka odświeżania | po wybudzeniu, Wi-Fi łączy się ponownie |
 | Księżyc | uśpienie |

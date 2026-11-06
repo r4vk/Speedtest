@@ -17,7 +17,7 @@ final class Monitor {
     static let shared = Monitor()
     static let window = 300 // sekund historii w popoverze
 
-    let config = Config.load()
+    private(set) var config = Config.load()
     private(set) var samples: [Sample] = []
     private(set) var health: Health = .starting
     private(set) var wifi: WiFiSample?
@@ -50,8 +50,9 @@ final class Monitor {
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
 
     private init() {
-        detector = StuckDetector(stuckAfter: config.stuckAfter, snapshotEvery: config.snapshotEvery)
-        files = LogFiles(dir: config.logDir)
+        let initial = Config.load()
+        detector = StuckDetector(stuckAfter: initial.stuckAfter, snapshotEvery: initial.snapshotEvery)
+        files = LogFiles(dir: initial.logDir)
     }
 
     // MARK: - Start i stop
@@ -120,6 +121,16 @@ final class Monitor {
                 try? await Task.sleep(until: next, clock: clock)
             }
         }
+    }
+
+    /// Nowe ustawienia z okna: zapis w `defaults`, działa od następnej sekundy, bez restartu.
+    func apply(_ new: Config) {
+        let diff = new.changes(from: config)
+        guard !diff.isEmpty else { return }
+        new.save()
+        config = new
+        if let manual = new.routerIP { router = manual } else if let auto = net.router { router = auto }
+        event("ZMIANA ustawień: " + diff.joined(separator: ", "), kind: "config_change")
     }
 
     /// Start przy logowaniu przez SMAppService (zastępuje LaunchAgent loggera powłoki).

@@ -2,13 +2,13 @@ import AppKit
 import NetLogKit
 import SwiftUI
 
-/// Ikona w pasku menu. Szablonowa (jak systemowe) gdy wszystko gra; kolor tylko jako sygnał problemu.
+/// Ikona w pasku menu: linia EKG. Szablonowa (jak systemowe) gdy wszystko gra; kolor tylko jako sygnał problemu.
 enum StatusIcon {
     static func symbol(for h: Health) -> String {
         switch h {
-        case .ok, .starting: "wifi"
-        case .lag: "wifi.exclamationmark"
-        case .stuck: "wifi.slash"
+        // Własny znak (linia EKG), żeby nie mylić z systemową ikoną Wi-Fi.
+        case .ok, .starting, .lag: "waveform.path.ecg"
+        case .stuck: "exclamationmark.triangle.fill"
         case .noIP: "wifi.slash"
         case .waking: "arrow.clockwise"
         case .sleeping: "moon.zzz"

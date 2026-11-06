@@ -108,8 +108,7 @@ struct PopoverView: View {
             Button("Panel NAS", systemImage: "safari") {
                 if let url = URL(string: monitor.config.nasURL) { NSWorkspace.shared.open(url) }
             }
-            Toggle("Przy logowaniu", isOn: Binding(get: { monitor.launchAtLogin }, set: { monitor.setLaunchAtLogin($0) }))
-                .toggleStyle(.checkbox)
+            Button("Ustawienia", systemImage: "gearshape") { AppDelegate.shared?.showSettings() }
             Spacer()
             Button("Zakończ") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")

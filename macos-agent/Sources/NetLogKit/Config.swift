@@ -25,10 +25,55 @@ public struct Config: Sendable {
     public var wakeGraceMax = 30                 // po wybudzeniu najwyżej tyle s na ponowne połączenie
 
     public static let bundleID = "org.r4vk.netlog"
+    /// Domena `defaults write org.r4vk.netlog …` — wspólna dla okna ustawień i wiersza poleceń.
+    public static var defaultsStore: UserDefaults { UserDefaults(suiteName: bundleID) ?? .standard }
+
+    /// Zmienne środowiskowe, które nadpisują ustawienia (okno ustawień o nich ostrzega).
+    public static func envOverrides(_ env: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
+        ["NETLOG_NAS_IP", "NETLOG_NAS_URL", "NETLOG_INTERNET_IP", "NETLOG_ROUTER_IP", "NETLOG_KEEP_DAYS",
+         "NETLOG_STORE_KEEP_DAYS", "NETLOG_MCS"].filter { !(env[$0] ?? "").isEmpty }
+    }
+
+    /// Zapisuje ustawienia edytowalne w oknie. Pusty router = wykrywanie automatyczne.
+    public func save(to d: UserDefaults = Config.defaultsStore) {
+        d.set(nasIP, forKey: "nasIP")
+        d.set(nasURL, forKey: "nasURL")
+        d.set(internetIP, forKey: "internetIP")
+        d.set(routerIP ?? "", forKey: "routerIP")
+        d.set(String(keepDays), forKey: "keepDays")
+        d.set(String(storeKeepDays), forKey: "storeKeepDays")
+        d.set(mcsFromSystemProfiler ? "1" : "0", forKey: "mcsFromSystemProfiler")
+    }
+
+    /// Opis różnic do dziennika zdarzeń (`ZMIANA ustawień: …`).
+    public func changes(from old: Config) -> [String] {
+        var out: [String] = []
+        func add(_ name: String, _ a: String, _ b: String) { if a != b { out.append("\(name) \(a) -> \(b)") } }
+        add("nas", old.nasIP, nasIP)
+        add("panel", old.nasURL, nasURL)
+        add("internet", old.internetIP, internetIP)
+        add("router", old.routerIP ?? "auto", routerIP ?? "auto")
+        add("csv_dni", String(old.keepDays), String(keepDays))
+        add("sqlite_dni", String(old.storeKeepDays), String(storeKeepDays))
+        add("mcs", old.mcsFromSystemProfiler ? "tak" : "nie", mcsFromSystemProfiler ? "tak" : "nie")
+        return out
+    }
+
+    /// Sprawdza nazwę hosta lub adres IPv4 (cel pingu).
+    public static func isValidHost(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, t.count <= 253, !t.contains(" ") else { return false }
+        return t.allSatisfy { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }
+    }
+
+    public static func isValidURL(_ s: String) -> Bool {
+        guard let u = URL(string: s), let scheme = u.scheme?.lowercased(), u.host != nil else { return false }
+        return scheme == "http" || scheme == "https"
+    }
 
     public static func load(
         env: [String: String] = ProcessInfo.processInfo.environment,
-        defaults: UserDefaults = UserDefaults(suiteName: bundleID) ?? .standard
+        defaults: UserDefaults = Config.defaultsStore
     ) -> Config {
         func value(_ envKey: String, _ key: String, _ fallback: String) -> String {
             if let v = env[envKey], !v.isEmpty { return v }

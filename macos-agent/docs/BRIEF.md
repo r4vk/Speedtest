@@ -39,5 +39,4 @@ czerwony = zawieszenie.
 
 ## Not in version one
 - Wysyłka do API ingest na NAS-ie (`docs/network-quality-design.md` §15) — tylko gotowy schemat i kolejka.
-- Okno ustawień (cele zmienia się przez `defaults write org.r4vk.netlog …`).
 - Historia dłuższa niż 5 minut w UI (od tego jest `summary.sh` i panel NAS).

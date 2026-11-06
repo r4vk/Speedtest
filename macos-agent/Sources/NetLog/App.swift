@@ -24,11 +24,21 @@ struct NetLogApp: App {
                 .accessibilityLabel(StatusIcon.title(for: monitor.health))
         }
         .menuBarExtraStyle(.window)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Ustawienia…") { AppDelegate.shared?.showSettings() }
+                    .keyboardShortcut(",")
+            }
+        }
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    static weak var shared: AppDelegate?
     private var window: NSWindow?
+    private var settingsWindow: NSWindow?
+
+    func applicationWillFinishLaunching(_ notification: Notification) { Self.shared = self }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Start z „Przy logowaniu” po cichu; uruchomienie ręczne (Finder, Spotlight) otwiera okno.
@@ -79,8 +89,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
     }
 
+    /// Okno ustawień, za każdym razem ze świeżym szkicem z bieżącej konfiguracji.
+    func showSettings() {
+        let draft = SettingsDraft(Monitor.shared.config)
+        let view = SettingsView(draft: draft) { [weak self] in self?.settingsWindow?.close() }
+            .environment(Monitor.shared)
+        if let w = settingsWindow {
+            w.contentViewController = NSHostingController(rootView: view)
+        } else {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: view))
+            w.title = "Ustawienia NetLog"
+            w.styleMask = [.titled, .closable]
+            w.isReleasedWhenClosed = false
+            w.delegate = self
+            w.center()
+            settingsWindow = w
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate()
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Ikona w Docku tylko póki jakieś okno NetLog jest otwarte.
     func windowWillClose(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        let closing = notification.object as? NSWindow
+        let others = [window, settingsWindow].compactMap { $0 }.filter { $0 !== closing && $0.isVisible }
+        if others.isEmpty { NSApp.setActivationPolicy(.accessory) }
     }
 
     private static func otherInstanceRunning() -> Bool {
