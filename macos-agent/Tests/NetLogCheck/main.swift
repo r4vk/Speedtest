@@ -169,6 +169,75 @@ enum ConfigTests {
     }
 }
 
+enum IngestTests {
+    static func rec(_ ms: Int64, _ target: String, _ outcome: ProbeOutcome = .ok, link: LinkState = .up) -> ProbeRecord {
+        ProbeRecord(epochMs: ms, target: target, host: target == "internet" ? "1.1.1.1" : "192.168.10.1",
+                    reply: PingReply(outcome: outcome, rttMs: outcome == .ok ? 4.2 : nil, resolvedIP: "1.1.1.1", durationMs: 4.3),
+                    timeoutMs: 1000, link: link)
+    }
+
+    static func endpointAndIDs() {
+        expect(Ingest.endpoint(nasURL: "http://192.168.10.2:18000/")?.absoluteString == "http://192.168.10.2:18000/api/ingest/results")
+        expect(Ingest.endpoint(nasURL: "http://192.168.10.2:18000")?.absoluteString == "http://192.168.10.2:18000/api/ingest/results")
+        expect(Ingest.endpoint(nasURL: "nie url") == nil)
+        expect(Ingest.isValidDeviceID("macbook-rafala"))
+        expect(!Ingest.isValidDeviceID("nas"))
+        expect(!Ingest.isValidDeviceID("MacBook"))
+        expect(!Ingest.isValidDeviceID("-mac"))
+        expect(Ingest.backoff(failures: 1) == 60 && Ingest.backoff(failures: 2) == 120 && Ingest.backoff(failures: 9) == 900)
+    }
+
+    static func payloadShape() throws {
+        let data = try Ingest.body(deviceID: "macbook-rafala", records: [rec(1000, "gateway"), rec(2000, "internet", .timeout)],
+                                   now: Date(timeIntervalSince1970: 3))
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        expect(json["device_id"] as? String == "macbook-rafala")
+        expect(json["sent_at"] as? String == "1970-01-01T00:00:03.000Z")
+        let results = json["results"] as! [[String: Any]]
+        expect(results.count == 2)
+        expect(results[0]["external_id"] as? String == "1000:gateway")
+        expect(results[0]["protocol"] as? String == "icmp" && results[0]["rtt_ms"] as? Double == 4.2)
+        expect(results[1]["outcome"] as? String == "timeout" && results[1]["rtt_ms"] == nil)
+        expect(results[0]["link"] == nil) // pole lokalne, nie idzie na NAS
+    }
+
+    static func queueSkipsLocalOnlyAndMarksRejected() async throws {
+        let path = FileManager.default.temporaryDirectory.appending(path: "netlog-q-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: path) }
+        let store = try ResultStore(path: path)
+        await store.add([rec(1000, "gateway"), rec(1000, "nas"), rec(1000, "internet"), rec(2000, "gateway", .timeout, link: .wake)])
+        let rows = await store.unsent(limit: 100)
+        expect(rows.map(\.record.target) == ["gateway", "internet"])
+        expect(await store.unsentCount() == 2)
+        let ids = Dictionary(uniqueKeysWithValues: rows.map { ($0.rowID, $0.record.externalID) })
+        await store.markUploaded(rowIDs: rows.map(\.rowID), rejected: ["1000:internet": "unknown_target"], externalIDs: ids)
+        expect(await store.unsentCount() == 0)
+        expect(await store.uploadStatusCounts() == ["sent": 1, "rejected:unknown_target": 1, "local_only": 2])
+    }
+
+    /// Baza z pierwszej wersji (bez upload_status) dostaje kolumnę, a „nas” i „wake” wychodzą z kolejki.
+    static func migratesV1() async throws {
+        let path = FileManager.default.temporaryDirectory.appending(path: "netlog-v1-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: path) }
+        let sql = """
+            CREATE TABLE probe_results (id INTEGER PRIMARY KEY, external_id TEXT NOT NULL UNIQUE, target TEXT NOT NULL, host TEXT,
+              protocol TEXT NOT NULL DEFAULT 'icmp', started_at TEXT NOT NULL, duration_ms REAL NOT NULL, outcome TEXT NOT NULL,
+              rtt_ms REAL, timeout_ms INTEGER NOT NULL, resolved_ip TEXT, ip_family INTEGER, error_kind TEXT, error_detail TEXT,
+              link TEXT NOT NULL, uploaded_at TEXT);
+            CREATE INDEX probe_results_unsent ON probe_results(id) WHERE uploaded_at IS NULL;
+            INSERT INTO probe_results (external_id,target,started_at,duration_ms,outcome,rtt_ms,timeout_ms,link) VALUES
+              ('1:gateway','gateway','x',1,'ok',1,1000,'up'), ('1:nas','nas','x',1,'ok',1,1000,'up'), ('2:gateway','gateway','x',1,'timeout',NULL,1000,'wake');
+            PRAGMA user_version=1;
+            """
+        let p = Process()
+        p.executableURL = URL(filePath: "/usr/bin/sqlite3")
+        p.arguments = [path.path, sql]
+        try p.run(); p.waitUntilExit()
+        let store = try ResultStore(path: path)
+        expect(await store.uploadStatusCounts() == ["queued": 1, "local_only": 2])
+    }
+}
+
 nonisolated(unsafe) var failures = 0 // program jednowątkowy, wołany sekwencyjnie
 func expect(_ ok: Bool, file: String = #fileID, line: Int = #line) {
     if !ok { failures += 1; print("FAIL \(file):\(line)") }
@@ -188,5 +257,16 @@ FormatTests.stamps()
 FormatTests.mcsParsing()
 try await ResultStoreTests.queueRoundTripIsIdempotent()
 ConfigTests.validationAndChanges()
+IngestTests.endpointAndIDs()
+try IngestTests.payloadShape()
+try await IngestTests.queueSkipsLocalOnlyAndMarksRejected()
+try await IngestTests.migratesV1()
+// Pęk kluczy: osobne konto testowe, żeby nie ruszyć prawdziwego tokenu.
+let account = "check-\(UUID().uuidString)"
+expect(Keychain.save("abc", account: account) == errSecSuccess)
+expect(Keychain.read(account) == "abc")
+expect(Keychain.save("def", account: account) == errSecSuccess && Keychain.read(account) == "def")
+Keychain.delete(account)
+expect(Keychain.read(account) == nil)
 print(failures == 0 ? "PASS NetLogCheck" : "FAIL NetLogCheck: \(failures)")
 exit(failures == 0 ? 0 : 1)

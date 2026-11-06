@@ -26,16 +26,28 @@ final class Monitor {
     private(set) var interface = "en0"
     private(set) var events: [EventLine] = []
     private(set) var legacyLoggerRunning = false
-    private(set) var unsent = 0
+    var unsent = 0
     private(set) var storeError: String?
     /// NAS nieosiągalny („No route to host”), choć router odpowiada: prawie zawsze brak zgody na sieć lokalną.
     private(set) var localNetworkBlocked = false
     private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
 
+    // Wysyłka na NAS (etap 9) — logika w Monitor+Upload.swift.
+    var uploadState: UploadState = .notConfigured
+    var lastUploadAt: Date?
+    var lastUploadNote: String?
+    var skewMs: Double?
+    var hasIngestToken = false
+    @ObservationIgnored var ingestToken: String?
+    @ObservationIgnored var nextUploadAt = 0
+    @ObservationIgnored var uploadFailures = 0
+    @ObservationIgnored var uploading = false
+    @ObservationIgnored var uploadBatchLimit = 1000
+
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var detector: StuckDetector
     @ObservationIgnored private let files: LogFiles
-    @ObservationIgnored private var store: ResultStore?
+    @ObservationIgnored private(set) var store: ResultStore?
     @ObservationIgnored private var started = false
     @ObservationIgnored private var sleeping = false
     @ObservationIgnored private var wokeAt: Int?
@@ -64,6 +76,7 @@ final class Monitor {
         net = NetInfo.current(interface: interface)
         router = config.routerIP ?? net.router
         do { store = try ResultStore(path: config.storePath) } catch { storeError = "\(error)" }
+        loadIngestToken()
 
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         event("START agent NetLog \(version), router=\(router ?? "?") nas=\(config.nasIP) internet=\(config.internetIP) iface=\(interface)",
@@ -128,7 +141,9 @@ final class Monitor {
         let diff = new.changes(from: config)
         guard !diff.isEmpty else { return }
         new.save()
+        let deviceChanged = new.ingestDeviceID != config.ingestDeviceID || new.nasURL != config.nasURL
         config = new
+        if deviceChanged { resetUpload() }
         if let manual = new.routerIP { router = manual } else if let auto = net.router { router = auto }
         event("ZMIANA ustawień: " + diff.joined(separator: ", "), kind: "config_change")
     }
@@ -224,6 +239,7 @@ final class Monitor {
             if let until = graceUntil {
                 if rr.outcome == .ok {
                     event("Łączność z routerem po wybudzeniu: \(epoch - (wokeAt ?? epoch)) s", kind: "wake_ok")
+                    nextUploadAt = 0 // zaległe wyniki od razu, gdy sieć wróciła
                     graceUntil = nil
                 } else if epoch < until {
                     link = .wake
@@ -259,6 +275,7 @@ final class Monitor {
             lastCount = epoch
             Task { unsent = await store?.unsentCount() ?? 0 }
         }
+        if graceUntil == nil { maybeUpload(epoch: epoch) }
     }
 
     /// Brak znanego routera to błąd próby, nie strata pakietu.
@@ -338,7 +355,7 @@ final class Monitor {
         }
     }
 
-    private func event(_ text: String, kind: String) {
+    func event(_ text: String, kind: String) {
         let now = Date()
         events.append(EventLine(date: now, text: text))
         if events.count > 30 { events.removeFirst(events.count - 30) }

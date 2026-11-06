@@ -31,6 +31,7 @@ struct PopoverView: View {
             LatencyChart(samples: monitor.samples)
                 .frame(height: 140)
             wifi
+            upload
             Divider()
             recentEvents
             Divider()
@@ -80,6 +81,19 @@ struct PopoverView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(2)
+    }
+
+    private var upload: some View {
+        let s = monitor.uploadState
+        let when = monitor.lastUploadAt.map { ", ostatnio \($0.formatted(date: .omitted, time: .shortened))" } ?? ""
+        let text = s == .notConfigured
+            ? "Wysyłka na NAS wyłączona — ustaw ją w Ustawieniach"
+            : "Wysyłka na NAS: \(s.text)\(when) · w kolejce \(monitor.unsent)"
+        return Label(text, systemImage: s.isProblem ? "exclamationmark.icloud" : "icloud.and.arrow.up")
+            .font(.caption)
+            .foregroundStyle(s.isProblem ? .red : .secondary)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var recentEvents: some View {

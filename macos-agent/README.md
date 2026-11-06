@@ -32,7 +32,7 @@ na odcinku Wi-Fi, czy problem jest dalej (router/operator)?** Do tego pokazuje s
 | `~/Library/Logs/r4vk-netlog/ping-RRRR-MM-DD.csv` | `ts,link,router_ms,nas_ms,internet_ms`, ten sam format co w loggerze; `link` = `up`, `no_ip` lub `wake` (nowe: okres łaski po wybudzeniu) |
 | `~/Library/Logs/r4vk-netlog/wifi-RRRR-MM-DD.csv` | `ts,rssi_dbm,noise_dbm,channel,band,width,tx_rate_mbps,mcs,phy,awdl`, ten sam format |
 | `~/Library/Logs/r4vk-netlog/events-RRRR-MM-DD.log` | `START`, `ZAWIESZENIE`, `KONIEC`, `ZMIANA`, `ZRZUT`, a nowe: `USYPIANIE`, `WYBUDZENIE`, `PRZERWA`, `BRAK IP`, `STOP` |
-| `~/Library/Application Support/NetLog/netlog.sqlite` | te same próby w kształcie `ProbeResult` z serwera, z kolejką do wysłania na NAS (etap 9) |
+| `~/Library/Application Support/NetLog/netlog.sqlite` | te same próby w kształcie `ProbeResult` z serwera, z kolejką wysyłki na NAS (`upload_status`) |
 
 [`summary.sh`](../tools/macos-netlog/summary.sh) działa na tych plikach bez zmian. CSV są usuwane
 po 30 dniach. SQLite trzyma 7 dni (3 próby na sekundę to ok. 55 MB na dobę, ok. 380 MB przy 7 dniach).
@@ -94,7 +94,8 @@ defaults write org.r4vk.netlog mcsFromSystemProfiler 0 # bez system_profiler co 
 ```
 
 Te same nazwy co w netlog.sh działają jako zmienne środowiskowe: `NETLOG_NAS_IP`, `NETLOG_NAS_URL`,
-`NETLOG_INTERNET_IP`, `NETLOG_ROUTER_IP`, `NETLOG_DIR`, `NETLOG_KEEP_DAYS`, `NETLOG_STORE_KEEP_DAYS`, `NETLOG_MCS`.
+`NETLOG_INTERNET_IP`, `NETLOG_ROUTER_IP`, `NETLOG_DIR`, `NETLOG_KEEP_DAYS`, `NETLOG_STORE_KEEP_DAYS`, `NETLOG_MCS`
+(do testów wysyłki także `NETLOG_INGEST_DEVICE`, `NETLOG_INGEST_TOKEN`, `NETLOG_UPLOAD_EVERY`).
 
 ## Ikona w pasku menu
 
@@ -146,20 +147,46 @@ Bez pełnego Xcode nie działają makra `@State` (SwiftUI) i `@Test` (Swift Test
 Dlatego kod nie używa `@State`, a testy są zwykłym programem. Ikona aplikacji (`Icon/`) kompiluje się tylko
 z Xcode (`actool`); bez niego `build.sh` ją pomija, a aplikacja paska menu i tak nie ma ikony w Docku.
 
-## Etap 9 — wysyłka na NAS (jeszcze niezrobiona)
+## Wysyłka na NAS (etap 9)
 
-Wszystko jest przygotowane pod `POST /api/ingest/results` z [docs/network-quality-design.md](../docs/network-quality-design.md) §15:
+NetLog wysyła swoje próby do `POST {Panel NAS}api/ingest/results` (docs/network-quality-design.md §15),
+żeby panel Speedtest mógł porównać Wi-Fi Maca z kablem NAS-a na wspólnej osi czasu.
 
-- `probe_results` w SQLite ma pola `ProbeResult` serwera (`protocol`, `started_at` UTC z ms i `Z`,
-  `duration_ms`, `outcome` ok/timeout/error, `rtt_ms`, `timeout_ms`, `resolved_ip`, `ip_family`,
-  `error_kind`, `error_detail`). Do tego `target` (dopasowanie po nazwie: `gateway`, `nas`, `internet`),
-  `link` oraz `uploaded_at`.
-- `external_id = "<epoch_ms>:<target>"` jest deterministyczny, więc ponowna wysyłka po zerwanym połączeniu
-  trafi w unikalny indeks `(device_id, external_id)` jako `duplicates`.
-- `ResultStore.unsent(limit:)` i `markUploaded(rowIDs:)` to kolejka dla wysyłającego. Brak NAS-a nie
-  gubi danych przez 7 dni.
-- `events` zawiera okresy snu (`sleep`/`wake`), przerwy (`gap`) i `start`/`stop`, czyli pokrycie pomiarami,
-  żeby serwer odróżnił „Mac spał” od „brak łączności”.
-- Brakuje jeszcze: rejestracji urządzenia (`POST /api/devices`, token w pęku kluczy), wysyłki partiami
-  z `sent_at` (serwer liczy z niego przesunięcie zegara) i celów `nas` na serwerze, którego `kind`
-  dziś nie przewiduje.
+**Włączenie:** w panelu Speedtest otwórz Ustawienia → Urządzenia wysyłające wyniki i dodaj urządzenie. Panel
+pokaże identyfikator (np. `macbook-rafala`) i token, który widać tylko raz. W NetLog w Ustawienia → Wysyłka
+na NAS wpisz identyfikator i wklej token, potem kliknij „Zapisz”. Token trafia do pęku kluczy (wpis „NetLog —
+token wysyłki wyników na NAS”), a nie do `defaults`. NetLog nie rejestruje się sam. Wymaga Speedtest z API
+wysyłki: starsza wersja odpowiada 404 i NetLog pokazuje, że trzeba ją zaktualizować.
+
+**Co idzie, a co zostaje na Macu:**
+- idą próby do routera (`gateway`) i internetu (`internet`, na NAS-ie to `cloudflare-dns`);
+- zostają na Macu próby do samego NAS-a (NAS nie ma celu „siebie”, serwer odrzuciłby je jako `unknown_target`)
+  i próby z okresu łaski po wybudzeniu (`link=wake`). Serwer nie zna kolumny `link`, więc policzyłby
+  te timeouty jako straty, a sen nie jest awarią.
+
+**Rytm i błędy:**
+- paczka do 1000 wyników co 60 s, przy zaległości następna po 5 s, od razu po wybudzeniu i powrocie sieci;
+- przyjęte, duplikaty i odrzucone wychodzą z kolejki (`upload_status` = `sent` albo `rejected:<powód>`),
+  bo odrzucony wiersz byłby odrzucany przy każdej próbie;
+- 401 (zły lub unieważniony token) albo 403 (identyfikator nie pasuje do tokenu) zatrzymują wysyłkę,
+  a popover i Ustawienia pokazują to na czerwono. Po poprawce: „Zapisz” albo „Wyślij teraz”;
+- 413 zmniejsza paczkę o połowę. Przy 5xx, braku sieci i timeoucie odstęp rośnie 60 s → 2 → 4 → 8 → 15 min,
+  a kolejka zostaje (SQLite trzyma 7 dni);
+- `external_id = "<epoch_ms>:<cel>"`, więc powtórka po zerwanym połączeniu daje duplikaty, a nie podwójne wiersze.
+
+Popover pokazuje stan wysyłki, czas ostatniej i długość kolejki. Ustawienia pokazują też „Wyślij teraz”.
+Zdarzenia `WYSYŁKA …` trafiają do dziennika tylko przy zmianie stanu (pierwszy sukces, błąd, 401/403).
+
+**Test na lokalnym serwerze** (z katalogu `Speedtest/`, NAS-a nie dotyka):
+
+```bash
+cd app && DATA_DIR=/tmp/st-dev ../.venv/bin/uvicorn speedtest_app.main:app --port 8765
+curl -X POST localhost:8765/api/devices -H 'Content-Type: application/json' -d '{"name":"NetLog test"}'
+NETLOG_NAS_URL=http://localhost:8765/ NETLOG_INGEST_DEVICE=netlog-test NETLOG_INGEST_TOKEN=<token> \
+  NETLOG_UPLOAD_EVERY=5 tools/snap.sh 25
+```
+
+Zmienne `NETLOG_INGEST_DEVICE`, `NETLOG_INGEST_TOKEN` i `NETLOG_UPLOAD_EVERY` służą tylko do testów:
+nadpisują ustawienia i pęk kluczy.
+
+Do zrobienia: zdarzenia snu i przerw (`events`) nie idą jeszcze na NAS, bo serwer nie ma na nie miejsca.

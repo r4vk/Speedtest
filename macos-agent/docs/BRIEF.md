@@ -38,5 +38,4 @@ Natywny, kolor akcentu systemowy. Kolor ikony tylko jako sygnał stanu: pomarań
 czerwony = zawieszenie.
 
 ## Not in version one
-- Wysyłka do API ingest na NAS-ie (`docs/network-quality-design.md` §15) — tylko gotowy schemat i kolejka.
 - Historia dłuższa niż 5 minut w UI (od tego jest `summary.sh` i panel NAS).

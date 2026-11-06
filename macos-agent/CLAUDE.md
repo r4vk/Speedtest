@@ -25,4 +25,4 @@ Polecenia:
 - Uśpienie, przerwa i brak IP to nigdy strata pakietów. Zapisuj je jako zdarzenia.
 - `NetLogKit` nie zna SwiftUI. Blokujące wywołania (ICMP, `Process`) działają poza wątkiem głównym (`@concurrent` lub własna kolejka).
 - Bez `.terminateLater` przy wyjściu: zadania Swift nie ruszają w modalnej pętli AppKit (zakleszczenie).
-- Etap 9 (wysyłka na NAS) dopiero po części NAS. Schemat `probe_results` trzymaj zgodny z `ProbeResult` serwera.
+- Wysyłka na NAS: `Ingest.swift` i `Monitor+Upload.swift`, kontrakt w `../docs/network-quality-design.md` §15 i `../app/speedtest_app/ingest.py`. Schemat `probe_results` trzymaj zgodny z `ProbeResult` serwera. Testuj na lokalnym uvicorn (README), nigdy na NAS-ie. Token tylko w pęku kluczy.

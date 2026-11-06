@@ -20,6 +20,10 @@ public struct ProbeRecord: Sendable, Equatable, Codable {
     public var errorDetail: String?
     public var link: LinkState
 
+    /// Na NAS idą tylko cele, które NAS zna (nie „nas”), i nie okres łaski po wybudzeniu:
+    /// serwer nie zna kolumny `link`, więc policzyłby te timeouty jako straty.
+    public var isUploadable: Bool { target != "nas" && link != .wake }
+
     public init(epochMs: Int64, target: String, host: String?, reply: PingReply, timeoutMs: Int, link: LinkState) {
         self.externalID = "\(epochMs):\(target)"
         self.target = target
@@ -48,7 +52,7 @@ public actor ResultStore {
     private var db: OpaquePointer?
     private var pending: [ProbeRecord] = []
     public let deviceID: String
-    public static let schemaVersion: Int32 = 1
+    public static let schemaVersion: Int32 = 2
 
     public init(path: URL) throws {
         try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -78,9 +82,10 @@ public actor ResultStore {
               error_kind TEXT,
               error_detail TEXT,
               link TEXT NOT NULL,
-              uploaded_at TEXT
+              uploaded_at TEXT,
+              -- NULL = w kolejce; 'local_only' = nie wysyłać; 'sent' / 'rejected:<powód>' po wysyłce
+              upload_status TEXT
             );
-            CREATE INDEX IF NOT EXISTS probe_results_unsent ON probe_results(id) WHERE uploaded_at IS NULL;
             CREATE INDEX IF NOT EXISTS probe_results_started ON probe_results(started_at);
             CREATE TABLE IF NOT EXISTS wifi_samples (
               id INTEGER PRIMARY KEY, ts TEXT NOT NULL, interface TEXT, rssi_dbm INTEGER, noise_dbm INTEGER,
@@ -92,8 +97,8 @@ public actor ResultStore {
             CREATE TABLE IF NOT EXISTS events (
               id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT, uploaded_at TEXT
             );
-            PRAGMA user_version=\(Self.schemaVersion);
             """)
+        try Self.migrate(handle)
         db = handle
         deviceID = try Self.loadOrCreateDeviceID(handle)
     }
@@ -110,8 +115,8 @@ public actor ResultStore {
         guard !pending.isEmpty, let db else { return 0 }
         let sql = """
             INSERT OR IGNORE INTO probe_results
-            (external_id,target,host,protocol,started_at,duration_ms,outcome,rtt_ms,timeout_ms,resolved_ip,ip_family,error_kind,error_detail,link)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            (external_id,target,host,protocol,started_at,duration_ms,outcome,rtt_ms,timeout_ms,resolved_ip,ip_family,error_kind,error_detail,link,upload_status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
@@ -123,6 +128,7 @@ public actor ResultStore {
             bind(stmt, 7, r.outcome.rawValue); bind(stmt, 8, r.rttMs); bind(stmt, 9, r.timeoutMs)
             bind(stmt, 10, r.resolvedIP); bind(stmt, 11, r.ipFamily); bind(stmt, 12, r.errorKind)
             bind(stmt, 13, r.errorDetail); bind(stmt, 14, r.link.rawValue)
+            bind(stmt, 15, r.isUploadable ? nil : "local_only")
             sqlite3_step(stmt)
             sqlite3_reset(stmt)
         }
@@ -160,7 +166,7 @@ public actor ResultStore {
     public func unsent(limit: Int = 500) -> [(rowID: Int64, record: ProbeRecord)] {
         flush()
         var out: [(Int64, ProbeRecord)] = []
-        query("SELECT id,external_id,target,host,protocol,started_at,duration_ms,outcome,rtt_ms,timeout_ms,resolved_ip,ip_family,error_kind,error_detail,link FROM probe_results WHERE uploaded_at IS NULL ORDER BY id LIMIT ?",
+        query("SELECT id,external_id,target,host,protocol,started_at,duration_ms,outcome,rtt_ms,timeout_ms,resolved_ip,ip_family,error_kind,error_detail,link FROM probe_results WHERE upload_status IS NULL ORDER BY id LIMIT ?",
               bindings: { bind($0, 1, limit) }) { st in
             var r = ProbeRecord(epochMs: 0, target: "", host: nil, reply: PingReply(outcome: .ok), timeoutMs: 0, link: .up)
             r.externalID = text(st, 1) ?? ""
@@ -182,21 +188,65 @@ public actor ResultStore {
         return out
     }
 
-    /// Oznacza próby jako przyjęte przez NAS (także `duplicates` z odpowiedzi API).
-    public func markUploaded(rowIDs: [Int64], at date: Date = Date()) {
+    /// Po odpowiedzi NAS-a: przyjęte i duplikaty → `sent`, odrzucone → `rejected:<powód>`.
+    /// Odrzucone też wychodzą z kolejki, bo serwer odrzuciłby je przy każdej kolejnej próbie.
+    public func markUploaded(rowIDs: [Int64], rejected: [String: String] = [:], externalIDs: [Int64: String] = [:],
+                             at date: Date = Date()) {
         guard let db, !rowIDs.isEmpty else { return }
+        let ts = Stamp.utc(date)
         sqlite3_exec(db, "BEGIN", nil, nil, nil)
         for id in rowIDs {
-            run("UPDATE probe_results SET uploaded_at=? WHERE id=?") { bind($0, 1, Stamp.utc(date)); bind($0, 2, id) }
+            let status = externalIDs[id].flatMap { rejected[$0] }.map { "rejected:\($0)" } ?? "sent"
+            run("UPDATE probe_results SET uploaded_at=?, upload_status=? WHERE id=?") {
+                bind($0, 1, ts); bind($0, 2, status); bind($0, 3, id)
+            }
         }
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
     }
 
+    /// Długość kolejki do wysyłki (bez wierszy tylko lokalnych).
     public func unsentCount() -> Int {
         flush()
         var n = 0
-        query("SELECT COUNT(*) FROM probe_results WHERE uploaded_at IS NULL", bindings: { _ in }) { n = Int(sqlite3_column_int64($0, 0)) }
+        query("SELECT COUNT(*) FROM probe_results WHERE upload_status IS NULL", bindings: { _ in }) { n = Int(sqlite3_column_int64($0, 0)) }
         return n
+    }
+
+    /// Liczba wierszy według stanu wysyłki — do testów i diagnostyki.
+    public func uploadStatusCounts() -> [String: Int] {
+        flush()
+        var out: [String: Int] = [:]
+        query("SELECT COALESCE(upload_status,'queued'), COUNT(*) FROM probe_results GROUP BY 1", bindings: { _ in }) {
+            out[text($0, 0) ?? "?"] = Int(sqlite3_column_int64($0, 1))
+        }
+        return out
+    }
+
+    /// v1 → v2: kolumna `upload_status`; cel `nas` i okres po wybudzeniu oznaczone jako tylko lokalne.
+    private static func migrate(_ db: OpaquePointer?) throws {
+        var version: Int32 = 0
+        var st: OpaquePointer?
+        sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &st, nil)
+        if sqlite3_step(st) == SQLITE_ROW { version = sqlite3_column_int(st, 0) }
+        sqlite3_finalize(st)
+        if version < 2 {
+            var hasColumn = false
+            sqlite3_prepare_v2(db, "PRAGMA table_info(probe_results)", -1, &st, nil)
+            while sqlite3_step(st) == SQLITE_ROW { if text(st, 1) == "upload_status" { hasColumn = true } }
+            sqlite3_finalize(st)
+            try exec(db, """
+                BEGIN;
+                \(hasColumn ? "" : "ALTER TABLE probe_results ADD COLUMN upload_status TEXT;")
+                UPDATE probe_results SET upload_status='local_only' WHERE upload_status IS NULL AND (target='nas' OR link='wake');
+                UPDATE probe_results SET upload_status='sent' WHERE upload_status IS NULL AND uploaded_at IS NOT NULL;
+                DROP INDEX IF EXISTS probe_results_unsent;
+                COMMIT;
+                """)
+        }
+        try exec(db, """
+            CREATE INDEX IF NOT EXISTS probe_results_queue ON probe_results(id) WHERE upload_status IS NULL;
+            PRAGMA user_version=\(schemaVersion);
+            """)
     }
 
     // MARK: - SQLite

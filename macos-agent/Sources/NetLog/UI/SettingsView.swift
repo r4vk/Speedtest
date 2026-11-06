@@ -12,6 +12,10 @@ final class SettingsDraft {
     var mcs: Bool
     var keepDays: Int
     var storeKeepDays: Int
+    var ingestDeviceID: String
+    /// Nowy token do zapisania; pusty = bez zmian.
+    var tokenInput = ""
+    var removeToken = false
 
     init(_ c: Config) {
         nasIP = c.nasIP
@@ -21,6 +25,7 @@ final class SettingsDraft {
         mcs = c.mcsFromSystemProfiler
         keepDays = c.keepDays
         storeKeepDays = c.storeKeepDays
+        ingestDeviceID = c.ingestDeviceID ?? ""
     }
 
     var errors: [String] {
@@ -30,6 +35,10 @@ final class SettingsDraft {
         if !Config.isValidHost(internetIP) { e.append("Cel w internecie: podaj IP lub nazwę hosta.") }
         if !routerIP.trimmingCharacters(in: .whitespaces).isEmpty && !Config.isValidHost(routerIP) {
             e.append("Router: podaj IP albo zostaw puste (automatycznie).")
+        }
+        let dev = ingestDeviceID.trimmingCharacters(in: .whitespaces)
+        if !dev.isEmpty && !Ingest.isValidDeviceID(dev) {
+            e.append("Identyfikator urządzenia: małe litery, cyfry i „-”, jak w panelu Speedtest.")
         }
         return e
     }
@@ -44,6 +53,8 @@ final class SettingsDraft {
         c.mcsFromSystemProfiler = mcs
         c.keepDays = keepDays
         c.storeKeepDays = storeKeepDays
+        let dev = ingestDeviceID.trimmingCharacters(in: .whitespaces)
+        c.ingestDeviceID = dev.isEmpty ? nil : dev
         return c
     }
 
@@ -99,6 +110,30 @@ struct SettingsView: View {
                     }
                 }
 
+                Section {
+                    TextField("Identyfikator urządzenia", text: bind(\.ingestDeviceID), prompt: Text("np. macbook-rafala"))
+                    SecureField("Token", text: bind(\.tokenInput),
+                                prompt: Text(monitor.hasIngestToken && !draft.removeToken ? "zapisany w pęku kluczy" : "wklej token z panelu"))
+                    if monitor.hasIngestToken {
+                        Toggle("Usuń zapisany token", isOn: bind(\.removeToken))
+                    }
+                    LabeledContent("Stan", value: monitor.uploadState.text)
+                        .foregroundStyle(monitor.uploadState.isProblem ? .red : .primary)
+                    LabeledContent("Ostatnia wysyłka") {
+                        Text(monitor.lastUploadAt.map { $0.formatted(date: .omitted, time: .standard) } ?? "jeszcze nie")
+                    }
+                    LabeledContent("W kolejce", value: "\(monitor.unsent) wyników")
+                    LabeledContent("Wysyłka") {
+                        Button("Wyślij teraz") { monitor.uploadNow() }
+                            .disabled(!monitor.uploadConfigured)
+                    }
+                } header: {
+                    Text("Wysyłka na NAS")
+                } footer: {
+                    Text("Identyfikator i token tworzy panel Speedtest: Ustawienia → Urządzenia wysyłające wyniki (token widać tylko raz). Wyniki do NAS-a i z chwili po wybudzeniu zostają tylko na Macu.")
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Ogólne") {
                     Toggle("Uruchamiaj przy logowaniu",
                            isOn: Binding(get: { monitor.launchAtLogin }, set: { monitor.setLaunchAtLogin($0) }))
@@ -114,7 +149,7 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             // Form to lista przewijana bez własnej wysokości: w oknie AppKit zwijała się do zera.
-            .frame(minHeight: 420, idealHeight: 660)
+            .frame(minHeight: 420, idealHeight: 760)
 
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(draft.errors, id: \.self) { e in
@@ -127,6 +162,13 @@ struct SettingsView: View {
                         .keyboardShortcut(.cancelAction)
                     Button("Zapisz") {
                         monitor.apply(draft.config(base: monitor.config))
+                        if draft.removeToken {
+                            monitor.setIngestToken(nil)
+                        } else if !draft.tokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            monitor.setIngestToken(draft.tokenInput)
+                        } else if monitor.config.ingestDeviceID != nil && monitor.ingestToken == nil {
+                            monitor.loadIngestToken() // identyfikator dopiero ustawiony — token może już być w pęku
+                        }
                         close()
                     }
                     .keyboardShortcut(.defaultAction)

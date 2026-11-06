@@ -5,6 +5,12 @@ public struct Config: Sendable {
     public var nasIP: String
     public var nasURL: String
     public var internetIP: String
+    /// Identyfikator urządzenia z panelu Speedtest (Ustawienia → Urządzenia wysyłające wyniki).
+    /// Pusty = bez wysyłki. Token jest w pęku kluczy, nie tutaj.
+    public var ingestDeviceID: String?
+    /// Co ile sekund wysyłać paczkę i ile w niej wierszy.
+    public var uploadEvery: Int = 60
+    public var uploadBatch: Int = 1000
     /// Router podany ręcznie; domyślnie `nil` = wykrywany z trasy domyślnej.
     public var routerIP: String?
     /// Katalog plików CSV i dziennika zdarzeń, wspólny z loggerem powłoki.
@@ -31,7 +37,7 @@ public struct Config: Sendable {
     /// Zmienne środowiskowe, które nadpisują ustawienia (okno ustawień o nich ostrzega).
     public static func envOverrides(_ env: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
         ["NETLOG_NAS_IP", "NETLOG_NAS_URL", "NETLOG_INTERNET_IP", "NETLOG_ROUTER_IP", "NETLOG_KEEP_DAYS",
-         "NETLOG_STORE_KEEP_DAYS", "NETLOG_MCS"].filter { !(env[$0] ?? "").isEmpty }
+         "NETLOG_STORE_KEEP_DAYS", "NETLOG_MCS", "NETLOG_INGEST_DEVICE", "NETLOG_INGEST_TOKEN", "NETLOG_UPLOAD_EVERY"].filter { !(env[$0] ?? "").isEmpty }
     }
 
     /// Zapisuje ustawienia edytowalne w oknie. Pusty router = wykrywanie automatyczne.
@@ -40,6 +46,7 @@ public struct Config: Sendable {
         d.set(nasURL, forKey: "nasURL")
         d.set(internetIP, forKey: "internetIP")
         d.set(routerIP ?? "", forKey: "routerIP")
+        d.set(ingestDeviceID ?? "", forKey: "ingestDeviceID")
         d.set(String(keepDays), forKey: "keepDays")
         d.set(String(storeKeepDays), forKey: "storeKeepDays")
         d.set(mcsFromSystemProfiler ? "1" : "0", forKey: "mcsFromSystemProfiler")
@@ -53,6 +60,7 @@ public struct Config: Sendable {
         add("panel", old.nasURL, nasURL)
         add("internet", old.internetIP, internetIP)
         add("router", old.routerIP ?? "auto", routerIP ?? "auto")
+        add("urządzenie", old.ingestDeviceID ?? "brak", ingestDeviceID ?? "brak")
         add("csv_dni", String(old.keepDays), String(keepDays))
         add("sqlite_dni", String(old.storeKeepDays), String(storeKeepDays))
         add("mcs", old.mcsFromSystemProfiler ? "tak" : "nie", mcsFromSystemProfiler ? "tak" : "nie")
@@ -88,6 +96,8 @@ public struct Config: Sendable {
             nasIP: value("NETLOG_NAS_IP", "nasIP", "192.168.10.2"),
             nasURL: value("NETLOG_NAS_URL", "nasURL", "http://192.168.10.2:18000/"),
             internetIP: value("NETLOG_INTERNET_IP", "internetIP", "1.1.1.1"),
+            ingestDeviceID: Optional(value("NETLOG_INGEST_DEVICE", "ingestDeviceID", "")).flatMap { $0.isEmpty ? nil : $0 },
+            uploadEvery: max(5, Int(value("NETLOG_UPLOAD_EVERY", "uploadEvery", "60")) ?? 60),
             routerIP: Optional(value("NETLOG_ROUTER_IP", "routerIP", "")).flatMap { $0.isEmpty ? nil : $0 },
             logDir: URL(filePath: logDir, directoryHint: .isDirectory),
             storePath: URL(filePath: store),
