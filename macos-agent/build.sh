@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds NetLog and installs it to ~/Applications/NetLog.app.
+# Buduje NetLog i instaluje do /Applications/NetLog.app (inny katalog: NETLOG_INSTALL_DIR).
 # Build products live in ~/Library/Developer/NetLog, outside the repo
 # (and outside Dropbox or iCloud, which would try to sync them).
 #
@@ -7,6 +7,10 @@
 #        ./build.sh --debug    debug build, install
 #        ./build.sh --open     install, then quit the running copy and open the new one
 set -euo pipefail
+# Pełne Xcode, jeśli jest (makra SwiftUI, actool do ikony), bez zmiany xcode-select.
+if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]] && [[ "$(xcode-select -p)" == */CommandLineTools ]]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
 here=${0:A:h}
 name="NetLog"
 scratch="$HOME/Library/Developer/$name/build"
@@ -32,8 +36,9 @@ if [[ -n "$stale" ]]; then
   exit 1
 fi
 
-app="$HOME/Applications/$name.app"
-mkdir -p "$HOME/Applications"
+install_dir="${NETLOG_INSTALL_DIR:-/Applications}"
+app="$install_dir/$name.app"
+mkdir -p "$install_dir"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/$name"

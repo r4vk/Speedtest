@@ -39,7 +39,8 @@ po 30 dniach. SQLite trzyma 7 dni (3 próby na sekundę to ok. 55 MB na dobę, o
 
 ## Instalacja
 
-Wymagania: macOS 26 lub nowszy i Command Line Tools (`xcode-select --install`). Pełne Xcode nie jest potrzebne.
+Wymagania: macOS 26 lub nowszy i Xcode albo same Command Line Tools (`xcode-select --install`).
+`build.sh` sam używa `/Applications/Xcode.app`, jeśli jest (wtedy kompiluje też ikonę aplikacji).
 
 1. Zatrzymaj stary logger, żeby dwa procesy nie pisały do tych samych plików (logi zostają):
 
@@ -47,7 +48,7 @@ Wymagania: macOS 26 lub nowszy i Command Line Tools (`xcode-select --install`). 
    ../tools/macos-netlog/uninstall.sh
    ```
 
-2. Zbuduj i zainstaluj do `~/Applications/NetLog.app`, potem uruchom:
+2. Zbuduj i zainstaluj do `/Applications/NetLog.app` (folder Aplikacje), potem uruchom:
 
    ```bash
    ./build.sh --open
@@ -56,8 +57,13 @@ Wymagania: macOS 26 lub nowszy i Command Line Tools (`xcode-select --install`). 
 3. Kliknij ikonę Wi-Fi z NetLog w pasku menu i zaznacz **Przy logowaniu**. To zastępuje LaunchAgent
    loggera (SMAppService). macOS może zapytać o zgodę w Ustawieniach > Ogólne > Rzeczy otwierane przy logowaniu.
 
+**Nie widać ikony?** Aplikacja nie ma ikony w Docku, jest tylko w pasku menu. Jeśli jej tam nie ma:
+- Ustawienia systemowe > Pasek menu > „Zezwalaj w pasku menu”: włącz NetLog;
+- na ekranie MacBooka z wcięciem ikony, które się nie mieszczą, chowają się za wcięciem. Zamknij kilka
+  innych ikon albo przeciągnij NetLog bliżej zegara (⌘ + przeciągnięcie).
+
 Aktualizacja: `git pull`, potem `./build.sh --open`. Odinstalowanie: odznacz „Przy logowaniu”, zakończ
-aplikację, usuń `~/Applications/NetLog.app` (dane zostają w miejscach z tabeli wyżej).
+aplikację, usuń `/Applications/NetLog.app` (folder Aplikacje) (dane zostają w miejscach z tabeli wyżej).
 
 Aplikacja jest podpisana ad hoc (albo certyfikatem „Apple Development”, jeśli jest w pęku kluczy).
 Potrzebuje jednej zgody: **Sieć lokalna**. Przy pierwszym uruchomieniu macOS pyta, czy NetLog może łączyć się

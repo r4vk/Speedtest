@@ -36,6 +36,7 @@ final class Monitor {
     @ObservationIgnored private var detector: StuckDetector
     @ObservationIgnored private let files: LogFiles
     @ObservationIgnored private var store: ResultStore?
+    @ObservationIgnored private var started = false
     @ObservationIgnored private var sleeping = false
     @ObservationIgnored private var wokeAt: Int?
     @ObservationIgnored private var graceUntil: Int?
@@ -56,7 +57,8 @@ final class Monitor {
     // MARK: - Start i stop
 
     func start() {
-        guard loop == nil, !sleeping else { return }
+        guard !started else { return }
+        started = true
         interface = WiFiReader.interfaceName()
         net = NetInfo.current(interface: interface)
         router = config.routerIP ?? net.router
@@ -79,15 +81,32 @@ final class Monitor {
         simulateSleepIfAsked()
     }
 
-    /// Zapisuje bufor i kończy. Wołane przy wyjściu z aplikacji.
-    func stop() async {
+    /// Wyjście z aplikacji. Na wątku głównym tylko zatrzymuje pętlę i układa ostatnie zdarzenia;
+    /// zapis robi zwrócona funkcja poza wątkiem głównym (AppKit czeka wtedy w zagnieżdżonej pętli,
+    /// w której zadania głównego aktora mogą nie ruszyć).
+    func prepareStop() -> @Sendable () async -> Void {
+        guard started else { return {} }
         loop?.cancel()
         loop = nil
-        let now = Int(Date().timeIntervalSince1970)
-        handle(detector.pause(epoch: now))
-        event("STOP agent NetLog (pomiary zatrzymane, to nie jest awaria sieci)", kind: "stop")
-        await store?.flush()
-        await files.close()
+        let now = Date()
+        var lines: [(String, String)] = []
+        for case let .interrupted(d, lost) in detector.pause(epoch: Int(now.timeIntervalSince1970)) {
+            lines.append((Self.interruptedText(d, lost), "stuck_interrupted"))
+        }
+        lines.append(("STOP agent NetLog (pomiary zatrzymane, to nie jest awaria sieci)", "stop"))
+        let files = files, store = store, final = lines
+        return {
+            for (text, kind) in final {
+                await files.event(text, at: now)
+                await store?.addEvent(kind: kind, detail: text, at: now)
+            }
+            await store?.flush()
+            await files.close()
+        }
+    }
+
+    nonisolated static func interruptedText(_ d: Int, _ lost: Int) -> String {
+        "KONIEC zawieszenia (przerwane: uśpienie, przerwa w pomiarach lub zatrzymanie agenta): trwało co najmniej \(d) s, utracone pingi do routera: \(lost)"
     }
 
     private func startLoop() {
@@ -292,8 +311,7 @@ final class Monitor {
             case .ended(let d, let lost):
                 event("KONIEC zawieszenia: trwało \(d) s, utracone pingi do routera: \(lost)", kind: "stuck_end")
             case .interrupted(let d, let lost):
-                event("KONIEC zawieszenia (przerwane: uśpienie, przerwa w pomiarach lub zatrzymanie agenta): trwało co najmniej \(d) s, utracone pingi do routera: \(lost)",
-                      kind: "stuck_interrupted")
+                event(Self.interruptedText(d, lost), kind: "stuck_interrupted")
             }
         }
     }

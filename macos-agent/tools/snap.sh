@@ -8,5 +8,5 @@ after=${1:-25}
 work=${TMPDIR:-/tmp}/NetLog-snap
 rm -rf "$work"; mkdir -p "$work"
 NETLOG_DIR="$work/logs" APP_STORE="$work/netlog.sqlite" APP_SNAPSHOT="$work/shots" APP_SNAPSHOT_AFTER=$after \
-  "$HOME/Applications/NetLog.app/Contents/MacOS/NetLog"
+  "${NETLOG_INSTALL_DIR:-/Applications}/NetLog.app/Contents/MacOS/NetLog"
 echo "dane: $work"

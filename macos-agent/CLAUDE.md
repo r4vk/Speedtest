@@ -6,7 +6,7 @@ UI, komentarze i dziennik zdarzeń po polsku.
 
 ## Budowanie i sprawdzanie
 
-Na tym Macu są tylko Command Line Tools, bez Xcode:
+Kod musi się budować także z samymi Command Line Tools, bez Xcode (`build.sh` używa Xcode, jeśli jest):
 - nie używaj `@State` ani innych makr SwiftUI (wtyczka `SwiftUIMacros` jest tylko w Xcode). Stan trzymaj w `Monitor` (`@Observable`, z toolchainu);
 - Swift Testing (`@Test`) i XCTest nie działają. Testy to program `Tests/NetLogCheck/main.swift`;
 - `actool` nie istnieje, więc `build.sh` pomija ikonę.
