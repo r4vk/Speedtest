@@ -1,5 +1,8 @@
 # macos-netlog — lokalny logger sieci na Macu (Wi-Fi)
 
+> **Następca:** natywna aplikacja paska menu [`macos-agent/`](../../macos-agent/) (NetLog). Zbiera to samo,
+> do tych samych plików i w tym samym formacie, więc `summary.sh` działa dalej. Przy przejściu uruchom `./uninstall.sh`.
+
 Tymczasowe narzędzie do etapu 9 (przed pełnym agentem z wysyłką do NAS). Działa w tle jako LaunchAgent
 i odpowiada na pytanie: **czy Mac gubi pakiety na odcinku Wi-Fi, czy problem jest dalej (router/operator)?**
 

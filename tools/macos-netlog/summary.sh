@@ -29,8 +29,8 @@ echo "   straty do routera i NAS-a     -> problem Wi-Fi / macOS (odcinek Mac–r
 echo "   straty tylko do internetu     -> router lub operator (porównaj z panelem NAS)"
 
 echo
-echo "== Zawieszenia (router nie odpowiada ≥3 s)"
-if [ -f "$EVENTS" ]; then grep -E 'ZAWIESZENIE|KONIEC|ZMIANA|START' "$EVENTS" || echo "brak"; else echo "brak"; fi
+echo "== Zawieszenia (router nie odpowiada ≥3 s), uśpienia i przerwy"
+if [ -f "$EVENTS" ]; then grep -E 'ZAWIESZENIE|KONIEC|ZMIANA|START|STOP|USYPIANIE|WYBUDZENIE|PRZERWA' "$EVENTS" || echo "brak"; else echo "brak"; fi
 
 echo
 echo "== Przerwy w pomiarach >10 s (zwykle uśpienie Maca)"
