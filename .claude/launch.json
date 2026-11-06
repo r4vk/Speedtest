@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "speedtest-dev",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd app && DATA_DIR=${SPEEDTEST_DEV_DATA:-/tmp/speedtest-dev} TELEMETRY_DEFAULT_ENABLED=false ../.venv/bin/uvicorn speedtest_app.main:app --host 127.0.0.1 --port 8765"
+      ],
+      "port": 8765
+    }
+  ]
+}

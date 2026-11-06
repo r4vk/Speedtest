@@ -191,6 +191,19 @@ Dla zakresów starszych niż `retention_raw_days` surowe dane nie są już dost�
 
 **Limit zakresu danych surowych:** widoki oparte na surowych wierszach (`/api/quality/stats`, `/api/quality/timeline`, raport i `probes.csv`) obsługują zakres do **31 dni** (`raw_range_max_days` w `GET /api/quality/status`). Szerszy zakres liczony jest z agregatów i jest tak oznaczony (`data_source: "aggregates"`), a `probes.csv` odpowiada wtedy `422` — jeden klik nie może zająć całej pamięci NAS-a. Dłuższe okresy eksportuje się przez `aggregates.csv`.
 
+### Wyniki z innych urządzeń (Mac z NetLogiem)
+
+Inne urządzenia mogą wysyłać swoje pomiary na serwer, np. Mac na Wi-Fi z aplikacją NetLog (`macos-agent/`).
+W panelu: **Ustawienia → Urządzenia wysyłające wyniki → Dodaj urządzenie**. Token pokazuje się tylko raz;
+wklej go w ustawieniach NetLoga. Wyniki urządzeń **nie są wliczane** do statystyk, incydentów, agregatów,
+raportu ani eksportów serwera — widać je tylko w sekcji „Porównanie: urządzenie i ten serwer”, na tych samych
+przedziałach czasu co pomiary serwera. Przyjmowane są wyniki tylko dla celów, które serwer zna (po nazwie albo
+po protokole i adresie, np. `1.1.1.1` → `cloudflare-dns`).
+
+API: `POST /api/devices`, `GET /api/devices`, `DELETE /api/devices/{id}`, `POST /api/ingest/results`
+(nagłówek `Authorization: Bearer <token>`), `GET /api/quality/compare?device=<id>`. Szczegóły:
+`docs/network-quality-design.md` §15.
+
 ### Weryfikacja na NAS-ie (do wykonania)
 
 To wydanie **nie zostało jeszcze zweryfikowane na prawdziwym Synology NAS**. Przed dłuższym/produkcyjnym wdrożeniem sprawdź:

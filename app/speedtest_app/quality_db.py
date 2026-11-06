@@ -276,6 +276,14 @@ def insert_probe_results(db_path: str, rows: Sequence[ProbeResult]) -> int:
 METRIC_COLUMNS = ("started_at", "outcome", "rtt_ms", "error_kind")
 
 
+#: The NAS's own device. Readers that pass no device see only its rows, so
+#: results uploaded by other devices (stage 9: a Mac on Wi-Fi) never change the
+#: wired statistics, aggregates, incidents or the ISP report.
+NAS_DEVICE_ID = "nas"
+#: Pass as ``device_id`` to read the rows of every device.
+ALL_DEVICES = "*"
+
+
 def _probe_results_query(
     start_iso: str,
     end_iso: str,
@@ -299,9 +307,10 @@ def _probe_results_query(
     if protocol is not None:
         where.append("protocol = ?")
         params.append(str(protocol))
-    if device_id is not None:
+    device = NAS_DEVICE_ID if device_id is None else str(device_id)
+    if device != ALL_DEVICES:
         where.append("device_id = ?")
-        params.append(str(device_id))
+        params.append(device)
     sql = (
         f"SELECT {', '.join(columns)} FROM probe_results WHERE {' AND '.join(where)} "
         "ORDER BY started_at ASC, id ASC"
@@ -408,7 +417,7 @@ def iter_probe_results(
 #: ~10 s on a fortnight of one-second probes, and growing with the archive
 #: rather than with the number of targets.
 _LAST_RESULT_SQL = (
-    "SELECT * FROM probe_results WHERE target_id = ? "
+    "SELECT * FROM probe_results WHERE target_id = ? AND device_id = 'nas' "
     "ORDER BY started_at DESC, id DESC LIMIT 1"
 )
 
@@ -889,4 +898,20 @@ def update_expected_window(db_path: str, window_id: int, **fields: Any) -> int:
 def delete_expected_window(db_path: str, window_id: int) -> bool:
     with db_conn(db_path) as conn:
         cur = conn.execute("DELETE FROM expected_windows WHERE id = ?", (window_id,))
+    return cur.rowcount > 0
+
+
+def get_device_by_token_hash(db_path: str, token_hash: str) -> dict[str, Any] | None:
+    """The device whose ingest token hashes to ``token_hash`` (stage 9)."""
+    with db_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM devices WHERE token_hash = ? AND kind != 'nas'", (token_hash,)
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def delete_device(db_path: str, device_id: str) -> bool:
+    """Remove a non-NAS device. Its uploaded results stay until retention prunes them."""
+    with db_conn(db_path) as conn:
+        cur = conn.execute("DELETE FROM devices WHERE id = ? AND kind != 'nas'", (device_id,))
     return cur.rowcount > 0

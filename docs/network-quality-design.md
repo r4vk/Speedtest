@@ -529,14 +529,33 @@ Exports and report state "surowe dane niedostępne (retencja)" for ranges before
 
 ## 15. Stage 9 server side (`ingest.py`, `api_ingest.py`)
 
+- `POST /api/devices` `{"name","kind":"macos"|"other","id"?}` creates a device and returns
+  `{"device","token"}`; the token is shown only here and stored as sha256. The id is a slug of
+  the name (`MacBook Rafała` -> `macbook-rafala`, `-2`, `-3` on collision) and never `nas`.
+  `GET /api/devices` lists devices without hashes; `DELETE /api/devices/{id}` (never `nas`)
+  revokes the token, uploaded rows stay until retention.
 - `POST /api/ingest/results` with header `Authorization: Bearer <token>`; body
-  `{"device_id","sent_at","results":[ProbeResult dict with external_id]}`; targets matched by name.
-  Idempotent through the unique `(device_id, external_id)` index (`INSERT OR IGNORE`); the
-  response returns `{"accepted","duplicates","rejected":[...]}`.
-- Device tokens: `POST /api/devices` creates a device and returns the token once; stored as
-  sha256. Only `kind != 'nas'` devices can ingest.
+  `{"device_id","sent_at","results":[…]}`, at most 5000 results (413 above). Each result:
+  `external_id`, `target` (name), `host`, `protocol`, `started_at`, `duration_ms`, `outcome`,
+  `rtt_ms` (required for `ok`), `timeout_ms`, optional `resolved_ip`, `ip_family`,
+  `error_kind`, `error_detail`; other fields are ignored. 401 without a valid token, 403 when
+  `device_id` is not the token's device.
+- Targets are matched by name, then by `(protocol, host)` (NetLog's `internet`/`1.1.1.1` is
+  the NAS's `cloudflare-dns`). Unknown targets are rejected with `unknown_target`, never
+  created: a new target would make the NAS probe it too.
+- Idempotent through the unique `(device_id, external_id)` index (`INSERT OR IGNORE`); the
+  response returns `{"device_id","accepted","duplicates","rejected":[{"external_id","reason"}],
+  "skew_ms"}`. Rejected rows will be rejected again on retry; the client must not resend them.
 - Clock skew: the server stores `last_skew_ms = server_now - sent_at` on the device; the
   timeline offsets nothing — it reports skew so a human can judge.
+- Device isolation: every probe reader goes through `quality_db._probe_results_query`, which
+  defaults to `device_id = 'nas'` (`ALL_DEVICES = '*'` reads everything). Statistics,
+  timeline, aggregates, report, exports and `/api/targets` last results therefore never mix
+  in uploaded rows. Retention prunes raw rows of every device; aggregates exist only for the NAS.
+- `GET /api/quality/compare?device=<id>&from&to&bucket_seconds` returns, for each target the
+  device has rows for, `{"target","nas":{stats,points},"device":{stats,points}}` on the same
+  buckets (raw rows only; 400 beyond `RAW_RANGE_MAX_DAYS`). The panel shows it as
+  "Porównanie: urządzenie i ten serwer" (`static/devices.js`).
 
 ## 16. Testing conventions
 

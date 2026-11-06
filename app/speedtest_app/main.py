@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import api_quality, api_quality_exports, quality_db, retention
+from . import api_ingest, api_quality, api_quality_exports, quality_db, retention
 from .api_quality import ExpectedMark
 from .api_retention import router as retention_router
 from .config import AppConfig
@@ -233,6 +233,7 @@ app.include_router(retention_router)
 app.state.db_path = cfg.db_path
 app.include_router(api_quality.router)
 app.include_router(api_quality_exports.router)
+app.include_router(api_ingest.router)
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _STATIC_DIR = _BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")

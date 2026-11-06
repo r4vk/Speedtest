@@ -351,6 +351,26 @@
               </div>
             </div>
 
+            <!-- Sekcja: Urządzenia (etap 9) -->
+            <div class="settings-section" id="q-devices-section">
+              <h3>Urządzenia wysyłające wyniki</h3>
+              <p class="hint">Np. NetLog na Macu. Token jest pokazywany tylko raz — wklej go w ustawieniach NetLoga. Usunięcie urządzenia unieważnia jego token; wysłane wyniki zostają do czasu retencji.</p>
+              <div class="q-table-wrap">
+                <table class="tool-table" id="q-devices-table">
+                  <thead>
+                    <tr><th scope="col">Nazwa</th><th scope="col">Identyfikator</th><th scope="col">Ostatnia wysyłka</th><th scope="col">Przesunięcie zegara</th><th scope="col">Akcje</th></tr>
+                  </thead>
+                  <tbody id="q-devices-tbody"></tbody>
+                </table>
+              </div>
+              <form id="q-device-form" class="q-target-add-row">
+                <input id="q-device-new-name" type="text" placeholder="nazwa (np. MacBook)" maxlength="80" aria-label="Nazwa nowego urządzenia" />
+                <button id="q-device-add" type="submit" class="btn-small">+ Dodaj urządzenie</button>
+              </form>
+              <p id="q-device-token" class="q-device-token" style="display:none;"></p>
+              <span id="q-devices-msg" class="cfgmsg"></span>
+            </div>
+
             <!-- Sekcja: Testy obciążeniowe -->
             <div class="settings-section" id="q-loadtest-section">
               <div class="section-header">
@@ -623,6 +643,33 @@
           </table>
         </div>
 
+        <div id="q-compare-wrap" style="display:none;">
+          <h3>Porównanie: urządzenie i ten serwer</h3>
+          <p class="hint q-chart-help">Te same cele i te same przedziały czasu. Straty tylko na urządzeniu wskazują na jego połączenie (np. Wi-Fi) albo system. Straty jednocześnie na urządzeniu i na serwerze wskazują na router albo dostawcę. Zegary nie są korygowane — przesunięcie zegara urządzenia widać obok jego nazwy.</p>
+          <div class="q-compare-controls">
+            <label for="q-compare-device">Urządzenie</label>
+            <select id="q-compare-device" aria-label="Urządzenie do porównania"></select>
+            <label for="q-compare-target">Cel na wykresie</label>
+            <select id="q-compare-target" aria-label="Cel na wykresie porównania"></select>
+            <span id="q-compare-device-info" class="hint"></span>
+          </div>
+          <canvas id="qualityCompareChart" height="60"></canvas>
+          <div class="q-table-wrap">
+            <table class="tool-table" id="q-compare-table">
+              <thead>
+                <tr>
+                  <th scope="col">Cel</th>
+                  <th scope="col">Utrata serwer</th><th scope="col">Utrata urządzenie</th>
+                  <th scope="col">Ping p50 serwer</th><th scope="col">Ping p50 urządzenie</th>
+                  <th scope="col">Najdłuższa seria strat urządzenia</th>
+                </tr>
+              </thead>
+              <tbody id="q-compare-tbody"></tbody>
+            </table>
+          </div>
+          <p id="q-compare-msg" class="hint"></p>
+        </div>
+
         <h3>Incydenty</h3>
         <label class="label-row" for="q-incidents-hide-expected">
           <input type="checkbox" id="q-incidents-hide-expected" />
@@ -731,5 +778,6 @@
 
     <script defer src="/static/app.js"></script>
     <script defer src="/static/quality.js"></script>
+    <script defer src="/static/devices.js"></script>
   </body>
 </html>

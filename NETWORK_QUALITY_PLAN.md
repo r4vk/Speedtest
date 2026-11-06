@@ -60,7 +60,7 @@ Kryterium ukończenia: testy migracji i raportu potwierdzają poprawne zachowani
 - [x] Przyjmij początkowo ICMP co 1 s, z ustawieniami per cel. Gęstsze próbkowanie zostaw do ograniczonego trybu diagnostycznego. (`interval_seconds` ≥ 1 s, `diagnostic_mode` pozwala ≥ 0,2 s)
 - [x] Zapisuj każdą wykonaną próbę, timeout i błędy uruchomienia sondy, rozróżniając ich znaczenie. (`outcome` ok/timeout/error + `error_kind`)
 - [x] Zadbaj o niezależność celów, ograniczoną współbieżność i brak narastającej kolejki przy timeoutach. (`probe_scheduler.py`: pętla per cel, semafor, pomijanie spóźnionych ticków)
-- [ ] Zweryfikuj ICMP oraz minimalne wymagane uprawnienia kontenera na Synology. Nie zakładaj, że domyślna brama kontenera jest routerem domowym. (kod: drabinka dgram → raw → `ping` z widocznym `icmp_method`; **nie zweryfikowano na rzeczywistym NAS-ie** — patrz README, sekcja "Weryfikacja na NAS-ie")
+- [x] Zweryfikuj ICMP oraz minimalne wymagane uprawnienia kontenera na Synology. Nie zakładaj, że domyślna brama kontenera jest routerem domowym. (drabinka dgram → raw → `ping`; na DS220+ z 0.1.5 działa `icmp_method=dgram`, sprawdzone 2026-11-06 przez `/api/quality/status`)
 
 Kryterium ukończenia: timeout lub błąd jednego celu nie blokuje innych; sondy i błędy są poprawnie zapisane, a konfiguracja działa na docelowym NAS-ie.
 
@@ -138,10 +138,10 @@ Kryterium ukończenia: kontrolowane zakłócenia są wykrywane, dane pozostają 
 
 ## Etap 9 — agent macOS, dopiero po części NAS
 
-- [ ] Dodaj pomiary Mac → NAS i Mac → te same cele internetowe.
-- [ ] Obsłuż uśpienie, wybudzenie, zmianę interfejsu i lokalne buforowanie przy braku dostępu do NAS-a.
-- [ ] Dodaj uwierzytelnione przesyłanie wyników, identyfikację urządzenia i idempotentny import.
-- [ ] Porównuj wyniki Maca i NAS-a na wspólnej osi czasu, uwzględniając synchronizację zegarów.
+- [x] Dodaj pomiary Mac → NAS i Mac → te same cele internetowe. (NetLog: router, NAS, 1.1.1.1; serwer przyjmuje cele znane NAS-owi — wyniki Mac → NAS są odrzucane jako `unknown_target`, bo NAS nie ma celu „siebie”)
+- [x] Obsłuż uśpienie, wybudzenie, zmianę interfejsu i lokalne buforowanie przy braku dostępu do NAS-a. (NetLog: NSWorkspace, kolejka `uploaded_at` w SQLite)
+- [ ] Dodaj uwierzytelnione przesyłanie wyników, identyfikację urządzenia i idempotentny import. (serwer gotowy: `POST /api/devices`, `POST /api/ingest/results`; **wysyłka z NetLoga do zrobienia**)
+- [x] Porównuj wyniki Maca i NAS-a na wspólnej osi czasu, uwzględniając synchronizację zegarów. (`/api/quality/compare`, panel „Porównanie”; przesunięcie zegara raportowane, nie korygowane)
 
 Kryterium ukończenia: możliwe jest porównanie jednoczesnych pomiarów kablowych i Wi-Fi, a uśpienie Maca nie jest klasyfikowane jako awaria internetu.
 
@@ -179,3 +179,4 @@ Nie są wymagane do rozpoczęcia implementacji, ale są potrzebne do jej weryfik
 | 2026-09-19 | 8 | `retention.py` (agregaty przed usunięciem, granica surowych wyrównana do doby UTC, partie po 5000), `db.integrity_quick_check`, `busy_timeout`, `GET /api/quality/retention`, `app/README.md` sekcja monitoringu, `docs/operations.md` | testy retencji (kolejność, partie, drugie uruchomienie bez zmian) | Pilotaż na NAS-ie, zużycie zasobów i uprawnienia ICMP na Synology — do wykonania w osobnym zleceniu |
 | 2026-09-19 | 9 | Nierozpoczęty (zgodnie z kolejnością wydań: po pilotażu NAS). Brief zadania przygotowany (ingest API z tokenami urządzeń, idempotentny import po `external_id`, agent macOS) | — | Wymaga wydania 4 |
 | 2026-11-06 | 9 (część Mac) | `macos-agent/` (NetLog, SwiftUI w pasku menu): ICMP co 1 s do routera/NAS/1.1.1.1, Wi-Fi z CoreWLAN, zawieszenia ze zrzutem, uśpienie/wybudzenie z NSWorkspace (okres łaski 30 s, sen nigdy jako awaria), CSV zgodne z `tools/macos-netlog`, SQLite `probe_results` w kształcie `ProbeResult` z `external_id` i kolejką `uploaded_at` | `NetLogCheck` (detektor, stan, pakiet ICMP, formaty, kolejka SQLite); przebiegi na danych tymczasowych z symulowanym snem i „milczącym routerem” | Wysyłka do ingest API, rejestracja urządzenia i porównanie z NAS-em nierozpoczęte; prawdziwy sen Maca niesprawdzony automatycznie |
+| 2026-11-06 | 9 (serwer) | `ingest.py`, `api_ingest.py`: rejestracja urządzeń z tokenem (sha256), `POST /api/ingest/results` (dopasowanie celu po nazwie, potem po protokole i hoście; nieznane cele odrzucane; idempotencja po `external_id`; `last_skew_ms`), `GET /api/quality/compare`; `_probe_results_query` domyślnie tylko `device_id=nas`, więc statystyki, agregaty, raport i eksporty NAS-a nie mieszają wyników Maca; panel: sekcja urządzeń w ustawieniach i porównanie (`static/devices.js`) | `test_api_ingest.py`, `test_device_isolation.py`, `test_static_devices.py`; 680 testów; ręcznie w przeglądarce na lokalnym serwerze z danymi testowymi | Wysyłka z NetLoga nierozpoczęta; wdrożenie na NAS wymaga nowego wydania |

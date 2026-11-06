@@ -1143,6 +1143,7 @@ async function refreshTimeSeries() {
   const params = paramsFromInputs();
   const tasks = [loadChart(), loadQuality(), loadOutagesList()];
   if (typeof Quality !== "undefined") tasks.push(Quality.refresh(params));
+  if (typeof Devices !== "undefined") tasks.push(Devices.refresh(params));
   await Promise.all(tasks);
 }
 
@@ -1163,6 +1164,7 @@ async function refreshAll() {
   const params = paramsFromInputs();
   const tasks = [loadStatus(), loadChart(), loadQuality(), loadOutagesList()];
   if (typeof Quality !== "undefined") tasks.push(Quality.refresh(params));
+  if (typeof Devices !== "undefined") tasks.push(Devices.refresh(params));
   await Promise.all(tasks);
   lastTimeSeriesRefreshAtMs = Date.now();
 }

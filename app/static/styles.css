@@ -850,3 +850,7 @@ code { color: #c7d2fe; }
 #q-stats-table th { white-space: normal; vertical-align: bottom; }
 #q-stats-table th[title] { cursor: help; text-decoration: underline dotted rgba(169,180,221,.5); text-underline-offset: 3px; }
 #q-stats-table td { white-space: nowrap; }
+
+/* Porównanie urządzenie ↔ NAS i lista urządzeń (etap 9) */
+.q-compare-controls { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 6px 0 10px; }
+.q-device-token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; padding: 8px 10px; border: 1px dashed var(--border, #555); border-radius: 6px; }
